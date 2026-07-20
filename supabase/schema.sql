@@ -12,6 +12,12 @@ create table if not exists public.collections (
   updated_at timestamptz not null default now()
 );
 
+-- Table-level privileges. RLS policies (below) decide which *rows* a role can
+-- touch, but the role must also be GRANTed access to the table itself. Supabase
+-- usually auto-grants these; grant them explicitly so it never depends on that.
+grant usage on schema public to anon, authenticated, service_role;
+grant select, insert, update, delete on public.collections to authenticated, service_role;
+
 -- Row Level Security: block anonymous access; allow any signed-in user to read
 -- and write. (This is prototype-grade — the app enforces per-role/department
 -- visibility on the client. A future hardening step is per-collection or

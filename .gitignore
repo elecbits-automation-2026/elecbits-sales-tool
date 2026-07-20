@@ -8,3 +8,6 @@ dist-ssr
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+
+# Personal daily work sheets (not tracked)
+daily_work_sheet/
