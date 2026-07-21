@@ -1,0 +1,188 @@
+import { useState } from "react";
+import { X, CheckCircle2, ArrowRight, ShieldCheck, Building2, Cpu, ChevronLeft } from "lucide-react";
+import { TYPES } from "../constants";
+import { nextRfqId, uid } from "../lib/helpers";
+import { Field } from "../components/ui";
+
+/* New RFQ flow — Sales raises a Request for Quote against an approved client. */
+export function NewRFQ({ clients, projects, userName, onCreateProject, onDone, onCancel }) {
+  const [step, setStep] = useState(1);
+  const [existingClientId, setExistingClientId] = useState("");
+  const [createdClient, setCreatedClient] = useState(null);
+
+  const [rfq, setRfq] = useState({
+    type: "Box Build",
+    technicalScope: "",
+    budget: "",
+    timeline: "",
+  });
+  const [createdProject, setCreatedProject] = useState(null);
+
+  function selectClient(e) {
+    e.preventDefault();
+    const c = clients.find((c) => c.id === existingClientId);
+    if (!c) return;
+    setCreatedClient(c);
+    setStep(2);
+  }
+
+  function submitRfq(e) {
+    e.preventDefault();
+    const now = new Date().toISOString();
+    const newProject = {
+      id: nextRfqId(projects), // stable RFQ reference — the formal Project ID comes later
+      projectId: null,
+      clientId: createdClient.id,
+      type: rfq.type,
+      stage: "Dept Review",
+      technicalScope: rfq.technicalScope,
+      budget: rfq.budget,
+      timeline: rfq.timeline,
+      notes: [],
+      architectureSummary: "",
+      stakeholders: [],
+      approvals: [],
+      history: [{ id: uid(), from: null, to: "Dept Review", by: userName, at: now }],
+      createdBy: userName,
+      assignedTo: userName, // Sales lead owner — reassignable by a Sales Manager
+      department: rfq.type, // routes straight to the matching department head for review
+      assignees: [], // execution team assigned by the receiving department's Manager, after approval
+      callLogs: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    onCreateProject(newProject);
+    setCreatedProject(newProject);
+    setStep(3);
+  }
+
+  return (
+    <div className="view">
+      <div className="view-header">
+        <div>
+          <h1>New RFQ</h1>
+          <p className="view-sub">Step {step} of 3</p>
+        </div>
+        <button className="btn btn-ghost" onClick={onCancel}>
+          <X size={16} /> Cancel
+        </button>
+      </div>
+
+      <div className="wizard-progress">
+        {["Client", "RFQ details", "Done"].map((label, i) => (
+          <div key={label} className={`wizard-step ${step === i + 1 ? "active" : ""} ${step > i + 1 ? "past" : ""}`}>
+            <span className="wizard-dot">{step > i + 1 ? <CheckCircle2 size={12} /> : i + 1}</span>
+            {label}
+          </div>
+        ))}
+      </div>
+
+      {step === 1 && (
+        <form className="panel form-panel" onSubmit={selectClient}>
+          {clients.length === 0 ? (
+            <p className="field-hint">
+              No approved clients yet. Submit and approve a lead on the Leads tab first — a Client ID is generated
+              there once a lead is approved.
+            </p>
+          ) : (
+            <Field label="Select client">
+              <select required value={existingClientId} onChange={(e) => setExistingClientId(e.target.value)}>
+                <option value="">Choose a client…</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.id} — {c.name} ({c.company || "no company"})
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
+          <div className="form-actions">
+            <button className="btn btn-primary" type="submit" disabled={clients.length === 0} style={{ marginLeft: "auto" }}>
+              Continue <ArrowRight size={15} />
+            </button>
+          </div>
+        </form>
+      )}
+
+      {step === 2 && createdClient && (
+        <>
+          <div className="id-callout">
+            <ShieldCheck size={16} />
+            Client ID <span className="mono">{createdClient.id}</span> — {createdClient.name}
+          </div>
+          <form className="panel form-panel" onSubmit={submitRfq}>
+            <Field label="Project type" hint="This determines which department head reviews the RFQ.">
+              <div className="segmented">
+                {TYPES.map((t) => (
+                  <button
+                    type="button"
+                    key={t}
+                    className={rfq.type === t ? "active" : ""}
+                    onClick={() => setRfq({ ...rfq, type: t })}
+                  >
+                    {t === "Box Build" ? <Building2 size={14} /> : <Cpu size={14} />}
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </Field>
+            <Field label="Technical scope" hint="What needs to be built — this feeds the AI architecture summary later.">
+              <textarea
+                rows={4}
+                value={rfq.technicalScope}
+                onChange={(e) => setRfq({ ...rfq, technicalScope: e.target.value })}
+                placeholder="e.g. Custom enclosure with 4-layer PCB, requires thermal management, target volume 5,000 units/quarter…"
+              />
+            </Field>
+            <div className="grid-2">
+              <Field label="Budget (INR)">
+                <input value={rfq.budget} onChange={(e) => setRfq({ ...rfq, budget: e.target.value })} placeholder="50000" />
+              </Field>
+              <Field label="Timeline">
+                <input value={rfq.timeline} onChange={(e) => setRfq({ ...rfq, timeline: e.target.value })} placeholder="8 weeks" />
+              </Field>
+            </div>
+            <p className="field-hint">
+              These questions are a placeholder set — swap in the real project questionnaire once it's provided.
+            </p>
+            <div className="form-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setStep(1)}>
+                <ChevronLeft size={15} /> Back
+              </button>
+              <button className="btn btn-primary" type="submit">
+                Submit to {rfq.type} <ArrowRight size={15} />
+              </button>
+            </div>
+          </form>
+        </>
+      )}
+
+      {step === 3 && createdProject && (
+        <div className="panel done-panel">
+          <CheckCircle2 size={32} className="done-icon" />
+          <h2>RFQ submitted</h2>
+          <p className="field-hint">Sent to the {createdProject.type} head for review. The formal Project ID is assigned once they approve.</p>
+          <div className="id-row">
+            <div>
+              <div className="field-label">Client ID</div>
+              <div className="mono big">{createdClient.id}</div>
+            </div>
+            <div>
+              <div className="field-label">RFQ ID</div>
+              <div className="mono big">{createdProject.id}</div>
+            </div>
+          </div>
+          <div className="form-actions">
+            <button className="btn btn-ghost" onClick={() => onDone(null)}>
+              Back to dashboard
+            </button>
+            <button className="btn btn-primary" onClick={() => onDone(createdProject.id)}>
+              Open project <ArrowRight size={15} />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
