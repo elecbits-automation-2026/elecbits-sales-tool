@@ -9,7 +9,7 @@ import {
 import { APP_STYLES } from "./styles/appStyles";
 import {
   STAGES, APPROVAL_GATES, DEPARTMENTS, EXECUTION_DEPARTMENTS,
-  BUDGET_VISIBLE_DEPARTMENTS, TIERS, TYPES, DEFAULT_USERS, daysAgo,
+  BUDGET_VISIBLE_DEPARTMENTS, TIERS, TYPES, SEED_USERS, daysAgo,
 } from "./constants";
 import {
   SAMPLE_CLIENTS, SAMPLE_LEADS, SAMPLE_PROJECTS, SAMPLE_TASKS, SAMPLE_WORK_UPDATES,
@@ -21,6 +21,9 @@ import {
 import { callClaude } from "./lib/ai";
 import { loadList, saveList } from "./lib/storage";
 import { supabase } from "./lib/supabase";
+import { signIn } from "./lib/auth";
+import { LoginPage } from "./pages/LoginPage";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 /* ---------------------------------------------------------------------- */
 /* Small UI primitives                                                     */
 /* ---------------------------------------------------------------------- */
@@ -1502,10 +1505,14 @@ function LoginScreen({ users }) {
     attemptSignIn(user.email, user.password);
   }
 
-  const mainAdmins = users.filter((u) => u.tier === "Main Admin" && u.active !== false);
+  // Quick-login test panel is dev-only and can only sign in users whose password
+  // is stored in the crm-users blob (dynamically-created users). The bootstrap
+  // admin has no client-side password, so it's intentionally excluded.
+  const showTestPanel = import.meta.env.DEV;
+  const mainAdmins = users.filter((u) => u.tier === "Main Admin" && u.active !== false && u.password);
   const byDept = DEPARTMENTS.map((d) => ({
     department: d,
-    users: users.filter((u) => u.department === d && u.active !== false),
+    users: users.filter((u) => u.department === d && u.active !== false && u.password),
   }));
 
   return (
@@ -1569,6 +1576,7 @@ function LoginScreen({ users }) {
           </div>
         </div>
 
+        {showTestPanel && (
         <div className="test-users-panel">
           <div className="test-users-title">
             <ShieldCheck size={14} /> Test accounts
@@ -1605,6 +1613,7 @@ function LoginScreen({ users }) {
               )
           )}
         </div>
+        )}
       </div>
     </div>
   );
@@ -2486,13 +2495,14 @@ function UserManagement({ users, currentUserId, onCreate, onSave, onDelete }) {
         {visible.map((u) => {
           const extraOptions = DEPARTMENTS.filter((d) => d !== u.department && !(u.additionalDepartments || []).includes(d));
           const isInactive = u.active === false;
+          const isPending = u.status === "pending";
           return (
             <div className={`employee-card ${isInactive ? "inactive" : ""}`} key={u.id}>
               <div className="employee-card-top">
                 <div>
                   <div className="employee-name-row">
                     <span className="cell-primary" style={{ fontSize: 15 }}>{u.name}</span>
-                    <Chip tone={isInactive ? "default" : "green"}>{isInactive ? "INACTIVE" : "ACTIVE"}</Chip>
+                    <Chip tone={isPending ? "amber" : isInactive ? "default" : "green"}>{isPending ? "PENDING" : isInactive ? "INACTIVE" : "ACTIVE"}</Chip>
                   </div>
                   <div className="cell-sub">
                     {u.email}
@@ -2534,8 +2544,8 @@ function UserManagement({ users, currentUserId, onCreate, onSave, onDelete }) {
                   </select>
                 </Field>
                 <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <button className="btn btn-secondary btn-sm" onClick={() => updateUser(u, { active: isInactive })}>
-                    {isInactive ? <CheckCircle2 size={13} /> : <Ban size={13} />} {isInactive ? "Activate" : "Deactivate"}
+                  <button className="btn btn-secondary btn-sm" onClick={() => updateUser(u, isInactive ? { active: true, status: "active" } : { active: false })}>
+                    {isInactive ? <CheckCircle2 size={13} /> : <Ban size={13} />} {isPending ? "Approve" : isInactive ? "Activate" : "Deactivate"}
                   </button>
                   <button
                     className="btn btn-danger btn-sm"
@@ -2616,6 +2626,16 @@ function AccountNotice({ title, body, onSignOut }) {
   );
 }
 
+// True when the page was opened from a password-reset email link, which carries
+// `type=recovery` in the URL hash (e.g. #access_token=…&type=recovery).
+function isRecoveryUrl() {
+  try {
+    return new URLSearchParams(window.location.hash.replace(/^#/, "")).get("type") === "recovery";
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [clients, setClients] = useState([]);
@@ -2637,16 +2657,28 @@ export default function App() {
   const [authChecking, setAuthChecking] = useState(true);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [deptChosen, setDeptChosen] = useState(false);
+  // A "forgot password" reset link lands on #...&type=recovery. Detect it
+  // synchronously on first render — Supabase strips the hash asynchronously as it
+  // establishes the recovery session, so reading it now (not relying solely on the
+  // async PASSWORD_RECOVERY event) reliably wins that race.
+  const [recovery, setRecovery] = useState(isRecoveryUrl);
 
   // Track the session on mount and whenever it changes (sign in / out / refresh).
+  // Skip the initial session read when arriving via a recovery link, or we'd route
+  // that temporary session into the app instead of the set-new-password screen.
   useEffect(() => {
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (!active) return;
-      setSession(data.session);
+    if (recovery) {
       setAuthChecking(false);
-    });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    } else {
+      supabase.auth.getSession().then(({ data }) => {
+        if (!active) return;
+        setSession(data.session);
+        setAuthChecking(false);
+      });
+    }
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") { setRecovery(true); setAuthChecking(false); return; }
       setSession(s);
       if (!s) {
         // Signed out — clear everything so the next login re-loads fresh.
@@ -2682,8 +2714,11 @@ export default function App() {
       ]);
       if (!active) return;
       if (u.length === 0) {
-        setUsers(DEFAULT_USERS);
-        saveList("crm-users", DEFAULT_USERS);
+        // First run — seed only the bootstrap admin (from env). Everyone else is
+        // created dynamically via the Employees screen. If no bootstrap admin is
+        // configured, seed nothing (SEED_USERS is empty).
+        setUsers(SEED_USERS);
+        if (SEED_USERS.length) saveList("crm-users", SEED_USERS);
       } else {
         setUsers(u);
       }
@@ -2893,10 +2928,35 @@ export default function App() {
     // onAuthStateChange clears the rest of the state.
   }
 
+  // Called by the LoginPage's "Sign In" button. signIn() authenticates and gates
+  // on the crm-users profile (missing / pending / deactivated → signed back out
+  // with a precise message). On success the onAuthStateChange listener above sets
+  // the session and the normal load → department-picker flow takes over.
+  async function handleLogin(email, password) {
+    const res = await signIn(email, password);
+    if (res.success) return { success: true };
+    return { success: false, error: res.error };
+  }
+
   // The signed-in user's app profile (tier / department / name) comes from the
   // crm-users collection, matched by their auth email.
   const me =
     session && users.find((u) => (u.email || "").toLowerCase() === (session.user.email || "").toLowerCase());
+
+  // 0. Arrived from a password-reset email link → set-new-password screen. This
+  // takes priority over any session the link also established.
+  if (recovery) {
+    return (
+      <ResetPasswordPage
+        onDone={() => {
+          window.location.hash = "";
+          setRecovery(false);
+          setSession(null);
+          setDataLoaded(false);
+        }}
+      />
+    );
+  }
 
   // 1. Still checking for an existing session.
   if (authChecking) {
@@ -2905,12 +2965,7 @@ export default function App() {
 
   // 2. Not signed in → login screen.
   if (!session) {
-    return (
-      <div className="app-shell">
-        <style>{APP_STYLES}</style>
-        <LoginScreen users={users.length ? users : DEFAULT_USERS} />
-      </div>
-    );
+    return <LoginPage onLogin={handleLogin} />;
   }
 
   // 3. Signed in, but collections still loading.
@@ -2918,9 +2973,12 @@ export default function App() {
     return <AuthSplash message="Loading your workspace…" />;
   }
 
-  // 4. Authenticated, but no matching app profile / deactivated.
+  // 4. Authenticated, but no matching app profile / pending / deactivated.
   if (!me) {
     return <AccountNotice title="No profile found" body={`No employee record is linked to ${session.user.email}. Ask your Main Admin to add you on the Employees page.`} onSignOut={handleSignOut} />;
+  }
+  if (me.status === "pending") {
+    return <AccountNotice title="Awaiting approval" body="Your account is awaiting admin approval. You'll be able to sign in once a Main Admin activates it." onSignOut={handleSignOut} />;
   }
   if (me.active === false) {
     return <AccountNotice title="Account deactivated" body="This account has been deactivated. Contact your Main Admin." onSignOut={handleSignOut} />;

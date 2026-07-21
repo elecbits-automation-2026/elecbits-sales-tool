@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tailwind preflight is disabled globally (tailwind.config.js) so it can't
+   disturb the rest of the app, which has its own complete stylesheet. The
+   login/reset pages are pure Tailwind, so re-apply the minimal reset they need —
+   scoped to .tw-scope only.
+
+   Every selector is wrapped in :where() so the reset carries ZERO specificity —
+   otherwise `.tw-scope button` (0,1,1) would outrank utilities like
+   `.bg-gradient-to-r` (0,1,0) and wipe out button backgrounds/padding. This is
+   how Tailwind's own preflight stays overridable. */
+:where(.tw-scope, .tw-scope *, .tw-scope ::before, .tw-scope ::after) {
+  box-sizing: border-box;
+  border-width: 0;
+  border-style: solid;
+  border-color: currentColor;
+}
+:where(.tw-scope h1, .tw-scope h2, .tw-scope h3, .tw-scope h4, .tw-scope p) {
+  margin: 0;
+}
+:where(.tw-scope button, .tw-scope select, .tw-scope input, .tw-scope textarea) {
+  font: inherit;
+  color: inherit;
+}
+:where(.tw-scope button) {
+  background-color: transparent;
+  background-image: none;
+  padding: 0;
+  cursor: pointer;
+}
+:where(.tw-scope svg) {
+  display: block;
+}

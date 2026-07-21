@@ -15,44 +15,49 @@ const STAGES = [
 // "Dept Review" can only be approved by the receiving department's Manager (or Main Admin) — see canApproveGate.
 const APPROVAL_GATES = ["Dept Review", "Technical Review", "Quotation"];
 
-const DEPARTMENTS = ["Sales", "Finance", "Box Build", "ODM", "HR", "Product", "Marketing"];
+// Sales creates RFQs/leads; Box Build and ODM execute the build work; Product is
+// also part of the tool. These are the only departments the Sales tool uses.
+const DEPARTMENTS = ["Sales", "ODM", "Box Build", "Product"];
 
 // Departments that execute build work — projects only become visible to them
 // once a PM explicitly assigns the project to that department.
 const EXECUTION_DEPARTMENTS = ["Box Build", "ODM"];
 
 // Departments allowed to see budget figures, regardless of tier.
-const BUDGET_VISIBLE_DEPARTMENTS = ["Finance", "Box Build", "ODM"];
+const BUDGET_VISIBLE_DEPARTMENTS = ["Box Build", "ODM"];
 
 const TIERS = ["Main Admin", "Manager", "User"];
 
-// name, email, password, department (null for Main Admin), tier
 const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
 
-const DEFAULT_USERS = [
-  { id: "u-admin", name: "Sam Okafor", email: "sam.okafor@elecbits.in", password: "admin123", department: null, additionalDepartments: [], tier: "Main Admin", active: true, createdAt: daysAgo(200) },
+// Bootstrap Main Admin — the ONE account seeded on first run so someone can log
+// in and create everyone else through the Employees screen. Its identity comes
+// from env vars (set in .env.local), so no real people are hardcoded here:
+//   VITE_BOOTSTRAP_ADMIN_EMAIL  — the admin's @elecbits.in email
+//   VITE_BOOTSTRAP_ADMIN_NAME   — display name (optional)
+// The matching Supabase Auth login (email + password) is created out-of-band by
+// scripts/seed-auth.mjs, so no password is stored in the browser bundle.
+const BOOTSTRAP_ADMIN_EMAIL = (import.meta.env.VITE_BOOTSTRAP_ADMIN_EMAIL || "").trim().toLowerCase();
+const BOOTSTRAP_ADMIN_NAME = (import.meta.env.VITE_BOOTSTRAP_ADMIN_NAME || "Main Admin").trim();
 
-  { id: "u-sales-mgr", name: "Alex Rao", email: "alex.rao@elecbits.in", password: "sales123", department: "Sales", additionalDepartments: [], tier: "Manager", active: true, createdAt: daysAgo(180) },
-  { id: "u-sales-usr", name: "Jamie Lin", email: "jamie.lin@elecbits.in", password: "salesuser123", department: "Sales", additionalDepartments: [], tier: "User", active: true, createdAt: daysAgo(150) },
+const BOOTSTRAP_ADMIN = BOOTSTRAP_ADMIN_EMAIL
+  ? {
+      id: "u-admin",
+      name: BOOTSTRAP_ADMIN_NAME,
+      email: BOOTSTRAP_ADMIN_EMAIL,
+      password: "", // auth handled by Supabase; never stored client-side
+      department: null,
+      additionalDepartments: [],
+      tier: "Main Admin",
+      active: true,
+      createdAt: daysAgo(0),
+    }
+  : null;
 
-  { id: "u-fin-mgr", name: "Priya Menon", email: "priya.menon@elecbits.in", password: "finance123", department: "Finance", additionalDepartments: [], tier: "Manager", active: true, createdAt: daysAgo(170) },
-  { id: "u-fin-usr", name: "Omar Siddiqui", email: "omar.siddiqui@elecbits.in", password: "financeuser123", department: "Finance", additionalDepartments: [], tier: "User", active: true, createdAt: daysAgo(140) },
-
-  { id: "u-bb-mgr", name: "Dana Fox", email: "dana.fox@elecbits.in", password: "boxbuild123", department: "Box Build", additionalDepartments: [], tier: "Manager", active: true, createdAt: daysAgo(160) },
-  { id: "u-bb-usr", name: "Ravi Chandran", email: "ravi.chandran@elecbits.in", password: "boxbuilduser123", department: "Box Build", additionalDepartments: [], tier: "User", active: true, createdAt: daysAgo(130) },
-
-  { id: "u-odm-mgr", name: "Leo Tanaka", email: "leo.tanaka@elecbits.in", password: "odm123", department: "ODM", additionalDepartments: [], tier: "Manager", active: true, createdAt: daysAgo(155) },
-  { id: "u-odm-usr", name: "Yuki Sato", email: "yuki.sato@elecbits.in", password: "odmuser123", department: "ODM", additionalDepartments: [], tier: "User", active: true, createdAt: daysAgo(125) },
-
-  { id: "u-hr-mgr", name: "Mira Hassan", email: "mira.hassan@elecbits.in", password: "hr123", department: "HR", additionalDepartments: [], tier: "Manager", active: true, createdAt: daysAgo(165) },
-  { id: "u-hr-usr", name: "Grace Lin", email: "grace.lin@elecbits.in", password: "hruser123", department: "HR", additionalDepartments: [], tier: "User", active: true, createdAt: daysAgo(135) },
-
-  { id: "u-prod-mgr", name: "Theo Brandt", email: "theo.brandt@elecbits.in", password: "product123", department: "Product", additionalDepartments: [], tier: "Manager", active: true, createdAt: daysAgo(145) },
-  { id: "u-prod-usr", name: "Isla Wong", email: "isla.wong@elecbits.in", password: "productuser123", department: "Product", additionalDepartments: [], tier: "User", active: true, createdAt: daysAgo(120) },
-
-  { id: "u-mktg-mgr", name: "Nina Osei", email: "nina.osei@elecbits.in", password: "marketing123", department: "Marketing", additionalDepartments: [], tier: "Manager", active: true, createdAt: daysAgo(150) },
-  { id: "u-mktg-usr", name: "Marco Diaz", email: "marco.diaz@elecbits.in", password: "marketinguser123", department: "Marketing", additionalDepartments: [], tier: "User", active: true, createdAt: daysAgo(110) },
-];
+// Seeded into the crm-users collection on first run. Just the bootstrap admin
+// now — all other users are created dynamically via the Employees screen (which
+// provisions a real Supabase Auth login through /api/admin).
+const SEED_USERS = BOOTSTRAP_ADMIN ? [BOOTSTRAP_ADMIN] : [];
 
 
 
@@ -60,5 +65,5 @@ const TYPES = ["Box Build", "ODM"];
 
 export {
   STAGES, APPROVAL_GATES, DEPARTMENTS, EXECUTION_DEPARTMENTS,
-  BUDGET_VISIBLE_DEPARTMENTS, TIERS, daysAgo, DEFAULT_USERS, TYPES,
+  BUDGET_VISIBLE_DEPARTMENTS, TIERS, daysAgo, BOOTSTRAP_ADMIN, SEED_USERS, TYPES,
 };

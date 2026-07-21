@@ -19,7 +19,7 @@ elecbits-sales-tool/
 └── src/
     ├── main.tsx            # React entry point
     ├── App.tsx             # all UI components + the app shell
-    ├── constants.ts        # STAGES, DEPARTMENTS, TIERS, TYPES, DEFAULT_USERS, …
+    ├── constants.ts        # STAGES, DEPARTMENTS, TIERS, TYPES, BOOTSTRAP_ADMIN, …
     ├── globals.d.ts        # window.storage type declaration
     ├── data/
     │   └── sampleData.ts   # SAMPLE_CLIENTS / LEADS / PROJECTS / TASKS / WORK_UPDATES
@@ -43,15 +43,18 @@ npm run dev      # http://localhost:5173
 npm run build    # production build → dist/
 ```
 
-### Test logins (from `src/constants.ts` → DEFAULT_USERS)
+### Users (dynamic — no hardcoded accounts)
 
-| Role        | Email                     | Password        |
-|-------------|---------------------------|-----------------|
-| Main Admin  | sam.okafor@elecbits.in    | admin123        |
-| Sales Mgr   | alex.rao@elecbits.in      | sales123        |
-| Sales User  | jamie.lin@elecbits.in     | salesuser123    |
+There are no hardcoded users. On first run the app seeds a **single bootstrap
+Main Admin** from env vars (`VITE_BOOTSTRAP_ADMIN_EMAIL` / `..._NAME`); its
+Supabase Auth login is created by `npm run seed` from `BOOTSTRAP_ADMIN_EMAIL` /
+`BOOTSTRAP_ADMIN_PASSWORD`. Log in as that admin, then create everyone else from
+the **Employees** screen (each new employee gets a real Supabase Auth login via
+`/api/admin`).
 
-(One Manager + one User per department; see `DEFAULT_USERS` for the full list.)
+In dev builds only, the login screen still shows a quick-login panel for any
+dynamically-created users (whose password is stored in the `crm-users` blob); it
+is hidden in production.
 
 ## Backend (Supabase + Vercel)
 
@@ -63,11 +66,12 @@ step-by-step setup + deploy guide.** In short:
   in the `collections` table (`supabase/schema.sql`). `lib/storage.ts` reads/writes
   it via `@supabase/supabase-js`, keeping the same `loadList` / `saveList`
   interface, so `App.tsx` is untouched.
-- **Auth** — Supabase Auth (`signInWithPassword`). Login accounts are seeded by
-  `scripts/seed-auth.mjs` (`npm run seed`); the user's profile (tier/department)
-  is resolved from the `crm-users` collection. Creating/deleting an employee in
-  the app also creates/deletes their login via the `/api/admin` serverless
-  function (service-role, Main-Admin-gated).
+- **Auth** — Supabase Auth (`signInWithPassword`). Only the bootstrap admin is
+  seeded (`scripts/seed-auth.mjs` → `npm run seed`); everyone else is created
+  dynamically in-app. The user's profile (tier/department) is resolved from the
+  `crm-users` collection. Creating/deleting an employee in the app also
+  creates/deletes their login via the `/api/admin` serverless function
+  (service-role, Main-Admin-gated).
 - **AI note helper** — `lib/ai.ts` calls the `/api/claude` serverless function,
   which holds `ANTHROPIC_API_KEY` server-side and forwards to the Anthropic API.
 
@@ -79,4 +83,6 @@ Environment variables are documented in `.env.example`.
   app enforces role/department visibility on the client. Harden with
   per-collection/per-row policies later.
 - Whole-collection last-write-wins concurrency (fine for a small team).
-- Seeded demo passwords are simple — change or remove those users before real use.
+- Set a strong `BOOTSTRAP_ADMIN_PASSWORD` before seeding; change it after first
+  login. Dynamically-created users' passwords are stored in the `crm-users` blob
+  (prototype-grade) — a later hardening step should stop storing them client-side.

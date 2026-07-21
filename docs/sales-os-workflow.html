@@ -1,0 +1,426 @@
+<title>Elecbits Sales OS — How the RFQ Pipeline Works</title>
+<style>
+  :root {
+    --bg: #eef1f7;
+    --surface: #ffffff;
+    --surface-2: #f6f8fc;
+    --ink: #0f1729;
+    --ink-2: #46506a;
+    --ink-3: #7b849c;
+    --border: #dde2ed;
+    --border-strong: #c7cfe0;
+    --accent: #3d5afe;
+    --accent-ink: #2334c2;
+    --accent-bg: #e7ebff;
+    --amber: #b26f0a;
+    --amber-bg: #fbf0d9;
+    --green: #0a8f5b;
+    --green-bg: #dcf3e9;
+    --red: #cf3a3a;
+    --red-bg: #fae2e2;
+    --shadow: 0 1px 2px rgba(15,23,41,.04), 0 8px 24px rgba(15,23,41,.05);
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0f1c;
+      --surface: #121b2f;
+      --surface-2: #0d1524;
+      --ink: #e9edf7;
+      --ink-2: #a4aec6;
+      --ink-3: #6c7893;
+      --border: #223049;
+      --border-strong: #33415f;
+      --accent: #6d84ff;
+      --accent-ink: #9fb1ff;
+      --accent-bg: #182142;
+      --amber: #e0a44a;
+      --amber-bg: #2a2113;
+      --green: #45cc8f;
+      --green-bg: #0f2b21;
+      --red: #f0736f;
+      --red-bg: #2d1719;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #eef1f7; --surface: #ffffff; --surface-2: #f6f8fc; --ink: #0f1729; --ink-2: #46506a; --ink-3: #7b849c;
+    --border: #dde2ed; --border-strong: #c7cfe0; --accent: #3d5afe; --accent-ink: #2334c2; --accent-bg: #e7ebff;
+    --amber: #b26f0a; --amber-bg: #fbf0d9; --green: #0a8f5b; --green-bg: #dcf3e9; --red: #cf3a3a; --red-bg: #fae2e2;
+    --shadow: 0 1px 2px rgba(15,23,41,.04), 0 8px 24px rgba(15,23,41,.05);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0f1c; --surface: #121b2f; --surface-2: #0d1524; --ink: #e9edf7; --ink-2: #a4aec6; --ink-3: #6c7893;
+    --border: #223049; --border-strong: #33415f; --accent: #6d84ff; --accent-ink: #9fb1ff; --accent-bg: #182142;
+    --amber: #e0a44a; --amber-bg: #2a2113; --green: #45cc8f; --green-bg: #0f2b21; --red: #f0736f; --red-bg: #2d1719;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .page {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+    min-height: 100vh;
+    padding: 40px 24px 56px;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--accent-ink); font-weight: 600;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .bolt { width: 15px; height: 15px; color: var(--accent); flex: none; }
+
+  h1 {
+    font-size: clamp(27px, 4.2vw, 41px);
+    font-weight: 820; letter-spacing: -.025em; line-height: 1.05;
+    text-wrap: balance; margin: 14px 0 0;
+  }
+  .lede {
+    margin: 12px 0 0; max-width: 68ch; font-size: 15.5px; color: var(--ink-2);
+  }
+  .lede b { color: var(--ink); font-weight: 640; }
+
+  .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+  .toggle {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em;
+    color: var(--ink-2); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 999px; padding: 7px 13px; cursor: pointer; flex: none; box-shadow: var(--shadow);
+  }
+  .toggle:hover { border-color: var(--border-strong); color: var(--ink); }
+  .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  section { margin-top: 40px; }
+  .band-label {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; margin: 0 0 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .band-label::after { content: ""; height: 1px; background: var(--border); flex: 1; }
+
+  /* ---- Intake mini-flow ---- */
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .chip {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 13px 17px; box-shadow: var(--shadow); min-width: 148px;
+  }
+  .chip .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent-ink); font-weight: 600; }
+  .chip .v { font-weight: 680; font-size: 15px; margin-top: 3px; }
+  .chip .d { font-size: 12.5px; color: var(--ink-2); margin-top: 4px; }
+  .arrow {
+    align-self: center; color: var(--ink-3); font-family: var(--mono);
+    padding: 0 14px; font-size: 18px; font-weight: 700;
+  }
+  .downlink { display: flex; justify-content: center; color: var(--border-strong); font-size: 20px; margin: 6px 0 -6px; }
+  .chip.pend { border-color: var(--amber); background: var(--amber-bg); }
+  .chip.pend .k { color: var(--amber); }
+  .chip.appr { border-color: var(--accent); }
+  .chip.appr .k { color: var(--accent-ink); }
+  .act.ghost { border-style: dashed; }
+  .act .w.muted { color: var(--red); }
+  .hint { font-size: 12.5px; color: var(--ink-3); margin: 12px 0 0; }
+  .hint b { color: var(--ink-2); font-weight: 600; }
+
+  /* ---- Pipeline ---- */
+  .pipe-scroll { overflow-x: auto; padding-bottom: 8px; }
+  .pipe { display: flex; align-items: stretch; gap: 0; min-width: min-content; }
+  .stage {
+    position: relative; background: var(--surface); border: 1px solid var(--border);
+    border-top: 3px solid var(--tone, var(--accent)); border-radius: 12px;
+    padding: 15px 16px 16px; box-shadow: var(--shadow);
+    flex: 1 1 0; min-width: 176px;
+  }
+  .stage .idx { font-family: var(--mono); font-size: 12px; color: var(--ink-3); font-weight: 600; letter-spacing: .04em; }
+  .stage .nm { font-weight: 720; font-size: 16px; letter-spacing: -.01em; margin-top: 2px; }
+  .pill {
+    display: inline-block; font-family: var(--mono); font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    font-weight: 700; padding: 3px 8px; border-radius: 999px; margin-top: 9px;
+    background: var(--tone-bg); color: var(--tone);
+  }
+  .who { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); margin-top: 10px; line-height: 1.45; }
+  .who b { color: var(--ink); font-weight: 640; }
+  .note { font-size: 11.5px; color: var(--tone); margin-top: 8px; font-weight: 560; }
+  .conn { align-self: center; color: var(--border-strong); font-family: var(--mono); font-size: 17px; font-weight: 700; padding: 0 7px; flex: none; }
+
+  .tone-gate { --tone: var(--amber); --tone-bg: var(--amber-bg); }
+  .tone-decide { --tone: var(--accent); --tone-bg: var(--accent-bg); }
+  .tone-won { --tone: var(--green); --tone-bg: var(--green-bg); }
+
+  .offramp {
+    display: flex; align-items: center; gap: 14px; margin-top: 16px;
+    background: var(--red-bg); border: 1px solid transparent; border-radius: 12px; padding: 12px 16px;
+  }
+  .offramp .tag {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+    color: var(--red); background: var(--surface); border: 1px solid var(--red); border-radius: 999px; padding: 4px 11px; flex: none;
+  }
+  .offramp p { margin: 0; font-size: 13px; color: var(--ink-2); }
+  .offramp p b { color: var(--ink); }
+
+  /* ---- Two-column legends ---- */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 21px; box-shadow: var(--shadow); }
+  .card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 740; letter-spacing: -.01em; }
+  .card .sub { font-size: 12.5px; color: var(--ink-3); margin: 0 0 15px; }
+  .row { display: flex; gap: 13px; padding: 11px 0; border-top: 1px solid var(--border); }
+  .row:first-of-type { border-top: 0; }
+  .badge {
+    font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+    padding: 4px 9px; border-radius: 8px; height: fit-content; white-space: nowrap; flex: none;
+    background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--border);
+  }
+  .badge.b-accent { background: var(--accent-bg); color: var(--accent-ink); border-color: transparent; }
+  .badge.b-green { background: var(--green-bg); color: var(--green); border-color: transparent; }
+  .badge.b-amber { background: var(--amber-bg); color: var(--amber); border-color: transparent; }
+  .row .txt { font-size: 13px; color: var(--ink-2); }
+  .row .txt b { color: var(--ink); font-weight: 650; display: block; font-size: 13.5px; }
+
+  /* ---- Supporting actions ---- */
+  .grid6 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .act { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 15px; box-shadow: var(--shadow); }
+  .act .t { font-weight: 680; font-size: 14px; }
+  .act .w { font-family: var(--mono); font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--accent-ink); margin-top: 4px; font-weight: 600; }
+  .act .b { font-size: 12.5px; color: var(--ink-2); margin-top: 6px; }
+
+  footer {
+    margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    font-size: 12px; color: var(--ink-3);
+  }
+  footer .model { font-family: var(--mono); }
+  footer .model b { color: var(--ink-2); font-weight: 600; }
+
+  @media (max-width: 720px) {
+    .cols, .grid6 { grid-template-columns: 1fr; }
+    .page { padding: 28px 16px 40px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .stage, .chip, .card, .act { animation: rise .5s cubic-bezier(.2,.7,.2,1) both; }
+    .stage:nth-child(2){animation-delay:.04s}.stage:nth-child(4){animation-delay:.08s}
+    .stage:nth-child(6){animation-delay:.12s}.stage:nth-child(8){animation-delay:.16s}.stage:nth-child(10){animation-delay:.2s}
+    @keyframes rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+  }
+  @media print {
+    .toggle { display: none; }
+    .page { padding: 0; background: #fff; }
+    .stage, .chip, .card, .act { box-shadow: none; }
+  }
+</style>
+
+<div class="page">
+  <div class="wrap">
+
+    <div class="topbar">
+      <div>
+        <div class="eyebrow">
+          <svg class="bolt" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg>
+          Elecbits · Sales OS
+        </div>
+        <h1>How the RFQ pipeline works</h1>
+        <p class="lede"><b>Leads</b> become <b>Clients</b>; Clients get <b>RFQs</b>; each RFQ walks a gated pipeline — every gate needs a logged approval — until it's <b>Won</b> and handed to Box&nbsp;Build / ODM to build.</p>
+      </div>
+      <button class="toggle" id="themeToggle" type="button">◐ Theme</button>
+    </div>
+
+    <!-- GETTING IN -->
+    <section>
+      <p class="band-label">Getting in · accounts &amp; access</p>
+      <div class="flow">
+        <div class="chip">
+          <div class="k">New person</div>
+          <div class="v">Sign up</div>
+          <div class="d">Name, department, employee code (EB-XXXX-XXX), password.</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="chip pend">
+          <div class="k">Awaiting review</div>
+          <div class="v">Pending</div>
+          <div class="d">Account created but can't sign in yet.</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="chip appr">
+          <div class="k">Employees screen</div>
+          <div class="v">Admin approves</div>
+          <div class="d">Main Admin activates + confirms role &amp; department.</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="chip">
+          <div class="k">Now active</div>
+          <div class="v">Sign in</div>
+          <div class="d">Pick your department → into the app.</div>
+        </div>
+      </div>
+      <p class="hint"><b>Existing users</b> skip signup and just sign in. A missing, pending, or deactivated account is turned away with a clear message.</p>
+
+      <div class="grid6" style="margin-top:18px">
+        <div class="act"><div class="t">Sign In</div><div class="w">Email + password</div><div class="b">Active accounts only. The main way in.</div></div>
+        <div class="act"><div class="t">Create Account</div><div class="w">Self-signup</div><div class="b">Lands as Pending for admin approval.</div></div>
+        <div class="act"><div class="t">Reset Password</div><div class="w">Knows current</div><div class="b">Verify old password, set a new one.</div></div>
+        <div class="act"><div class="t">Forgot Password</div><div class="w">Emailed link</div><div class="b">Secure link → set-new-password screen.</div></div>
+        <div class="act ghost"><div class="t">Sign in with Google</div><div class="w muted">Not enabled yet</div><div class="b">Placeholder until SSO is switched on.</div></div>
+      </div>
+      <div class="downlink">▼</div>
+    </section>
+
+    <!-- INTAKE -->
+    <section>
+      <p class="band-label">Intake · run by Sales</p>
+      <div class="flow">
+        <div class="chip">
+          <div class="k">Step 1</div>
+          <div class="v">Lead</div>
+          <div class="d">Inbound prospect — name, company, contact. Starts <em>Pending</em>.</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="chip">
+          <div class="k">Step 2 · approve</div>
+          <div class="v">Client</div>
+          <div class="d">Approving a lead auto-creates the Client. (Reject with a reason instead.)</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="chip">
+          <div class="k">Step 3 · create</div>
+          <div class="v">RFQ</div>
+          <div class="d">Raise a Request for Quote against the Client. Enters the pipeline.</div>
+        </div>
+      </div>
+      <div class="downlink">▼</div>
+    </section>
+
+    <!-- PIPELINE -->
+    <section>
+      <p class="band-label">The pipeline · each stage change is logged</p>
+      <div class="pipe-scroll">
+        <div class="pipe">
+
+          <div class="stage tone-gate">
+            <div class="idx">01</div>
+            <div class="nm">Dept Review</div>
+            <span class="pill">Gate</span>
+            <div class="who">Approve: <b>Box&nbsp;Build / ODM Head</b> or Admin</div>
+            <div class="note">→ Project ID assigned</div>
+          </div>
+          <div class="conn">›</div>
+
+          <div class="stage tone-gate">
+            <div class="idx">02</div>
+            <div class="nm">Technical Review</div>
+            <span class="pill">Gate</span>
+            <div class="who">Approve: <b>Sales</b> or Admin</div>
+          </div>
+          <div class="conn">›</div>
+
+          <div class="stage tone-gate">
+            <div class="idx">03</div>
+            <div class="nm">Quotation</div>
+            <span class="pill">Gate</span>
+            <div class="who">Approve: <b>Sales</b> or Admin<br>Quote sent to customer</div>
+          </div>
+          <div class="conn">›</div>
+
+          <div class="stage tone-decide">
+            <div class="idx">04</div>
+            <div class="nm">Approval</div>
+            <span class="pill">Decision</span>
+            <div class="who">Decide: <b>Won</b> or <b>Lost</b></div>
+          </div>
+          <div class="conn">›</div>
+
+          <div class="stage tone-won">
+            <div class="idx">05</div>
+            <div class="nm">Won</div>
+            <span class="pill">Outcome</span>
+            <div class="who">Deal closed → <b>build begins</b></div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="offramp">
+        <span class="tag">↘ Lost</span>
+        <p>A <b>reject at any gate</b>, or a <b>Lost decision at Approval</b>, ends the deal here — with the reason kept in the project history.</p>
+      </div>
+    </section>
+
+    <!-- LEGENDS -->
+    <section>
+      <div class="cols">
+        <div class="card">
+          <h3>Who's who — roles</h3>
+          <p class="sub">Set per person on the Employees screen.</p>
+          <div class="row">
+            <span class="badge b-amber">Main Admin</span>
+            <div class="txt"><b>Sees & does everything</b>Manages employees, approves any gate, overrides.</div>
+          </div>
+          <div class="row">
+            <span class="badge b-accent">Manager</span>
+            <div class="txt"><b>Department Head</b>Runs their department, approves its gate, assigns their team.</div>
+          </div>
+          <div class="row">
+            <span class="badge">User</span>
+            <div class="txt"><b>Employee</b>Works the projects assigned to them; logs updates.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Who's who — departments</h3>
+          <p class="sub">The four departments the tool uses.</p>
+          <div class="row">
+            <span class="badge b-accent">Sales</span>
+            <div class="txt"><b>Originates</b>Leads, RFQs, call logs, and quotes.</div>
+          </div>
+          <div class="row">
+            <span class="badge b-green">Box Build</span>
+            <div class="txt"><b>Executes</b>Builds projects assigned to it; sees budget.</div>
+          </div>
+          <div class="row">
+            <span class="badge b-green">ODM</span>
+            <div class="txt"><b>Executes</b>Builds projects assigned to it; sees budget.</div>
+          </div>
+          <div class="row">
+            <span class="badge">Product</span>
+            <div class="txt"><b>Participant</b>General access; not an execution team.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SUPPORTING ACTIONS -->
+    <section>
+      <p class="band-label">On every project</p>
+      <div class="grid6">
+        <div class="act"><div class="t">Assignees</div><div class="w">Exec Head</div><div class="b">Manager picks who on the team builds it.</div></div>
+        <div class="act"><div class="t">Call logs</div><div class="w">Sales · Admin</div><div class="b">Record customer calls against the deal.</div></div>
+        <div class="act"><div class="t">Notes</div><div class="w">Anyone editing · AI assist</div><div class="b">Freeform notes, with an optional AI helper.</div></div>
+        <div class="act"><div class="t">Budget</div><div class="w">Box Build · ODM · Admin</div><div class="b">Figures visible only to execution + admin.</div></div>
+        <div class="act"><div class="t">Tasks</div><div class="w">All · Head sees dept</div><div class="b">To-dos tracked on the Tasks tab.</div></div>
+        <div class="act"><div class="t">Work Updates</div><div class="w">All</div><div class="b">Running activity / progress log.</div></div>
+      </div>
+    </section>
+
+    <footer>
+      <span>Elecbits Sales OS — pipeline reference. Sales creates · Box Build &amp; ODM execute.</span>
+      <span class="model">stored as <b>crm-leads · crm-clients · crm-projects · crm-tasks · crm-work-updates · crm-users</b></span>
+    </footer>
+
+  </div>
+</div>
+
+<script>
+  (function () {
+    var btn = document.getElementById("themeToggle");
+    var root = document.documentElement;
+    btn.addEventListener("click", function () {
+      var cur = root.getAttribute("data-theme");
+      if (!cur) cur = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      root.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+    });
+  })();
+</script>

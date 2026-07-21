@@ -1,0 +1,254 @@
+<title>Elecbits Sales OS — What's Left</title>
+<style>
+  :root {
+    --bg: #eef1f7; --surface: #ffffff; --surface-2: #f6f8fc;
+    --ink: #0f1729; --ink-2: #46506a; --ink-3: #7b849c;
+    --border: #dde2ed; --border-strong: #c7cfe0;
+    --accent: #3d5afe; --accent-ink: #2334c2; --accent-bg: #e7ebff;
+    --amber: #b26f0a; --amber-bg: #fbf0d9;
+    --green: #0a8f5b; --green-bg: #dcf3e9;
+    --red: #cf3a3a; --red-bg: #fae2e2;
+    --slate: #5a647d; --slate-bg: #eef1f7;
+    --shadow: 0 1px 2px rgba(15,23,41,.04), 0 8px 24px rgba(15,23,41,.05);
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0f1c; --surface: #121b2f; --surface-2: #0d1524;
+      --ink: #e9edf7; --ink-2: #a4aec6; --ink-3: #6c7893;
+      --border: #223049; --border-strong: #33415f;
+      --accent: #6d84ff; --accent-ink: #9fb1ff; --accent-bg: #182142;
+      --amber: #e0a44a; --amber-bg: #2a2113;
+      --green: #45cc8f; --green-bg: #0f2b21;
+      --red: #f0736f; --red-bg: #2d1719;
+      --slate: #97a1ba; --slate-bg: #182135;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #eef1f7; --surface: #ffffff; --surface-2: #f6f8fc; --ink: #0f1729; --ink-2: #46506a; --ink-3: #7b849c;
+    --border: #dde2ed; --border-strong: #c7cfe0; --accent: #3d5afe; --accent-ink: #2334c2; --accent-bg: #e7ebff;
+    --amber: #b26f0a; --amber-bg: #fbf0d9; --green: #0a8f5b; --green-bg: #dcf3e9; --red: #cf3a3a; --red-bg: #fae2e2;
+    --slate: #5a647d; --slate-bg: #eef1f7; --shadow: 0 1px 2px rgba(15,23,41,.04), 0 8px 24px rgba(15,23,41,.05);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0f1c; --surface: #121b2f; --surface-2: #0d1524; --ink: #e9edf7; --ink-2: #a4aec6; --ink-3: #6c7893;
+    --border: #223049; --border-strong: #33415f; --accent: #6d84ff; --accent-ink: #9fb1ff; --accent-bg: #182142;
+    --amber: #e0a44a; --amber-bg: #2a2113; --green: #45cc8f; --green-bg: #0f2b21; --red: #f0736f; --red-bg: #2d1719;
+    --slate: #97a1ba; --slate-bg: #182135; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .page { background: var(--bg); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; line-height: 1.5; min-height: 100vh; padding: 40px 24px 56px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+
+  .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent-ink); font-weight: 600; display: flex; align-items: center; gap: 9px; }
+  .bolt { width: 15px; height: 15px; color: var(--accent); flex: none; }
+  h1 { font-size: clamp(27px, 4.2vw, 41px); font-weight: 820; letter-spacing: -.025em; line-height: 1.05; text-wrap: balance; margin: 14px 0 0; }
+  .lede { margin: 12px 0 0; max-width: 66ch; font-size: 15.5px; color: var(--ink-2); }
+  .lede b { color: var(--ink); font-weight: 640; }
+  .toggle { font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; color: var(--ink-2); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 7px 13px; cursor: pointer; flex: none; box-shadow: var(--shadow); }
+  .toggle:hover { border-color: var(--border-strong); color: var(--ink); }
+  .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  section { margin-top: 38px; }
+  .band-label { font-family: var(--mono); font-size: 11.5px; letter-spacing: .13em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin: 0 0 14px; display: flex; align-items: center; gap: 10px; }
+  .band-label::after { content: ""; height: 1px; background: var(--border); flex: 1; }
+  .band-label .count { color: var(--ink-2); }
+
+  /* Done strip */
+  .done-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+  .done { display: flex; align-items: center; gap: 9px; background: var(--green-bg); border: 1px solid transparent; border-radius: 999px; padding: 8px 14px 8px 11px; font-size: 13px; font-weight: 600; color: var(--ink); }
+  .done .tick { color: var(--green); font-weight: 800; font-size: 14px; }
+
+  /* Board */
+  .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; align-items: start; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px 19px 8px; box-shadow: var(--shadow); border-top: 3px solid var(--tone, var(--accent)); }
+  .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .cat { font-family: var(--mono); font-size: 10px; letter-spacing: .09em; text-transform: uppercase; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--tone-bg); color: var(--tone); }
+  .card-head h3 { margin: 0; font-size: 14.5px; font-weight: 730; letter-spacing: -.01em; }
+  ul.items { list-style: none; margin: 4px 0 0; padding: 0; }
+  li.item { display: flex; gap: 11px; padding: 11px 0; border-top: 1px solid var(--border); }
+  li.item:first-child { border-top: 0; }
+  .box { width: 15px; height: 15px; border: 1.6px solid var(--border-strong); border-radius: 4px; margin-top: 2px; flex: none; }
+  .item .t { font-size: 13.5px; font-weight: 650; color: var(--ink); }
+  .item .m { font-size: 12.5px; color: var(--ink-2); margin-top: 3px; }
+  .item .m code { font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; color: var(--ink-2); }
+
+  .tone-decide { --tone: var(--accent); --tone-bg: var(--accent-bg); }
+  .tone-config { --tone: var(--amber); --tone-bg: var(--amber-bg); }
+  .tone-verify { --tone: var(--accent); --tone-bg: var(--accent-bg); }
+  .tone-later  { --tone: var(--slate); --tone-bg: var(--slate-bg); }
+  .tone-house  { --tone: var(--slate); --tone-bg: var(--slate-bg); }
+  .tone-run    { --tone: var(--ink-3); --tone-bg: var(--surface-2); }
+
+  /* Runtime status card */
+  .wide { grid-column: 1 / -1; }
+  .subhead { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin: 14px 0 2px; }
+  .subhead:first-of-type { margin-top: 4px; }
+  li.run { display: flex; gap: 12px; align-items: flex-start; padding: 9px 0; border-top: 1px solid var(--border); }
+  li.run:first-child { border-top: 0; }
+  .st { font-family: var(--mono); font-size: 9.5px; letter-spacing: .05em; text-transform: uppercase; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; flex: none; min-width: 96px; text-align: center; }
+  .st.ok { background: var(--green-bg); color: var(--green); }
+  .st.ver { background: var(--green); color: #fff; }
+  :root[data-theme="dark"] .st.ver, .st.ver { color: #fff; }
+  .st.cfg { background: var(--amber-bg); color: var(--amber); }
+  .st.vercel { background: var(--red-bg); color: var(--red); }
+  .st.ph { background: var(--slate-bg); color: var(--slate); }
+  .run .rt { font-size: 13.5px; font-weight: 650; color: var(--ink); }
+  .run .rm { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 14px 0 0; font-size: 11.5px; color: var(--ink-3); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-3); }
+  footer .git { font-family: var(--mono); }
+  footer .git b { color: var(--green); font-weight: 600; }
+
+  @media (max-width: 720px) { .board { grid-template-columns: 1fr; } .page { padding: 28px 16px 40px; } }
+  @media (prefers-reduced-motion: no-preference) {
+    .card, .done { animation: rise .5s cubic-bezier(.2,.7,.2,1) both; }
+    .card:nth-child(2){animation-delay:.05s}.card:nth-child(3){animation-delay:.1s}
+    .card:nth-child(4){animation-delay:.15s}.card:nth-child(5){animation-delay:.2s}
+    @keyframes rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+  }
+  @media print { .toggle { display: none; } .page { padding: 0; background: #fff; } .card, .done { box-shadow: none; } }
+</style>
+
+<div class="page">
+  <div class="wrap">
+
+    <div class="topbar">
+      <div>
+        <div class="eyebrow">
+          <svg class="bolt" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg>
+          Elecbits · Sales OS
+        </div>
+        <h1>What's left</h1>
+        <p class="lede">The code is <b>built &amp; compiling</b> — but the buttons are <b>not yet click-tested</b> end to end. What remains is a few <b>decisions</b>, some Supabase <b>config toggles</b>, and a real <b>run-through</b>. Nothing is committed; everything is local.</p>
+      </div>
+      <button class="toggle" id="themeToggle" type="button">◐ Theme</button>
+    </div>
+
+    <!-- DONE -->
+    <section>
+      <p class="band-label">Done today</p>
+      <div class="done-grid">
+        <span class="done"><span class="tick">✓</span> Finance-style login + signup (pending approval)</span>
+        <span class="done"><span class="tick">✓</span> Tailwind added, scoped so the app is untouched</span>
+        <span class="done"><span class="tick">✓</span> Dynamic users + bootstrap admin (no hardcoded 15)</span>
+        <span class="done"><span class="tick">✓</span> Departments = Sales · ODM · Box Build · Product</span>
+        <span class="done"><span class="tick">✓</span> One-page pipeline diagram</span>
+      </div>
+    </section>
+
+    <!-- RUNTIME STATUS -->
+    <section>
+      <p class="band-label">Do the buttons actually work? <span class="count">· built &amp; compiled, not yet click-tested</span></p>
+      <div class="board">
+        <div class="card tone-run wide">
+          <div class="card-head"><span class="cat">Runtime</span><h3>Per-button / workflow status</h3></div>
+
+          <p class="subhead">Login page</p>
+          <ul class="items">
+            <li class="run"><span class="st ver">✓ Verified</span><div><div class="rt">Sign In</div><div class="rm">Ran the exact path against live Supabase: auth ok → gate pass (Sam Okafor · Main Admin) → RLS read ok → sign out. No data touched.</div></div></li>
+            <li class="run"><span class="st ver">✓ Verified</span><div><div class="rt">Reset password</div><div class="rm">Ran on a throwaway user: wrong current rejected, change applied, new password signs in, old one stops working. User deleted after.</div></div></li>
+            <li class="run"><span class="st ver">✓ Mechanism + redirect</span><div><div class="rt">Forgot password</div><div class="rm">Recovery verified end-to-end. Redirect confirmed: <code>localhost:5175</code> allowlisted, prod Site URL = elecbits-sales-tool.vercel.app. Left: <b>email delivery (SMTP)</b> + one real inbox test (click the link).</div></div></li>
+            <li class="run"><span class="st ver">✓ Verified</span><div><div class="rt">Create Account (signup)</div><div class="rm">Email confirmation turned OFF; ran signup → pending row (RLS) → login blocked → approve → login ok, all pass. Cleaned up after.</div></div></li>
+            <li class="run"><span class="st ph">Placeholder</span><div><div class="rt">Sign in with Google</div><div class="rm">Shows "not enabled yet" by design.</div></div></li>
+          </ul>
+
+          <p class="subhead">Employees screen</p>
+          <ul class="items">
+            <li class="run"><span class="st ver">✓ Verified</span><div><div class="rt">Approve / Activate / Deactivate</div><div class="rm">Verified as part of the signup lifecycle: approve flipped pending→active and the user could then sign in.</div></div></li>
+            <li class="run"><span class="st ver">✓ Verified</span><div><div class="rt">Add user · Delete user</div><div class="rm">Ran the /api/admin handler with a real admin token: created a throwaway auth user + deleted it, ok. Still needs <code>vercel dev</code> / deploy to reach it from the UI (not under <code>npm run dev</code>).</div></div></li>
+          </ul>
+
+          <p class="subhead">Pipeline &amp; the rest (unchanged by this work)</p>
+          <ul class="items">
+            <li class="run"><span class="st ok">Likely OK</span><div><div class="rt">RFQ create · stage gates · approvals · leads · tasks · work updates</div><div class="rm">Client + Supabase collection writes — work locally. Not re-tested after the department change.</div></div></li>
+            <li class="run"><span class="st vercel">Needs Vercel</span><div><div class="rt">AI note helper</div><div class="rm">Calls /api/claude — serverless, so not under <code>npm run dev</code>.</div></div></li>
+          </ul>
+
+          <div class="legend">
+            <span><i style="background:var(--green)"></i> Likely OK — logic sound, prereqs met, not click-tested</span>
+            <span><i style="background:var(--amber)"></i> Needs a Supabase toggle</span>
+            <span><i style="background:var(--red)"></i> Needs Vercel (not under npm run dev)</span>
+            <span><i style="background:var(--slate)"></i> Placeholder by design</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REMAINING -->
+    <section>
+      <p class="band-label">To do <span class="count">· decisions, config &amp; checks</span></p>
+      <div class="board">
+
+        <div class="card tone-decide">
+          <div class="card-head"><span class="cat">Decide</span><h3>Your call</h3></div>
+          <ul class="items">
+            <li class="item"><span class="box"></span><div><div class="t">Keep local, or save to a branch</div><div class="m">Save today's work on a <b>separate branch</b> (not <code>main</code>) so it's kept without touching the live deploy.</div></div></li>
+            <li class="item"><span class="box"></span><div><div class="t">How to test the fresh flows</div><div class="m">Local shares the live Supabase. Use a <b>throwaway dev project</b>, or clear <code>crm-users</code>, to exercise bootstrap + pending signup.</div></div></li>
+          </ul>
+        </div>
+
+        <div class="card tone-config">
+          <div class="card-head"><span class="cat">Config</span><h3>Switch features on (Supabase)</h3></div>
+          <ul class="items">
+            <li class="item"><span class="box" style="background:var(--green);border-color:var(--green)"></span><div><div class="t" style="text-decoration:line-through;color:var(--ink-3)">Signup — turn OFF email confirmation</div><div class="m">Done ✓ — signup lifecycle now verified end to end.</div></div></li>
+            <li class="item"><span class="box"></span><div><div class="t">Forgot password — add redirect URL</div><div class="m">Auth → URL Configuration → add localhost + prod URLs.</div></div></li>
+            <li class="item"><span class="box"></span><div><div class="t">Google SSO — enable provider</div><div class="m">Optional; otherwise the button stays a clear placeholder.</div></div></li>
+            <li class="item"><span class="box"></span><div><div class="t">Set a real bootstrap password</div><div class="m"><code>BOOTSTRAP_ADMIN_PASSWORD</code> in <code>.env.local</code> before <code>npm run seed</code>.</div></div></li>
+          </ul>
+        </div>
+
+        <div class="card tone-verify">
+          <div class="card-head"><span class="cat">Verify</span><h3>Quick checks on localhost</h3></div>
+          <ul class="items">
+            <li class="item"><span class="box"></span><div><div class="t">Click-test the buttons end to end</div><div class="m">Run <code>vercel dev</code> (so <code>/api/*</code> works) and walk Sign in → RFQ → approve → Won, plus signup → approve.</div></div></li>
+            <li class="item"><span class="box"></span><div><div class="t">Eyeball the app pages</div><div class="m">Dashboard, New RFQ, Employees — confirm Tailwind left the UI intact.</div></div></li>
+            <li class="item"><span class="box"></span><div><div class="t">Reassign old-department users</div><div class="m">People in Finance/HR/etc. show a blank dept until moved to one of the four.</div></div></li>
+          </ul>
+        </div>
+
+        <div class="card tone-later">
+          <div class="card-head"><span class="cat">Later</span><h3>Parked — not started</h3></div>
+          <ul class="items">
+            <li class="item"><span class="box"></span><div><div class="t">Finance ↔ Sales unification</div><div class="m">Separate Supabase projects + Google-SSO identity bridge, pending-approval onboarding (the July 20 plan).</div></div></li>
+          </ul>
+        </div>
+
+        <div class="card tone-house">
+          <div class="card-head"><span class="cat">Housekeeping</span><h3>Loose ends</h3></div>
+          <ul class="items">
+            <li class="item"><span class="box"></span><div><div class="t">Dev server running on :5175</div><div class="m">Background process — stop it when you're done.</div></div></li>
+            <li class="item"><span class="box"></span><div><div class="t">Log today's work sheet</div><div class="m">Add <code>daily_work_sheet/2026-07-20.txt</code> for today's work.</div></div></li>
+          </ul>
+        </div>
+
+      </div>
+    </section>
+
+    <footer>
+      <span>Elecbits Sales OS — status board. All changes are local; live is untouched.</span>
+      <span class="git">nothing committed · <b>main @ 9f97dd8</b></span>
+    </footer>
+
+  </div>
+</div>
+
+<script>
+  (function () {
+    var btn = document.getElementById("themeToggle");
+    var root = document.documentElement;
+    btn.addEventListener("click", function () {
+      var cur = root.getAttribute("data-theme");
+      if (!cur) cur = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      root.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+    });
+  })();
+</script>

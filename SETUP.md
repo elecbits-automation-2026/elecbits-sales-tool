@@ -41,13 +41,17 @@ In Supabase: **Project Settings → API**. You need three values:
 > variable, never commit it, never paste it in the browser. It goes only in
 > `.env.local` (git-ignored) and in Vercel's server-side env vars.
 
-## 4. Create the login accounts (seed script)
+## 4. Create the bootstrap admin (seed script)
 
-The app fills in everyone's profile automatically on first login, but each
-person needs a Supabase Auth account to sign in. Create the 15 demo accounts:
+There are no hardcoded users. You seed **one** Main Admin so someone can log in
+and create everyone else in-app. The app seeds that admin's profile into
+`crm-users` on first run; the seed script creates its Supabase Auth login.
 
-1. Copy `.env.example` to `.env.local` and fill in at least `SUPABASE_URL` and
-   `SUPABASE_SERVICE_ROLE_KEY` (from step 3).
+1. Copy `.env.example` to `.env.local` and fill in:
+   - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (from step 3)
+   - `VITE_BOOTSTRAP_ADMIN_EMAIL` (and optionally `VITE_BOOTSTRAP_ADMIN_NAME`)
+   - `BOOTSTRAP_ADMIN_EMAIL` (must match the VITE one) and a strong
+     `BOOTSTRAP_ADMIN_PASSWORD`
 2. Run:
 
    ```bash
@@ -55,11 +59,10 @@ person needs a Supabase Auth account to sign in. Create the 15 demo accounts:
    npm run seed
    ```
 
-   You should see `✓ create` lines for each user. Re-running is safe (it skips
-   existing accounts).
+   You should see `✓ create <email> (bootstrap Main Admin)`. Re-running is safe
+   (it skips the admin if it already exists).
 
-The seeded logins are the ones listed in `README.md` (e.g.
-`sam.okafor@elecbits.in` / `admin123`).
+Then log in as that admin and add everyone else from the **Employees** screen.
 
 ---
 
@@ -70,8 +73,12 @@ Fill in the rest of `.env.local`:
 ```
 VITE_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
+VITE_BOOTSTRAP_ADMIN_EMAIL=admin@elecbits.in
+VITE_BOOTSTRAP_ADMIN_NAME=Elecbits Admin
 SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+BOOTSTRAP_ADMIN_EMAIL=admin@elecbits.in
+BOOTSTRAP_ADMIN_PASSWORD=a-strong-password
 ANTHROPIC_API_KEY=your-anthropic-key      # optional locally
 ```
 
@@ -81,9 +88,9 @@ Then:
 npm run dev      # http://localhost:5173
 ```
 
-Sign in with a seeded account. On the first sign-in the app seeds the sample
-clients/projects/leads/tasks into Supabase. Data now persists and is shared
-across everyone.
+Sign in as the bootstrap admin. On the first sign-in the app seeds the admin
+profile plus the sample clients/projects/leads/tasks into Supabase. Data now
+persists and is shared across everyone.
 
 > Note: `npm run dev` serves the front-end only — the `/api/*` functions run on
 > Vercel. Locally, the AI note helper and admin user-creation won't work unless
@@ -142,5 +149,7 @@ across everyone.
   stricter security, move to per-collection/per-row policies later.
 - Concurrent edits use last-write-wins on a whole collection (fine for a small
   team). A future step is per-row tables if you need finer-grained concurrency.
-- Passwords for seeded demo users are simple — change them (or delete the demo
-  users) before real use.
+- Use a strong `BOOTSTRAP_ADMIN_PASSWORD` and change it after first login.
+  Dynamically-created users' passwords are currently stored in the `crm-users`
+  blob (prototype-grade); a later hardening step should stop storing them
+  client-side.
