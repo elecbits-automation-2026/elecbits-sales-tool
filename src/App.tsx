@@ -957,16 +957,40 @@ function NoteModal({ onClose, onSave, userName }) {
 function ApprovalModal({ stage, onClose, onSubmit, userName }) {
   const [approver, setApprover] = useState(userName);
   const [comment, setComment] = useState("");
+  // Stage-specific fields.
+  const [feasibility, setFeasibility] = useState("Feasible");
+  const [techNotes, setTechNotes] = useState("");
+  const [leadTime, setLeadTime] = useState("");
+  const [quoteAmount, setQuoteAmount] = useState("");
+  const [validity, setValidity] = useState("");
+  const [error, setError] = useState("");
+
+  const isTech = stage === "Technical Review";
+  const isQuote = stage === "Quotation";
 
   function decide(decision) {
-    onSubmit({
+    if (decision === "Approved" && isQuote && !String(quoteAmount).trim()) {
+      setError("Enter the quoted amount before approving the quotation.");
+      return;
+    }
+    const record = {
       id: uid(),
       stage,
       approver,
       decision,
       comment,
       createdAt: new Date().toISOString(),
-    });
+    };
+    if (isTech) {
+      record.feasibility = feasibility;
+      record.techNotes = techNotes;
+      record.leadTime = leadTime;
+    }
+    if (isQuote) {
+      record.quoteAmount = quoteAmount;
+      record.validity = validity;
+    }
+    onSubmit(record);
   }
 
   return (
@@ -984,9 +1008,45 @@ function ApprovalModal({ stage, onClose, onSubmit, userName }) {
           <Field label="Approver">
             <input value={approver} onChange={(e) => setApprover(e.target.value)} />
           </Field>
+
+          {isTech && (
+            <>
+              <Field label="Feasibility">
+                <select value={feasibility} onChange={(e) => setFeasibility(e.target.value)}>
+                  <option>Feasible</option>
+                  <option>Needs clarification</option>
+                  <option>Not viable</option>
+                </select>
+              </Field>
+              <Field label="Technical notes / risks">
+                <textarea rows={3} value={techNotes} onChange={(e) => setTechNotes(e.target.value)} placeholder="Design constraints, risks, assumptions, specs still needed…" />
+              </Field>
+              <Field label="Estimated lead time">
+                <input value={leadTime} onChange={(e) => setLeadTime(e.target.value)} placeholder="e.g. 6–8 weeks" />
+              </Field>
+            </>
+          )}
+
+          {isQuote && (
+            <>
+              <Field label="Quoted amount">
+                <input type="number" value={quoteAmount} onChange={(e) => setQuoteAmount(e.target.value)} placeholder="e.g. 250000" />
+              </Field>
+              <Field label="Validity / terms">
+                <input value={validity} onChange={(e) => setValidity(e.target.value)} placeholder="e.g. valid 30 days, 50% advance" />
+              </Field>
+            </>
+          )}
+
           <Field label="Comment">
             <textarea rows={3} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Reasoning, conditions, or notes for the record…" />
           </Field>
+
+          {error && (
+            <div className="inline-warning">
+              <AlertTriangle size={13} /> {error}
+            </div>
+          )}
         </div>
         <div className="modal-actions">
           <button className="btn btn-danger" onClick={() => decide("Rejected")}>
@@ -1076,6 +1136,10 @@ function ProjectDetail({ project, client, users, projects, department, tier, use
         by: record.approver,
         at: new Date().toISOString(),
       });
+    }
+    // Approving the quotation records the quoted amount on the project itself.
+    if (project.stage === "Quotation" && record.decision === "Approved" && record.quoteAmount) {
+      patchData.quotedAmount = record.quoteAmount;
     }
     patch(patchData);
     setShowApprovalModal(false);
@@ -1425,6 +1489,17 @@ function ProjectDetail({ project, client, users, projects, department, tier, use
                 <li key={a.id}>
                   <span className={`chip chip-${a.decision === "Approved" ? "green" : "red"}`}>{a.decision}</span>
                   <span className="cell-sub">{a.stage} · {a.approver} · {timeAgo(a.createdAt)}</span>
+                  {a.feasibility && (
+                    <div className="approval-comment">
+                      Feasibility: {a.feasibility}{a.leadTime ? ` · Lead time: ${a.leadTime}` : ""}
+                    </div>
+                  )}
+                  {a.quoteAmount && (
+                    <div className="approval-comment">
+                      Quoted: {a.quoteAmount}{a.validity ? ` · ${a.validity}` : ""}
+                    </div>
+                  )}
+                  {a.techNotes && <div className="approval-comment">{a.techNotes}</div>}
                   {a.comment && <div className="approval-comment">{a.comment}</div>}
                 </li>
               ))}
