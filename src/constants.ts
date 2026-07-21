@@ -15,16 +15,14 @@ const STAGES = [
 // "Dept Review" can only be approved by the receiving department's Manager (or Main Admin) — see canApproveGate.
 const APPROVAL_GATES = ["Dept Review", "Technical Review", "Quotation"];
 
-// Sales creates RFQs/leads; Box Build and ODM execute the build work; Product is
-// also part of the tool. These are the only departments the Sales tool uses.
-const DEPARTMENTS = ["Sales", "ODM", "Box Build", "Product"];
+const DEPARTMENTS = ["Sales", "Finance", "Box Build", "ODM", "HR", "Product", "Marketing"];
 
 // Departments that execute build work — projects only become visible to them
 // once a PM explicitly assigns the project to that department.
 const EXECUTION_DEPARTMENTS = ["Box Build", "ODM"];
 
 // Departments allowed to see budget figures, regardless of tier.
-const BUDGET_VISIBLE_DEPARTMENTS = ["Box Build", "ODM"];
+const BUDGET_VISIBLE_DEPARTMENTS = ["Finance", "Box Build", "ODM"];
 
 const TIERS = ["Main Admin", "Manager", "User"];
 

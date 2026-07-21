@@ -26,6 +26,15 @@ export function LoginPage({ onLogin }) {
     setNotice("");
     setPassword("");
     setNewPassword("");
+    // A new-account form must start blank — don't carry over the email that was
+    // in the sign-in field (e.g. the admin's) into signup.
+    if (next === "signup") {
+      setEmail("");
+      setName("");
+      setDept("");
+      setDesignation("");
+      setEmployeeCode("");
+    }
   }
 
   async function submit() {
@@ -120,7 +129,7 @@ export function LoginPage({ onLogin }) {
               <>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1.5">Full Name</label>
-                  <input type="text" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitSignup()} placeholder="Your name" className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <input type="text" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitSignup()} placeholder="Your name" className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1.5">Department <span className="font-normal text-red-500">*</span></label>
@@ -131,7 +140,7 @@ export function LoginPage({ onLogin }) {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1.5">Employee Code <span className="font-normal text-red-500">*</span></label>
-                  <input type="text" value={employeeCode} onChange={(e) => setEmployeeCode(e.target.value.toUpperCase())} onKeyDown={(e) => e.key === "Enter" && submitSignup()} placeholder="EB-XXXX-XXX" className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <input type="text" autoComplete="off" value={employeeCode} onChange={(e) => setEmployeeCode(e.target.value.toUpperCase())} onKeyDown={(e) => e.key === "Enter" && submitSignup()} placeholder="EB-XXXX-XXX" className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1.5">Designation <span className="font-normal text-slate-400">(optional)</span></label>
@@ -141,12 +150,12 @@ export function LoginPage({ onLogin }) {
             )}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">Organization Email</label>
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && onEnter()} placeholder="your.name@elecbits.in" className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <input type="email" autoComplete={mode === "signup" ? "off" : "email"} value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && onEnter()} placeholder="your.name@elecbits.in" className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             {mode !== "forgot" && (
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">{mode === "reset" ? "Current Password" : "Password"}</label>
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && onEnter()} placeholder={mode === "signin" ? "Enter password" : mode === "reset" ? "Enter current password" : "At least 6 characters"} className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <input type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && onEnter()} placeholder={mode === "signin" ? "Enter password" : mode === "reset" ? "Enter current password" : "At least 6 characters"} className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
             )}
             {mode === "reset" && (
