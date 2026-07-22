@@ -8,7 +8,7 @@ export function Dashboard({ clients, projects, users, department, tier, userName
   const [q, setQ] = useState("");
   const [stageFilter, setStageFilter] = useState("All");
   const [typeFilter, setTypeFilter] = useState("All");
-  const [quickFilter, setQuickFilter] = useState(null); // null | "awaiting" | "mine"
+  const [quickFilter, setQuickFilter] = useState(null); // null | "awaiting" | "myapprovals" | "mine"
 
   const isMainAdmin = tier === "Main Admin";
   const isExecDept = EXECUTION_DEPARTMENTS.includes(department);
@@ -32,8 +32,25 @@ export function Dashboard({ clients, projects, users, department, tier, userName
     return true; // Finance / HR / Product / Marketing see everything, read-only.
   });
 
+  // Can the current user approve this project at its current stage? Mirrors
+  // ProjectDetail's gate rules for the PM-based chain: Dept Review = the dept
+  // head; Technical Review / Quotation / Approval = the PM or the dept head;
+  // Admin always.
+  function canApproveProject(p) {
+    const gate = APPROVAL_GATES.includes(p.stage) || p.stage === "Approval";
+    if (!gate) return false;
+    if (isMainAdmin) return true;
+    const isDeptHead = tier === "Manager" && department === p.department;
+    if (p.stage === "Dept Review") return isDeptHead;
+    const pmA = (p.assignees || []).find((a) => a.roleInProject === "Project Manager");
+    const isPM = !!pmA && pmA.name === userName;
+    return isDeptHead || isPM;
+  }
+  const myApprovalCount = scoped.filter(canApproveProject).length;
+
   const visible = scoped.filter((p) => {
     if (quickFilter === "awaiting" && !APPROVAL_GATES.includes(p.stage)) return false;
+    if (quickFilter === "myapprovals" && !canApproveProject(p)) return false;
     if (quickFilter === "mine" && p.createdBy !== userName && p.assignedTo !== userName) return false;
     if (stageFilter !== "All" && p.stage !== stageFilter) return false;
     if (typeFilter !== "All" && p.type !== typeFilter) return false;
@@ -112,11 +129,11 @@ export function Dashboard({ clients, projects, users, department, tier, userName
             <FileText size={14} /> My Requests
           </button>
         )}
-        {(department === "Sales" && tier === "Manager") || isMainAdmin ? (
-          <button className={`quick-action ${quickFilter === "awaiting" ? "active" : ""}`} onClick={() => setQuickFilter(quickFilter === "awaiting" ? null : "awaiting")}>
-            <ShieldCheck size={14} /> My Approvals
+        {(isMainAdmin || tier === "Manager" || myApprovalCount > 0) && (
+          <button className={`quick-action ${quickFilter === "myapprovals" ? "active" : ""}`} onClick={() => setQuickFilter(quickFilter === "myapprovals" ? null : "myapprovals")}>
+            <ShieldCheck size={14} /> My Approvals{myApprovalCount ? ` (${myApprovalCount})` : ""}
           </button>
-        ) : null}
+        )}
         <button className="quick-action" onClick={clearFilters}>
           <LayoutGrid size={14} /> All Projects
         </button>
@@ -241,15 +258,23 @@ export function Dashboard({ clients, projects, users, department, tier, userName
             <h3 className="panel-title">Leads by Stage</h3>
             <div className="stage-bars">
               {stageBars.map((s) => (
-                <div className="stage-bar-row" key={s.stage}>
+                <div
+                  className="stage-bar-row"
+                  key={s.stage}
+                  onClick={() => setStageFilter(stageFilter === s.stage ? "All" : s.stage)}
+                  style={{ cursor: "pointer" }}
+                  title={`Show ${s.stage} projects`}
+                >
                   <div className="stage-bar-label">
-                    <span>{s.stage}</span>
+                    <span style={{ color: stageFilter === s.stage ? "var(--blue)" : undefined, fontWeight: stageFilter === s.stage ? 700 : undefined }}>
+                      {s.stage}{stageFilter === s.stage ? " ▸" : ""}
+                    </span>
                     <span className="cell-sub">
                       {s.count} ({s.pct}%)
                     </span>
                   </div>
                   <div className="stage-bar-track">
-                    <div className={`stage-bar-fill stage-bar-${s.color}`} style={{ width: `${s.pct}%` }} />
+                    <div className={`stage-bar-fill stage-bar-${s.color}`} style={{ width: `${s.pct}%`, opacity: stageFilter === "All" || stageFilter === s.stage ? 1 : 0.35 }} />
                   </div>
                 </div>
               ))}
@@ -356,8 +381,16 @@ export function Dashboard({ clients, projects, users, department, tier, userName
               <p className="field-hint">No projects yet.</p>
             ) : (
               stageCounts.map((s) => (
-                <div className="kv" key={s.stage}>
-                  <span>{s.stage}</span>
+                <div
+                  className="kv"
+                  key={s.stage}
+                  onClick={() => setStageFilter(stageFilter === s.stage ? "All" : s.stage)}
+                  style={{ cursor: "pointer" }}
+                  title={`Show ${s.stage} projects`}
+                >
+                  <span style={{ color: stageFilter === s.stage ? "var(--blue)" : undefined, fontWeight: stageFilter === s.stage ? 700 : undefined }}>
+                    {s.stage}{stageFilter === s.stage ? " ▸" : ""}
+                  </span>
                   <span className="mono">{s.count}</span>
                 </div>
               ))
