@@ -3,6 +3,7 @@ import { Building2, Cpu, Sparkles, CheckCircle2, XCircle, Clock, ArrowRight, Ale
 import { STAGES, APPROVAL_GATES, EXECUTION_DEPARTMENTS, BUDGET_VISIBLE_DEPARTMENTS } from "../constants";
 import { roleLabel, belongsToDept, nextProjectId, uid, timeAgo } from "../lib/helpers";
 import { callClaude } from "../lib/ai";
+import { uploadAttachment, removeAttachmentFile, formatSize } from "../lib/files";
 import { StageBadge, TypeBadge, Field, StageStepper } from "../components/ui";
 
 function NoteModal({ onClose, onSave, userName }) {
@@ -283,6 +284,8 @@ export function ProjectDetail({ project, client, users, projects, department, ti
   const [archError, setArchError] = useState("");
   const [stakeForm, setStakeForm] = useState({ name: "", role: "", department: "" });
   const [assigneeForm, setAssigneeForm] = useState({ name: "", roleInProject: "" });
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState("");
 
   const isMainAdmin = tier === "Main Admin";
   const isExecDept = EXECUTION_DEPARTMENTS.includes(department);
@@ -361,6 +364,30 @@ export function ProjectDetail({ project, client, users, projects, department, ti
     }
     patch(patchData);
     setShowApprovalModal(false);
+  }
+
+  // Attachments are stored as LINKS only (URLs to Drive / spec sheets / quote
+  // PDFs) — no file upload. Just the link + a label on the project record.
+  async function handleAttachFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    setUploadErr("");
+    setUploading(true);
+    const res = await uploadAttachment(file);
+    setUploading(false);
+    if (res.error) { setUploadErr(res.error); return; }
+    patch({
+      attachments: [
+        ...(project.attachments || []),
+        { id: uid(), ...res.file, by: userName, at: new Date().toISOString() },
+      ],
+    });
+  }
+
+  function removeAttachment(a) {
+    patch({ attachments: (project.attachments || []).filter((x) => x.id !== a.id) });
+    removeAttachmentFile(a.path);
   }
 
   function saveNote(note) {
@@ -705,6 +732,45 @@ export function ProjectDetail({ project, client, users, projects, department, ti
                   <div className="note-text">{n.compiled}</div>
                 </div>
               ))}
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <h3 className="panel-title">
+          <FileText size={14} /> Attachments <span className="field-hint" style={{ fontWeight: 400 }}>(links only)</span>
+        </h3>
+        {(project.attachments || []).length === 0 ? (
+          <p className="field-hint">No attachments yet{canEdit ? " — upload a spec sheet, drawing, BOM, or quote (stored in Supabase Storage)." : "."}</p>
+        ) : (
+          <ul className="stake-list">
+            {(project.attachments || []).map((a) => (
+              <li key={a.id}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <a href={a.url} target="_blank" rel="noopener noreferrer" className="cell-primary" style={{ wordBreak: "break-all" }}>
+                    {a.name}
+                  </a>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
+                    <span className="cell-sub">{formatSize(a.size)}{a.size ? " · " : ""}{a.by} · {timeAgo(a.at)}</span>
+                    {canEdit && (
+                      <button className="icon-btn" onClick={() => removeAttachment(a)} title="Remove">
+                        <X size={14} />
+                      </button>
+                    )}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {canEdit && (
+          <div>
+            <label className="btn btn-secondary btn-sm" style={{ cursor: uploading ? "default" : "pointer" }}>
+              {uploading ? <Loader2 size={13} className="spin" /> : <FileText size={13} />}
+              {uploading ? " Uploading…" : " Upload file"}
+              <input type="file" style={{ display: "none" }} onChange={handleAttachFile} disabled={uploading} />
+            </label>
+            {uploadErr && <div className="inline-warning" style={{ marginTop: 8 }}><AlertTriangle size={13} /> {uploadErr}</div>}
           </div>
         )}
       </div>

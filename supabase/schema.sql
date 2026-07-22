@@ -39,3 +39,26 @@ create policy "authenticated insert"
 create policy "authenticated update"
   on public.collections for update
   to authenticated using (true) with check (true);
+
+-- ---------------------------------------------------------------------------
+-- RFQ attachments — Supabase Storage
+-- ---------------------------------------------------------------------------
+-- Files are uploaded to the `rfq-files` bucket (created out-of-band, public),
+-- and only the link/path is stored in crm-projects. The bucket is public, so
+-- downloads via the public URL need no policy; uploads / updates / deletes are
+-- limited to signed-in users. Run these once alongside the schema above.
+drop policy if exists "rfq-files authenticated upload" on storage.objects;
+drop policy if exists "rfq-files authenticated update" on storage.objects;
+drop policy if exists "rfq-files authenticated delete" on storage.objects;
+
+create policy "rfq-files authenticated upload"
+  on storage.objects for insert to authenticated
+  with check (bucket_id = 'rfq-files');
+
+create policy "rfq-files authenticated update"
+  on storage.objects for update to authenticated
+  using (bucket_id = 'rfq-files');
+
+create policy "rfq-files authenticated delete"
+  on storage.objects for delete to authenticated
+  using (bucket_id = 'rfq-files');

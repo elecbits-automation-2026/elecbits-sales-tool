@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { X, CheckCircle2, ArrowRight, ShieldCheck, Building2, Cpu, ChevronLeft } from "lucide-react";
+import { X, CheckCircle2, ArrowRight, ShieldCheck, Building2, Cpu, ChevronLeft, Loader2, FileText, AlertTriangle } from "lucide-react";
 import { TYPES } from "../constants";
 import { nextRfqId, uid } from "../lib/helpers";
+import { uploadAttachment, removeAttachmentFile, formatSize } from "../lib/files";
 import { Field } from "../components/ui";
 
 /* New RFQ flow — Sales raises a Request for Quote against an approved client. */
@@ -17,6 +18,26 @@ export function NewRFQ({ clients, projects, userName, onCreateProject, onDone, o
     timeline: "",
   });
   const [createdProject, setCreatedProject] = useState(null);
+  const [links, setLinks] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState("");
+
+  async function handleFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploadErr("");
+    setUploading(true);
+    const res = await uploadAttachment(file);
+    setUploading(false);
+    if (res.error) { setUploadErr(res.error); return; }
+    setLinks((prev) => [...prev, { id: uid(), ...res.file, by: userName, at: new Date().toISOString() }]);
+  }
+
+  function removeLink(l) {
+    setLinks(links.filter((x) => x.id !== l.id));
+    removeAttachmentFile(l.path);
+  }
 
   function selectClient(e) {
     e.preventDefault();
@@ -48,6 +69,7 @@ export function NewRFQ({ clients, projects, userName, onCreateProject, onDone, o
       department: rfq.type, // routes straight to the matching department head for review
       assignees: [], // execution team assigned by the receiving department's Manager, after approval
       callLogs: [],
+      attachments: links, // link-only attachments added during creation
       createdAt: now,
       updatedAt: now,
     };
@@ -143,6 +165,33 @@ export function NewRFQ({ clients, projects, userName, onCreateProject, onDone, o
                 <input value={rfq.timeline} onChange={(e) => setRfq({ ...rfq, timeline: e.target.value })} placeholder="8 weeks" />
               </Field>
             </div>
+
+            <div className="field">
+              <span className="field-label">Attachments</span>
+              <span className="field-hint">Upload spec sheets, drawings, BOMs, or quotes — files go to Supabase Storage; the RFQ keeps the link.</span>
+              {links.length > 0 && (
+                <ul className="stake-list" style={{ margin: "6px 0" }}>
+                  {links.map((l) => (
+                    <li key={l.id}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                        <a href={l.url} target="_blank" rel="noopener noreferrer" className="cell-primary" style={{ wordBreak: "break-all" }}>{l.name}</a>
+                        <span style={{ display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
+                          <span className="cell-sub">{formatSize(l.size)}</span>
+                          <button type="button" className="icon-btn" onClick={() => removeLink(l)} title="Remove"><X size={14} /></button>
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <label className="btn btn-secondary btn-sm" style={{ cursor: uploading ? "default" : "pointer", width: "fit-content" }}>
+                {uploading ? <Loader2 size={13} className="spin" /> : <FileText size={13} />}
+                {uploading ? " Uploading…" : " Upload file"}
+                <input type="file" style={{ display: "none" }} onChange={handleFile} disabled={uploading} />
+              </label>
+              {uploadErr && <div className="inline-warning" style={{ marginTop: 8 }}><AlertTriangle size={13} /> {uploadErr}</div>}
+            </div>
+
             <p className="field-hint">
               These questions are a placeholder set — swap in the real project questionnaire once it's provided.
             </p>
