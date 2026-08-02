@@ -19,14 +19,29 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { prompt, maxTokens } = req.body || {};
-  if (!prompt || typeof prompt !== "string") {
-    res.status(400).json({ error: "Missing 'prompt'." });
+  // Two accepted shapes:
+  //   { prompt, maxTokens }                     — single-turn (legacy helpers)
+  //   { system, messages, maxTokens }           — multi-turn chat (Sales OS gates / KB assistant)
+  const { prompt, system, messages, maxTokens } = req.body || {};
+  const hasMessages = Array.isArray(messages) && messages.length > 0;
+  if (!hasMessages && (!prompt || typeof prompt !== "string")) {
+    res.status(400).json({ error: "Missing 'prompt' or 'messages'." });
     return;
   }
 
   const model = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
   const max_tokens = Math.min(Math.max(parseInt(maxTokens, 10) || 700, 1), 4096);
+
+  // The client may not send a model (or an outdated one) — the server always
+  // decides the model, so client input is ignored here on purpose.
+  const chatMessages = hasMessages
+    ? messages
+        .filter((m) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant"))
+        .map((m) => ({ role: m.role, content: m.content }))
+    : [{ role: "user", content: prompt }];
+
+  const body = { model, max_tokens, messages: chatMessages };
+  if (typeof system === "string" && system.trim()) body.system = system;
 
   try {
     const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -36,11 +51,7 @@ export default async function handler(req, res) {
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({
-        model,
-        max_tokens,
-        messages: [{ role: "user", content: prompt }],
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await anthropicRes.json();

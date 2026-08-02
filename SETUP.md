@@ -15,10 +15,12 @@ Follow the steps in order. You only do steps 1–4 once.
 1. Go to <https://supabase.com> → sign in → **New project**.
 2. Name it (e.g. `elecbits-sales`), pick a strong database password, choose a
    region near you, and create it. Wait ~2 minutes for it to finish.
-3. **Turn OFF email confirmation** (so logins work without inbox verification):
-   **Authentication → Sign In / Providers → Email** → turn **Confirm email**
-   off → Save. (Also fine to leave "Allow new users to sign up" off — you create
-   users through the app.)
+3. **Enable anonymous sign-ins** (required — the app opens an anonymous auth
+   session so it can read/write the RLS-protected `collections` table):
+   **Authentication → Sign In / Providers → Anonymous Sign-Ins** → turn it
+   **on** → Save. Without this, the app hangs on "loading" / can't read data.
+   (Email confirmation settings don't matter for this app — the login is a role
+   selector, not email/password. See the auth note in `README.md`.)
 
 ## 2. Create the database table
 
