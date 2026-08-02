@@ -1,11 +1,55 @@
 # Elecbits — Sales OS
 
-Internal sales / RFQ pipeline tool (leads → approvals → RFQ → project allocation →
-tasks / work updates). React + Vite + TypeScript. Custom CSS (no Tailwind).
+Internal sales tool: a full CRM + HubSpot-style pipeline with AI-guided stage
+intake, KPIs, a performance "firing tool", a product/service knowledge assistant,
+and expense approvals — on top of the original RFQ / approvals / project-allocation
+flow. React + Vite + TypeScript. Custom CSS (no Tailwind).
 
-This repo was restructured from a single-file prototype (`sales_code.tsx`) into a
-proper project. The code is **byte-identical** to the prototype — only split into
-modules along clean seams. No behaviour was changed.
+## Sales OS modules (`src/features/`)
+
+These are the eight capabilities layered on top of the original RFQ app. They
+reuse the same backend (Supabase JSON collections), auth (roles/departments), and
+AI proxy (`/api/claude`) — no new infrastructure.
+
+1. **Companies** (`Companies.tsx`) — full company records with a generated
+   `COM-####` ID, multiple contacts, "what they do", and unlimited custom
+   detail fields. Records missing key info are flagged **incomplete** and nag
+   their owner (goal: *no information is missed*).
+2. **Pipeline** (`Pipeline.tsx`) — a HubSpot-style kanban across the client
+   journey: Lead → First Meeting → Physical Meeting → RFQ → Project ID Creation →
+   PM Added → Quote/LLD → Negotiation → Closure to PO → Won / Lost. Drag a card
+   to move it.
+3. **AI stage intake** (`StageTransitionChat.tsx`) — every stage move opens a
+   guided AI chat that asks stage-specific questions, **probes on weak/negative
+   answers** ("not interested" → "what did you pitch, what was the objection?"),
+   supports **voice dictation**, and compiles a note. The deal only advances once
+   the intake is complete.
+4. **AI Intake Playbook** (in `KPIManager.tsx`) — Main Admin edits the per-stage
+   questions and a global "playbook memory" that trains what the AI asks. Stored
+   in the `crm-config` collection; per-company context is pulled from the company
+   record automatically.
+5. **KPIs** (`KPIManager.tsx`) — Main Admin sets targets for Department Heads;
+   Department Heads set targets for their team. Targets are per calendar month.
+6. **Performance** (`Performance.tsx`) — scorecards measured **live** from
+   pipeline activity (not self-reported). Behind pace → the card and the
+   workspace health banner go **red** (the *firing tool*).
+7. **Product & Services** (`Knowledge.tsx`) — an AI chat grounded in an
+   admin-maintained knowledge base (docs + Drive/file links), with reusable
+   **answer templates**.
+8. **Expenses** (`Expenses.tsx`) — travel / client expense requests approved by
+   Main Admin or Finance (approve / reject / mark paid).
+
+New Supabase collections (all JSON-blob rows in the existing `collections`
+table — no schema migration needed): `crm-companies`, `crm-deals`, `crm-kpis`,
+`crm-knowledge`, `crm-templates`, `crm-expenses`, `crm-config`.
+
+---
+
+## Original RFQ app
+
+The base app is an internal sales / RFQ pipeline tool (leads → approvals → RFQ →
+project allocation → tasks / work updates), restructured from a single-file
+prototype into modules along clean seams.
 
 ## Project structure
 

@@ -21,6 +21,14 @@ import {
 import { callClaude } from "./lib/ai";
 import { loadList, saveList } from "./lib/storage";
 import { supabase } from "./lib/supabase";
+import { SALES_STYLES } from "./styles/salesStyles";
+import { Companies } from "./features/Companies";
+import { Pipeline } from "./features/Pipeline";
+import { KPIManager } from "./features/KPIManager";
+import { Performance } from "./features/Performance";
+import { Knowledge } from "./features/Knowledge";
+import { Expenses } from "./features/Expenses";
+import { buildHealthAlerts, periodKey } from "./features/salesHelpers";
 /* ---------------------------------------------------------------------- */
 /* Small UI primitives                                                     */
 /* ---------------------------------------------------------------------- */
@@ -2579,7 +2587,7 @@ function UserManagement({ users, currentUserId, onCreate, onSave, onDelete }) {
 function AuthSplash({ message = "Loading…" }) {
   return (
     <div className="app-shell">
-      <style>{APP_STYLES}</style>
+      <style>{APP_STYLES + SALES_STYLES}</style>
       <div className="login-screen">
         <div className="dept-select-card" style={{ textAlign: "center" }}>
           <div className="login-brand" style={{ justifyContent: "center" }}>
@@ -2598,7 +2606,7 @@ function AuthSplash({ message = "Loading…" }) {
 function AccountNotice({ title, body, onSignOut }) {
   return (
     <div className="app-shell">
-      <style>{APP_STYLES}</style>
+      <style>{APP_STYLES + SALES_STYLES}</style>
       <div className="login-screen">
         <div className="dept-select-card" style={{ textAlign: "center" }}>
           <div className="login-brand" style={{ justifyContent: "center" }}>
@@ -2616,6 +2624,32 @@ function AccountNotice({ title, body, onSignOut }) {
   );
 }
 
+function HealthBanner({ health, onGoto }) {
+  const danger = health.alerts.some((a) => a.level === "danger");
+  if (health.alerts.length === 0) {
+    return (
+      <div className="health-banner health-ok">
+        <div className="health-title"><CheckCircle2 size={15} /> You're on top of it — no gaps in your pipeline right now.</div>
+      </div>
+    );
+  }
+  return (
+    <div className={`health-banner ${danger ? "health-danger" : ""}`}>
+      <div className="health-title">
+        <AlertTriangle size={15} /> {danger ? "Action needed — your pipeline has gaps" : "A few things need your attention"}
+      </div>
+      {health.alerts.map((a, i) => (
+        <div className="health-alert" key={i}>
+          <span className={`dot ${a.level}`} /> {a.text}
+          {a.tag === "data" && <button className="btn btn-ghost btn-sm" onClick={() => onGoto("companies")}>Fix now →</button>}
+          {a.tag === "stale" && <button className="btn btn-ghost btn-sm" onClick={() => onGoto("pipeline")}>Open pipeline →</button>}
+          {a.tag === "kpi" && <button className="btn btn-ghost btn-sm" onClick={() => onGoto("performance")}>See KPI →</button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [clients, setClients] = useState([]);
@@ -2624,7 +2658,15 @@ export default function App() {
   const [workUpdates, setWorkUpdates] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [leads, setLeads] = useState([]);
-  const [view, setView] = useState("dashboard"); // dashboard | new | detail | users
+  // Sales-OS collections (companies, deals/pipeline, KPIs, knowledge, expenses, AI config)
+  const [companies, setCompanies] = useState([]);
+  const [deals, setDeals] = useState([]);
+  const [kpis, setKpis] = useState([]);
+  const [knowledgeDocs, setKnowledgeDocs] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [salesConfig, setSalesConfig] = useState({});
+  const [view, setView] = useState("dashboard"); // dashboard | pipeline | companies | new | detail | users
   const [selectedId, setSelectedId] = useState(null);
   const [department, setDepartment] = useState(null);
   const [tier, setTier] = useState(null);
@@ -2672,15 +2714,29 @@ export default function App() {
     let active = true;
     (async () => {
       setLoading(true);
-      const [c, p, u, w, t, l] = await Promise.all([
+      const [c, p, u, w, t, l, co, de, kp, kd, tp, ex, cfg] = await Promise.all([
         loadList("crm-clients"),
         loadList("crm-projects"),
         loadList("crm-users"),
         loadList("crm-work-updates"),
         loadList("crm-tasks"),
         loadList("crm-leads"),
+        loadList("crm-companies"),
+        loadList("crm-deals"),
+        loadList("crm-kpis"),
+        loadList("crm-knowledge"),
+        loadList("crm-templates"),
+        loadList("crm-expenses"),
+        loadList("crm-config"),
       ]);
       if (!active) return;
+      setCompanies(co);
+      setDeals(de);
+      setKpis(kp);
+      setKnowledgeDocs(kd);
+      setTemplates(tp);
+      setExpenses(ex);
+      setSalesConfig(Array.isArray(cfg) && cfg[0] ? cfg[0] : {});
       if (u.length === 0) {
         setUsers(DEFAULT_USERS);
         saveList("crm-users", DEFAULT_USERS);
@@ -2765,6 +2821,50 @@ export default function App() {
   function handleCreateClient(newClient) {
     persistClients([...clients, newClient]);
   }
+
+  /* ---- Sales-OS persistence ---- */
+  function mkPersist(key, setter) {
+    return async (list) => {
+      setter(list);
+      const ok = await saveList(key, list);
+      if (!ok) setSaveError("Couldn't save — check your connection and try again.");
+    };
+  }
+  const persistCompanies = useCallback(mkPersist("crm-companies", setCompanies), []);
+  const persistDeals = useCallback(mkPersist("crm-deals", setDeals), []);
+  const persistKpis = useCallback(mkPersist("crm-kpis", setKpis), []);
+  const persistKnowledge = useCallback(mkPersist("crm-knowledge", setKnowledgeDocs), []);
+  const persistTemplates = useCallback(mkPersist("crm-templates", setTemplates), []);
+  const persistExpenses = useCallback(mkPersist("crm-expenses", setExpenses), []);
+
+  const saveSalesConfig = useCallback(async (cfg) => {
+    setSalesConfig(cfg);
+    const ok = await saveList("crm-config", [cfg]);
+    if (!ok) setSaveError("Couldn't save config — check your connection and try again.");
+  }, []);
+
+  // Companies
+  const handleCreateCompany = (c) => persistCompanies([...companies, c]);
+  const handleSaveCompany = (u) => persistCompanies(companies.map((c) => (c.id === u.id ? u : c)));
+  const handleDeleteCompany = (id) => persistCompanies(companies.filter((c) => c.id !== id));
+  // Deals
+  const handleCreateDeal = (d) => persistDeals([...deals, d]);
+  const handleUpdateDeal = (u) => persistDeals(deals.map((d) => (d.id === u.id ? u : d)));
+  // KPIs (one record per user+period — upsert)
+  const handleSaveKpi = (rec) => persistKpis([...kpis.filter((k) => !(k.userId === rec.userId && k.period === rec.period)), rec]);
+  // Knowledge + templates
+  const now = () => new Date().toISOString();
+  const handleSaveDoc = (d) => d.id
+    ? persistKnowledge(knowledgeDocs.map((x) => (x.id === d.id ? { ...x, ...d } : x)))
+    : persistKnowledge([...knowledgeDocs, { ...d, id: uid(), createdBy: userName, createdAt: now() }]);
+  const handleDeleteDoc = (id) => persistKnowledge(knowledgeDocs.filter((d) => d.id !== id));
+  const handleSaveTemplate = (t) => t.id
+    ? persistTemplates(templates.map((x) => (x.id === t.id ? { ...x, ...t } : x)))
+    : persistTemplates([...templates, { ...t, id: uid(), createdBy: userName, createdAt: now() }]);
+  const handleDeleteTemplate = (id) => persistTemplates(templates.filter((t) => t.id !== id));
+  // Expenses
+  const handleCreateExpense = (e) => persistExpenses([...expenses, e]);
+  const handleUpdateExpense = (u) => persistExpenses(expenses.map((e) => (e.id === u.id ? u : e)));
 
   const persistLeads = useCallback(async (list) => {
     setLeads(list);
@@ -2907,7 +3007,7 @@ export default function App() {
   if (!session) {
     return (
       <div className="app-shell">
-        <style>{APP_STYLES}</style>
+        <style>{APP_STYLES + SALES_STYLES}</style>
         <LoginScreen users={users.length ? users : DEFAULT_USERS} />
       </div>
     );
@@ -2930,7 +3030,7 @@ export default function App() {
   if (!deptChosen) {
     return (
       <div className="app-shell">
-        <style>{APP_STYLES}</style>
+        <style>{APP_STYLES + SALES_STYLES}</style>
         <DepartmentSelect
           user={me}
           onSelect={(dept) => {
@@ -2946,9 +3046,18 @@ export default function App() {
     );
   }
 
+  // "Firing tool" health summary for Sales staff / admins — turns the workspace
+  // red when the signed-in user is behind KPI, has stalled deals, or incomplete
+  // company records. Nudges them to fill data and work the pipeline.
+  const myKpiRec = kpis.find((k) => k.userId === userId && k.period === periodKey());
+  const salesHealth =
+    (department === "Sales" || isMainAdmin)
+      ? buildHealthAlerts({ userName, companies, deals, kpi: myKpiRec })
+      : null;
+
   return (
     <div className="app-shell">
-      <style>{APP_STYLES}</style>
+      <style>{APP_STYLES + SALES_STYLES}</style>
 
       <header className="topbar">
         <div className="topbar-left">
@@ -2994,6 +3103,16 @@ export default function App() {
           Dashboard
         </button>
         {(isMainAdmin || department === "Sales") && (
+          <button className={`nav-tab ${view === "companies" ? "active" : ""}`} onClick={() => setView("companies")}>
+            Companies
+          </button>
+        )}
+        {(isMainAdmin || department === "Sales") && (
+          <button className={`nav-tab ${view === "pipeline" ? "active" : ""}`} onClick={() => setView("pipeline")}>
+            Pipeline
+          </button>
+        )}
+        {(isMainAdmin || department === "Sales") && (
           <button className={`nav-tab ${view === "leads" ? "active" : ""}`} onClick={() => setView("leads")}>
             Leads
           </button>
@@ -3003,6 +3122,20 @@ export default function App() {
             New RFQ
           </button>
         )}
+        <button className={`nav-tab ${view === "performance" ? "active" : ""}`} onClick={() => setView("performance")}>
+          Performance
+        </button>
+        {(isMainAdmin || tier === "Manager") && (
+          <button className={`nav-tab ${view === "kpis" ? "active" : ""}`} onClick={() => setView("kpis")}>
+            KPIs
+          </button>
+        )}
+        <button className={`nav-tab ${view === "knowledge" ? "active" : ""}`} onClick={() => setView("knowledge")}>
+          Product &amp; Services
+        </button>
+        <button className={`nav-tab ${view === "expenses" ? "active" : ""}`} onClick={() => setView("expenses")}>
+          Expenses
+        </button>
         {(isMainAdmin || (department === "Sales" && tier === "Manager")) && (
           <button className={`nav-tab ${view === "reports" ? "active" : ""}`} onClick={() => setView("reports")}>
             Reports
@@ -3034,6 +3167,9 @@ export default function App() {
       )}
 
       <main className="main">
+        {!loading && salesHealth && ["dashboard", "pipeline", "companies", "performance"].includes(view) && (
+          <HealthBanner health={salesHealth} onGoto={setView} />
+        )}
         {loading ? (
           <div className="empty-state">
             <Loader2 size={22} className="spin" />
@@ -3052,6 +3188,77 @@ export default function App() {
               setView("detail");
             }}
             onNew={() => setView("new")}
+          />
+        ) : view === "companies" ? (
+          <Companies
+            companies={companies}
+            deals={deals}
+            users={users}
+            userName={userName}
+            department={department}
+            tier={tier}
+            onCreate={handleCreateCompany}
+            onSave={handleSaveCompany}
+            onDelete={handleDeleteCompany}
+          />
+        ) : view === "pipeline" ? (
+          <Pipeline
+            deals={deals}
+            companies={companies}
+            users={users}
+            userName={userName}
+            department={department}
+            tier={tier}
+            stageForms={salesConfig.stageForms}
+            onCreate={handleCreateDeal}
+            onUpdate={handleUpdateDeal}
+          />
+        ) : view === "performance" ? (
+          <Performance
+            kpis={kpis}
+            companies={companies}
+            deals={deals}
+            users={users}
+            userName={userName}
+            userId={userId}
+            department={department}
+            tier={tier}
+          />
+        ) : view === "kpis" ? (
+          <KPIManager
+            kpis={kpis}
+            users={users}
+            userName={userName}
+            userId={userId}
+            department={department}
+            tier={tier}
+            config={salesConfig}
+            onSaveKpi={handleSaveKpi}
+            onSaveConfig={saveSalesConfig}
+          />
+        ) : view === "knowledge" ? (
+          <Knowledge
+            docs={knowledgeDocs}
+            templates={templates}
+            userName={userName}
+            tier={tier}
+            department={department}
+            onSaveDoc={handleSaveDoc}
+            onDeleteDoc={handleDeleteDoc}
+            onSaveTemplate={handleSaveTemplate}
+            onDeleteTemplate={handleDeleteTemplate}
+          />
+        ) : view === "expenses" ? (
+          <Expenses
+            expenses={expenses}
+            deals={deals}
+            companies={companies}
+            userName={userName}
+            userId={userId}
+            department={department}
+            tier={tier}
+            onCreate={handleCreateExpense}
+            onUpdate={handleUpdateExpense}
           />
         ) : view === "leads" ? (
           <Leads
