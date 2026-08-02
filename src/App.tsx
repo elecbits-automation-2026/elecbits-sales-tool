@@ -1,2352 +1,1539 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
-  PlusCircle, Building2, Cpu, Search, ChevronRight,
-  Sparkles, CheckCircle2, XCircle, Clock, ArrowRight, AlertTriangle,
-  Loader2, Users, FileText, ShieldCheck, History, X, ChevronLeft,
-  Trophy, Ban, RefreshCw, Lock, Mail, LogOut, Bell, LayoutGrid, Zap,
-  TrendingUp, Landmark, Megaphone, Package
+  Building2, Columns, TrendingUp, BookOpen, Receipt, Settings, Plus, X, Search,
+  Mic, MicOff, Send, Check, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
+  Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
+  ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText
 } from "lucide-react";
-import { APP_STYLES } from "./styles/appStyles";
-import {
-  STAGES, APPROVAL_GATES, DEPARTMENTS, EXECUTION_DEPARTMENTS,
-  BUDGET_VISIBLE_DEPARTMENTS, TIERS, TYPES, DEFAULT_USERS, daysAgo,
-} from "./constants";
-import {
-  SAMPLE_CLIENTS, SAMPLE_LEADS, SAMPLE_PROJECTS, SAMPLE_TASKS, SAMPLE_WORK_UPDATES,
-} from "./data/sampleData";
-import {
-  roleTone, tierLabel, roleLabel, belongsToDept, departmentIcon, pad,
-  nextClientId, nextRfqId, nextProjectId, findMatchingClient, uid, timeAgo,
-} from "./lib/helpers";
-import { callClaude } from "./lib/ai";
-import { loadList, saveList } from "./lib/storage";
 import { supabase } from "./lib/supabase";
-import { SALES_STYLES } from "./styles/salesStyles";
-import { Companies } from "./features/Companies";
-import { Pipeline } from "./features/Pipeline";
-import { KPIManager } from "./features/KPIManager";
-import { Performance } from "./features/Performance";
-import { Knowledge } from "./features/Knowledge";
-import { Expenses } from "./features/Expenses";
-import { buildHealthAlerts, periodKey } from "./features/salesHelpers";
-/* ---------------------------------------------------------------------- */
-/* Small UI primitives                                                     */
-/* ---------------------------------------------------------------------- */
 
-function Chip({ children, tone = "default" }) {
-  return <span className={`chip chip-${tone}`}>{children}</span>;
+/* ============================================================
+   ELECBITS SALES OS
+   Test-bench aesthetic: ink instrument rail, paper canvas,
+   mono readouts, LED status language. Red = alarm = fix now.
+   ============================================================ */
+
+/* ---------- constants ---------- */
+
+const STAGES = [
+  { key: "lead", name: "Lead" },
+  { key: "first_meeting", name: "First Meeting" },
+  { key: "physical_meeting", name: "Physical Meeting" },
+  { key: "rfq", name: "RFQ" },
+  { key: "project_id", name: "Project ID" },
+  { key: "pm_added", name: "PM Added" },
+  { key: "quote_lld", name: "Quote / LLD" },
+  { key: "negotiation", name: "Negotiation" },
+  { key: "closure", name: "Closure" },
+  { key: "po", name: "PO" },
+];
+const stageIdx = (k) => STAGES.findIndex((s) => s.key === k);
+const stageName = (k) => (STAGES.find((s) => s.key === k) || {}).name || k;
+
+const DEFAULT_GATES = {
+  lead: ["Where did this lead come from", "Which Elecbits product line fits", "Who is the contact and their role"],
+  first_meeting: ["Who attended the meeting (both sides)", "What exact need did the client state", "What did you pitch and how did they react", "Agreed next step with a date"],
+  physical_meeting: ["Where did you meet and who was present", "Requirements captured (specs, volumes, timelines)", "What was demonstrated or shown", "Client's budget or volume signals", "Agreed next step with a date"],
+  rfq: ["Exact product / spec being quoted", "Quantity and delivery timeline", "Target price or budget from client", "Who is the decision maker", "Competitors in the picture"],
+  project_id: ["Internal project ID created", "Scope summary in one or two lines", "Engineering owner assigned", "Feasibility or risk notes"],
+  pm_added: ["Project manager name", "Kickoff date", "Key deliverables agreed", "Client-side point of contact"],
+  quote_lld: ["Quote amount and validity", "Margin percentage", "LLD status (shared / pending)", "Who received the quote"],
+  negotiation: ["Exact objections raised and by whom", "Price gap between us and client", "Competitor pressure details", "Concessions asked, concessions offered", "Expected decision date"],
+  closure: ["Final agreed price", "Payment terms", "Delivery schedule", "Any pending approvals on client side"],
+  po: ["PO number", "PO value", "Advance received (yes/no, amount)", "Delivery start date", "PO document received"],
+};
+
+const KPI_METRICS = [
+  { key: "companies", label: "Companies added", pace: true },
+  { key: "meetings", label: "Meetings held", pace: true },
+  { key: "rfqs", label: "RFQs raised", pace: true },
+  { key: "quotes", label: "Quotes sent", pace: true },
+  { key: "pos", label: "POs closed", pace: true },
+  { key: "revenue", label: "Revenue", pace: true, money: true },
+  { key: "completeness", label: "Data completeness", pace: false, pct: true },
+];
+
+const COMPANY_FIELDS = [
+  { k: "name", label: "Company name", req: true },
+  { k: "contactPerson", label: "Contact person", req: true },
+  { k: "designation", label: "Designation", req: false },
+  { k: "phone", label: "Contact phone", req: true },
+  { k: "email", label: "Email", req: true },
+  { k: "city", label: "City", req: true },
+  { k: "industry", label: "Industry", req: true },
+  { k: "whatTheyDo", label: "What they do", req: true, long: true },
+  { k: "source", label: "Lead source", req: true },
+  { k: "potential", label: "Annual potential (₹)", req: true, num: true },
+  { k: "website", label: "Website", req: false },
+  { k: "address", label: "Address", req: false, long: true },
+];
+const REQ_FIELDS = COMPANY_FIELDS.filter((f) => f.req);
+
+const ROLES = [
+  { key: "admin", label: "Admin" },
+  { key: "dept_head", label: "Dept Head" },
+  { key: "agent", label: "Sales Agent" },
+  { key: "finance", label: "Finance" },
+];
+const roleLabel = (r) => (ROLES.find((x) => x.key === r) || {}).label || r;
+
+const STALE_AMBER = 4;
+const STALE_RED = 8;
+
+/* ---------- storage ---------- */
+
+// Persistence — Supabase for shared data, localStorage for the per-browser
+// session pointer. Each `sales:*` key is one JSON row in the `collections`
+// table (value may be an array or an object — kpis/gates are maps). Reads/writes
+// require an authenticated Supabase session (see ensureSession); the app signs in
+// anonymously so the existing RLS ("authenticated only") policy keeps holding.
+const store = {
+  async get(key, shared = true) {
+    if (!shared || key === "sales:session") {
+      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; }
+    }
+    try {
+      const { data, error } = await supabase.from("collections").select("data").eq("key", key).maybeSingle();
+      if (error) { console.error("store.get", key, error.message); return null; }
+      return data ? data.data : null;
+    } catch (e) { console.error("store.get threw", key, e); return null; }
+  },
+  async set(key, val, shared = true) {
+    if (!shared || key === "sales:session") {
+      try { localStorage.setItem(key, JSON.stringify(val)); return true; } catch (e) { return false; }
+    }
+    try {
+      const { error } = await supabase
+        .from("collections")
+        .upsert({ key, data: val, updated_at: new Date().toISOString() }, { onConflict: "key" });
+      if (error) { console.error("store.set", key, error.message); return false; }
+      return true;
+    } catch (e) { console.error("store.set threw", key, e); return false; }
+  },
+};
+
+// The collections table is RLS-gated to authenticated users. This app's login is
+// a role selector (not Supabase Auth), so we establish an anonymous auth session
+// up front to satisfy RLS. Requires "Allow anonymous sign-ins" enabled in
+// Supabase (Authentication → Providers). Safe to call repeatedly.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve({ __timeout: true, label }), ms)),
+  ]);
 }
 
-function StageBadge({ stage }) {
-  const tone =
-    stage === "Won" ? "green" : stage === "Lost" ? "red" : "amber";
-  return <Chip tone={tone}>{stage}</Chip>;
+async function ensureSession() {
+  try {
+    const got = await withTimeout(supabase.auth.getSession(), 5000, "getSession");
+    if (got && got.__timeout) { console.error("ensureSession: getSession timed out"); return false; }
+    if (got && got.data && got.data.session) return true;
+    const res = await withTimeout(supabase.auth.signInAnonymously(), 6000, "signInAnonymously");
+    if (res && res.__timeout) { console.error("ensureSession: anonymous sign-in timed out (is it enabled in Supabase?)"); return false; }
+    if (res && res.error) { console.error("anonymous sign-in failed:", res.error.message); return false; }
+    return true;
+  } catch (e) {
+    console.error("ensureSession threw", e);
+    return false;
+  }
 }
 
-function TypeBadge({ type }) {
+/* ---------- Claude ---------- */
+
+// Routes through our own serverless proxy (/api/claude), which holds the
+// ANTHROPIC_API_KEY server-side and picks the model. The browser never sees the
+// key. The proxy accepts { system, messages, maxTokens }.
+async function askClaude(system, messages) {
+  const res = await fetch("/api/claude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ system, messages, maxTokens: 1000 }),
+  });
+  if (!res.ok) throw new Error("AI request failed (" + res.status + ")");
+  const data = await res.json();
+  return (data && data.text) || "";
+}
+
+function extractMarkedJSON(text, marker) {
+  const i = text.indexOf(marker);
+  if (i < 0) return null;
+  const rest = text.slice(i + marker.length);
+  const s = rest.indexOf("{");
+  const e = rest.lastIndexOf("}");
+  if (s < 0 || e < 0) return null;
+  try { return JSON.parse(rest.slice(s, e + 1)); } catch (err) { return null; }
+}
+
+/* ---------- speech ---------- */
+
+function useSpeech(onText) {
+  const [on, setOn] = useState(false);
+  const recRef = useRef(null);
+  const cbRef = useRef(onText);
+  cbRef.current = onText;
+  const SR = typeof window !== "undefined" ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+  const stop = () => { try { if (recRef.current) recRef.current.stop(); } catch (e) {} recRef.current = null; setOn(false); };
+  const start = () => {
+    if (!SR) return;
+    try {
+      const r = new SR();
+      r.continuous = true; r.interimResults = false; r.lang = "en-IN";
+      r.onresult = (e) => {
+        let t = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript;
+        if (t.trim()) cbRef.current(t.trim());
+      };
+      r.onend = () => setOn(false);
+      r.onerror = () => setOn(false);
+      recRef.current = r; r.start(); setOn(true);
+    } catch (e) { setOn(false); }
+  };
+  useEffect(() => () => stop(), []);
+  return { supported: !!SR, on, toggle: () => (on ? stop() : start()) };
+}
+
+/* ---------- utils ---------- */
+
+const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
+const pad4 = (n) => String(n).padStart(4, "0");
+function localISO(d = new Date()) {
+  const t = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return t.toISOString().slice(0, 10);
+}
+const todayStr = () => localISO();
+const monthKey = () => localISO().slice(0, 7);
+const nowTS = () => new Date().toISOString();
+const tsDaysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
+const dateDaysAgo = (n) => localISO(new Date(Date.now() - n * 86400000));
+const fmtINR = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+const fmtINRc = (n) => {
+  const v = Number(n || 0);
+  if (v >= 10000000) return "₹" + (v / 10000000).toFixed(1).replace(/\.0$/, "") + "Cr";
+  if (v >= 100000) return "₹" + (v / 100000).toFixed(1).replace(/\.0$/, "") + "L";
+  if (v >= 1000) return "₹" + (v / 1000).toFixed(0) + "k";
+  return "₹" + v;
+};
+function fmtDate(iso) {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short" }); } catch (e) { return iso; }
+}
+function daysBetween(aISO, bISO) {
+  try { return Math.max(0, Math.floor((new Date(bISO) - new Date(aISO)) / 86400000)); } catch (e) { return 0; }
+}
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
+function nextSeq(items, field, prefix) {
+  let mx = 0;
+  items.forEach((it) => {
+    const m = String(it[field] || "").match(/(\d+)$/);
+    if (m) mx = Math.max(mx, parseInt(m[1], 10));
+  });
+  return prefix + pad4(mx + 1);
+}
+
+function completeness(c) {
+  const filled = REQ_FIELDS.filter((f) => String(c[f.k] || "").trim() !== "").length;
+  return Math.round((filled / REQ_FIELDS.length) * 100);
+}
+function missingFields(c) {
+  return REQ_FIELDS.filter((f) => String(c[f.k] || "").trim() === "").map((f) => f.label);
+}
+
+function dealStaleDays(deal) {
+  const last = deal.history && deal.history.length ? deal.history[deal.history.length - 1].at : deal.createdAt;
+  return daysBetween(last, nowTS());
+}
+
+function healthColor(h) { return h == null ? "zinc" : h >= 85 ? "emerald" : h >= 60 ? "amber" : "red"; }
+function ledClass(color) {
+  return {
+    emerald: "bg-emerald-500",
+    amber: "bg-amber-500",
+    red: "bg-red-600",
+    zinc: "bg-zinc-400",
+    cyan: "bg-cyan-500",
+  }[color] || "bg-zinc-400";
+}
+
+/* actuals for one user id (own activity only) */
+function actualsForId(userId, companies, deals, mk) {
+  const inM = (iso) => iso && iso.slice(0, 7) === mk;
+  const myCompanies = companies.filter((c) => c.accountOwner === userId);
+  const a = { companies: 0, meetings: 0, rfqs: 0, quotes: 0, pos: 0, revenue: 0, completeness: 0 };
+  a.companies = companies.filter((c) => c.createdBy === userId && inM(c.createdAt)).length;
+  deals.forEach((d) => {
+    (d.history || []).forEach((h) => {
+      if (h.by !== userId || !inM(h.at)) return;
+      if (h.to === "first_meeting" || h.to === "physical_meeting") a.meetings++;
+      if (h.to === "rfq") a.rfqs++;
+      if (h.to === "quote_lld") a.quotes++;
+      if (h.to === "po") { a.pos++; a.revenue += Number(d.value || 0); }
+    });
+  });
+  a.completeness = myCompanies.length
+    ? Math.round(myCompanies.reduce((s, c) => s + completeness(c), 0) / myCompanies.length)
+    : 0;
+  return a;
+}
+
+function teamOf(user, users) {
+  if (!user) return [];
+  if (user.role === "admin") return users.filter((u) => u.role === "agent" || u.role === "dept_head");
+  if (user.role === "dept_head") return users.filter((u) => u.role === "agent" && u.dept === user.dept && u.active !== false);
+  return [];
+}
+
+/* aggregated actuals: dept head = sum of own + team agents */
+function actualsForUser(user, users, companies, deals, mk) {
+  if (!user) return null;
+  if (user.role === "dept_head") {
+    const ids = [user.id, ...teamOf(user, users).map((u) => u.id)];
+    const list = ids.map((id) => actualsForId(id, companies, deals, mk));
+    const sum = { companies: 0, meetings: 0, rfqs: 0, quotes: 0, pos: 0, revenue: 0, completeness: 0 };
+    list.forEach((a) => KPI_METRICS.forEach((m) => { sum[m.key] += a[m.key]; }));
+    const owned = companies.filter((c) => ids.includes(c.accountOwner));
+    sum.completeness = owned.length ? Math.round(owned.reduce((s, c) => s + completeness(c), 0) / owned.length) : 0;
+    return sum;
+  }
+  return actualsForId(user.id, companies, deals, mk);
+}
+
+function kpiPace(user, users, companies, deals, kpis) {
+  const t = kpis[user.id];
+  if (!t) return null;
+  const mk = monthKey();
+  const a = actualsForUser(user, users, companies, deals, mk);
+  const now = new Date();
+  const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const frac = Math.max(0.05, now.getDate() / dim);
+  const ratios = [];
+  KPI_METRICS.forEach((m) => {
+    const target = Number(t[m.key] || 0);
+    if (target <= 0) return;
+    const expected = m.pace ? target * frac : target;
+    ratios.push(clamp01(a[m.key] / Math.max(0.0001, expected)));
+  });
+  if (!ratios.length) return null;
+  return ratios.reduce((s, x) => s + x, 0) / ratios.length;
+}
+
+function trainingScore(userId, trainings) {
+  const mine = trainings.filter((t) => t.assignedTo === userId);
+  if (!mine.length) return { score: 1, overdue: [] };
+  const done = mine.filter((t) => t.status === "done").length;
+  const overdue = mine.filter((t) => t.status !== "done" && t.due && t.due < todayStr());
+  return { score: done / mine.length, overdue };
+}
+
+function disciplineScore(userId, worklogs) {
+  const expected = [];
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(Date.now() - i * 86400000);
+    if (d.getDay() !== 0) expected.push(localISO(d)); // skip Sundays
+  }
+  const take = expected.slice(0, 6);
+  if (!take.length) return { score: 1, missed: [] };
+  const logged = take.filter((day) => worklogs.some((w) => w.userId === userId && w.date === day));
+  const missed = take.filter((day) => !worklogs.some((w) => w.userId === userId && w.date === day));
+  return { score: logged.length / take.length, missed };
+}
+
+function healthOf(user, data) {
+  if (!user || user.role === "admin" || user.role === "finance") return null;
+  const { users, companies, deals, kpis, trainings, worklogs } = data;
+  const k = kpiPace(user, users, companies, deals, kpis);
+  const t = trainingScore(user.id, trainings).score;
+  const d = disciplineScore(user.id, worklogs).score;
+  const kk = k == null ? 0.7 : k; // no targets set yet: neutral-ish
+  return Math.round((kk * 0.5 + t * 0.25 + d * 0.25) * 100);
+}
+
+function fixNowItems(user, data) {
+  if (!user) return [];
+  const { users, companies, deals, kpis, trainings, worklogs } = data;
+  const items = [];
+  const scopeIds = user.role === "dept_head" ? [user.id, ...teamOf(user, users).map((u) => u.id)] : [user.id];
+  companies.filter((c) => scopeIds.includes(c.accountOwner) && completeness(c) < 70).forEach((c) => {
+    items.push({ type: "company", tab: "companies", id: c.id, label: c.name + " — data " + completeness(c) + "% complete. Fill: " + missingFields(c).slice(0, 3).join(", ") + (missingFields(c).length > 3 ? "…" : "") });
+  });
+  deals.filter((d) => !d.lost && d.stage !== "po" && scopeIds.includes(d.ownerId) && dealStaleDays(d) >= STALE_RED).forEach((d) => {
+    const c = companies.find((x) => x.id === d.companyId);
+    items.push({ type: "deal", tab: "pipeline", id: d.id, label: (c ? c.name : d.did) + " — " + dealStaleDays(d) + " days stuck in " + stageName(d.stage) });
+  });
+  const y = new Date(Date.now() - 86400000);
+  if (y.getDay() !== 0 && user.role === "agent") {
+    const yd = localISO(y);
+    if (!worklogs.some((w) => w.userId === user.id && w.date === yd)) items.push({ type: "log", tab: "performance", label: "Yesterday's work update is missing. Log it." });
+  }
+  trainingScore(user.id, trainings).overdue.forEach((t) => items.push({ type: "training", tab: "performance", label: "Training overdue: " + t.title + " (due " + fmtDate(t.due) + ")" }));
+  if (user.role !== "admin" && user.role !== "finance") {
+    const t = kpis[user.id];
+    if (t) {
+      const mk = monthKey();
+      const a = actualsForUser(user, users, companies, deals, mk);
+      const now = new Date();
+      const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const frac = Math.max(0.05, now.getDate() / dim);
+      KPI_METRICS.forEach((m) => {
+        const target = Number(t[m.key] || 0);
+        if (target <= 0) return;
+        const expected = m.pace ? target * frac : target;
+        if (a[m.key] / Math.max(0.0001, expected) < 0.6) {
+          items.push({ type: "kpi", tab: "performance", label: m.label + " at " + (m.money ? fmtINRc(a[m.key]) : a[m.key] + (m.pct ? "%" : "")) + " vs pace target " + (m.money ? fmtINRc(Math.round(expected)) : Math.round(expected) + (m.pct ? "%" : "")) });
+        }
+      });
+    }
+  }
+  if (user.role === "dept_head") {
+    teamOf(user, users).forEach((ag) => {
+      const h = healthOf(ag, data);
+      if (h != null && h < 60) items.push({ type: "agent", tab: "performance", label: ag.name + " is RED at " + h + "% health — review today." });
+    });
+  }
+  return items;
+}
+
+/* ---------- seed data ---------- */
+
+function seedData() {
+  const users = [
+    { id: "u_admin", name: "Admin", role: "admin", dept: "Management", active: true },
+    { id: "u_saurav", name: "Saurav", role: "dept_head", dept: "Sales", active: true },
+    { id: "u_ankit", name: "Ankit", role: "agent", dept: "Sales", active: true },
+    { id: "u_akash", name: "Akash", role: "agent", dept: "Sales", active: true },
+    { id: "u_fin", name: "Finance", role: "finance", dept: "Finance", active: true },
+  ];
+  const companies = [
+    {
+      id: "c1", cid: "EB-C-0001", name: "Nevon Solutions", contactPerson: "Rahul Mehta", designation: "Founder",
+      phone: "+91 98200 11223", email: "rahul@nevon.example", city: "Mumbai", industry: "Consumer IoT",
+      whatTheyDo: "IoT product company; wants an ODM partner for a connected device line.",
+      source: "Inbound - website", potential: 4500000, website: "", address: "",
+      accountOwner: "u_ankit", createdBy: "u_ankit", createdAt: tsDaysAgo(24),
+      custom: [{ k: "Deal shape", v: "20-unit design phase, 200-unit production potential" }],
+      activity: [{ at: tsDaysAgo(24), by: "u_ankit", text: "Company created." }],
+    },
+    {
+      id: "c2", cid: "EB-C-0002", name: "Greenline Paper Mills", contactPerson: "S. Iyer", designation: "",
+      phone: "", email: "", city: "Coimbatore", industry: "Paper machinery",
+      whatTheyDo: "", source: "Cold outreach", potential: 0, website: "", address: "",
+      accountOwner: "u_akash", createdBy: "u_akash", createdAt: tsDaysAgo(12),
+      custom: [], activity: [{ at: tsDaysAgo(12), by: "u_akash", text: "Company created." }],
+    },
+    {
+      id: "c3", cid: "EB-C-0003", name: "Sunrise Retail Tech", contactPerson: "Priya Nair", designation: "COO",
+      phone: "+91 99887 66554", email: "priya@sunrise.example", city: "Bengaluru", industry: "Retail",
+      whatTheyDo: "Retail chain exploring ESL price tags for 40 stores.",
+      source: "Referral", potential: 2000000, website: "", address: "",
+      accountOwner: "u_akash", createdBy: "u_akash", createdAt: tsDaysAgo(6),
+      custom: [], activity: [{ at: tsDaysAgo(6), by: "u_akash", text: "Company created." }],
+    },
+  ];
+  const deals = [
+    {
+      id: "d1", did: "EB-D-0001", companyId: "c1", ownerId: "u_ankit", value: 1800000,
+      stage: "rfq", createdAt: tsDaysAgo(24), updatedAt: tsDaysAgo(9), lost: false,
+      history: [
+        { from: null, to: "lead", at: tsDaysAgo(24), by: "u_ankit", summary: "Deal created from inbound enquiry." },
+        { from: "lead", to: "first_meeting", at: tsDaysAgo(18), by: "u_ankit", summary: "Intro call done. Client needs design + manufacturing for a 20-unit pilot." },
+        { from: "first_meeting", to: "rfq", at: tsDaysAgo(9), by: "u_ankit", summary: "RFQ received for pilot batch; spec shared; target timeline 8 weeks." },
+      ],
+    },
+    {
+      id: "d2", did: "EB-D-0002", companyId: "c3", ownerId: "u_akash", value: 900000,
+      stage: "lead", createdAt: tsDaysAgo(6), updatedAt: tsDaysAgo(6), lost: false,
+      history: [{ from: null, to: "lead", at: tsDaysAgo(6), by: "u_akash", summary: "Deal created after referral intro." }],
+    },
+  ];
+  const kpis = {
+    u_saurav: { companies: 20, meetings: 24, rfqs: 10, quotes: 8, pos: 3, revenue: 6000000, completeness: 90 },
+    u_ankit: { companies: 8, meetings: 10, rfqs: 4, quotes: 3, pos: 1, revenue: 2500000, completeness: 90 },
+    u_akash: { companies: 8, meetings: 10, rfqs: 4, quotes: 3, pos: 1, revenue: 2500000, completeness: 90 },
+  };
+  const trainings = [
+    { id: "t1", title: "ESL product line deep-dive", assignedTo: "u_akash", assignedBy: "u_saurav", due: dateDaysAgo(-2), status: "assigned", knowledgeId: "k2" },
+    { id: "t2", title: "Commercial guardrails: MOQ, payment terms", assignedTo: "u_akash", assignedBy: "u_saurav", due: dateDaysAgo(3), status: "assigned", knowledgeId: "k3" },
+    { id: "t3", title: "Elecbits capabilities pitch", assignedTo: "u_ankit", assignedBy: "u_saurav", due: dateDaysAgo(1), status: "done", knowledgeId: "k1" },
+  ];
+  const worklogs = [
+    { id: "w1", userId: "u_ankit", date: dateDaysAgo(1), companiesWorked: "Nevon Solutions", calls: 6, meetings: 1, progress: "Pushed Nevon RFQ; spec clarifications sent to engineering.", blockers: "Awaiting BOM cost from sourcing.", next: "Follow up on target price." },
+    { id: "w2", userId: "u_ankit", date: dateDaysAgo(2), companiesWorked: "Nevon, 2 new leads", calls: 8, meetings: 0, progress: "Cold calls to paper industry list.", blockers: "", next: "Book meetings." },
+  ];
+  const knowledge = [
+    {
+      id: "k1", title: "Elecbits capabilities overview", access: "all", createdBy: "u_admin", updatedAt: tsDaysAgo(10),
+      content: "Elecbits is an electronics ODM/EMS company. We take products from idea to production: hardware design, firmware, prototyping, certification support, and manufacturing. In-house SMT line coming up at GHP Hi-Tech Defence & Aerospace Park, Bengaluru. We serve consumer electronics, IoT, EV/automotive and industrial clients. Typical engagement: design phase (fixed fee) followed by NRE + per-unit manufacturing pricing.",
+    },
+    {
+      id: "k2", title: "Product lines", access: "all", createdBy: "u_admin", updatedAt: tsDaysAgo(10),
+      content: "Current product families: Soundbox variants (payment audio devices), Enote e-paper notepads, ESL electronic shelf labels with gateway + software, IFPD interactive flat panel displays, IoT gateways, motor drivers, smart energy meters, and development boards. ESL pitch: per-tag hardware + gateway + cloud dashboard; ideal for retail chains 10+ stores. Soundbox pitch: OEM-ready, customisable firmware and branding.",
+    },
+    {
+      id: "k3", title: "Commercial guardrails", access: "all", createdBy: "u_admin", updatedAt: tsDaysAgo(10),
+      content: "Standard terms unless approved otherwise: 50% advance with PO, 50% before dispatch. Design phase always billed separately from production. MOQ guidance: consumer devices 500 units, industrial 100 units, pilots allowed at premium per-unit pricing. Quotes valid 30 days. Never commit delivery dates without engineering sign-off. Discounts beyond 8% need dept head approval; beyond 15% need admin approval.",
+    },
+  ];
+  const expenses = [
+    { id: "e1", userId: "u_akash", companyId: "c3", purpose: "Store visit + ESL demo at Sunrise Retail HQ", city: "Bengaluru", from: dateDaysAgo(-3), to: dateDaysAgo(-2), mode: "Flight", estimate: 14500, notes: "Carrying 5 demo tags + gateway.", status: "pending", createdAt: tsDaysAgo(1), decidedBy: null, decisionNote: "" },
+  ];
+  return { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates: {} };
+}
+
+/* ---------- tiny UI atoms ---------- */
+
+function cls(...a) { return a.filter(Boolean).join(" "); }
+
+function Dot({ color, pulse }) {
+  return <span className={cls("inline-block w-2 h-2 rounded-full flex-none", ledClass(color), pulse && "animate-pulse")} />;
+}
+
+function Btn({ children, onClick, kind = "ghost", size = "md", disabled, className, title }) {
+  const base = "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed";
+  const sizes = { sm: "text-xs px-2 py-1", md: "text-sm px-3 py-1.5", lg: "text-sm px-4 py-2" };
+  const kinds = {
+    primary: "bg-cyan-600 text-white hover:bg-cyan-700",
+    dark: "bg-zinc-900 text-white hover:bg-zinc-700",
+    danger: "bg-red-600 text-white hover:bg-red-700",
+    ghost: "bg-white border border-zinc-300 text-zinc-700 hover:bg-zinc-100",
+    subtle: "bg-zinc-100 text-zinc-700 hover:bg-zinc-200",
+    success: "bg-emerald-600 text-white hover:bg-emerald-700",
+  };
+  return <button title={title} disabled={disabled} onClick={onClick} className={cls(base, sizes[size], kinds[kind], className)}>{children}</button>;
+}
+
+function Chip({ children, color = "zinc", className }) {
+  const map = {
+    zinc: "bg-zinc-100 text-zinc-700 border-zinc-200",
+    red: "bg-red-50 text-red-700 border-red-200",
+    amber: "bg-amber-50 text-amber-700 border-amber-200",
+    emerald: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    cyan: "bg-cyan-50 text-cyan-700 border-cyan-200",
+  };
+  return <span className={cls("inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-medium", map[color], className)}>{children}</span>;
+}
+
+function Bar({ pct, color = "cyan", className }) {
+  const c = { cyan: "bg-cyan-500", emerald: "bg-emerald-500", amber: "bg-amber-500", red: "bg-red-600", zinc: "bg-zinc-400" }[color];
   return (
-    <span className="type-badge">
-      {type === "Box Build" ? <Building2 size={12} /> : <Cpu size={12} />}
-      {type}
-    </span>
+    <div className={cls("h-1.5 w-full rounded-full bg-zinc-200 overflow-hidden", className)}>
+      <div className={cls("h-full rounded-full transition-all", c)} style={{ width: Math.max(2, Math.min(100, pct)) + "%" }} />
+    </div>
   );
 }
 
-function Field({ label, children, hint }) {
+function Modal({ title, onClose, children, wide, footer }) {
   return (
-    <label className="field">
-      <span className="field-label">{label}</span>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-zinc-950/60 p-4 overflow-y-auto" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className={cls("bg-white rounded-xl border border-zinc-200 shadow-xl w-full my-8", wide ? "max-w-3xl" : "max-w-lg")}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-200">
+          <h3 className="font-semibold text-zinc-900">{title}</h3>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-700 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"><X size={18} /></button>
+        </div>
+        <div className="px-5 py-4">{children}</div>
+        {footer && <div className="px-5 py-3 border-t border-zinc-200 flex justify-end gap-2">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children, hint, req }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-medium text-zinc-600 mb-1">{label}{req && <span className="text-red-600"> *</span>}</span>
       {children}
-      {hint && <span className="field-hint">{hint}</span>}
+      {hint && <span className="block text-xs text-zinc-400 mt-1">{hint}</span>}
     </label>
   );
 }
 
-function EmptyState({ icon: Icon, title, body }) {
+const inputCls = "w-full rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500";
+function Input(props) { return <input {...props} className={cls(inputCls, props.className)} />; }
+function TA(props) { return <textarea {...props} className={cls(inputCls, "min-h-16", props.className)} />; }
+function Sel(props) { return <select {...props} className={cls(inputCls, props.className)} />; }
+
+function Avatar({ name, size = "md" }) {
+  const initials = (name || "?").split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+  const s = size === "sm" ? "w-6 h-6 text-xs" : "w-8 h-8 text-xs";
+  return <span className={cls("inline-flex items-center justify-center rounded-full bg-zinc-900 text-zinc-100 font-mono flex-none", s)}>{initials}</span>;
+}
+
+function Empty({ icon: Icon, title, sub, action }) {
   return (
-    <div className="empty-state">
-      <Icon size={28} strokeWidth={1.5} />
-      <div className="empty-title">{title}</div>
-      <div className="empty-body">{body}</div>
+    <div className="flex flex-col items-center justify-center text-center py-14 px-6 border border-dashed border-zinc-300 rounded-lg bg-white">
+      <Icon size={28} className="text-zinc-300 mb-3" />
+      <p className="font-medium text-zinc-700">{title}</p>
+      {sub && <p className="text-sm text-zinc-500 mt-1 max-w-sm">{sub}</p>}
+      {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Stage stepper — the signature element                                   */
-/* ---------------------------------------------------------------------- */
+function SectionTitle({ children, right }) {
+  return (
+    <div className="flex items-center justify-between mb-3">
+      <h2 className="text-sm font-semibold tracking-wide text-zinc-500 uppercase">{children}</h2>
+      {right}
+    </div>
+  );
+}
 
-function StageStepper({ stage }) {
-  const activeIndex = STAGES.indexOf(stage === "Lost" ? "Approval" : stage);
-  const isLost = stage === "Lost";
-  const visibleStages = STAGES.filter((s) => s !== "Lost");
+/* ============================================================
+   ROOT APP
+   ============================================================ */
+
+export default function App() {
+  const [loading, setLoading] = useState(true);
+  const [saveErr, setSaveErr] = useState(false);
+  const [tab, setTab] = useState("pipeline");
+
+  const [users, setUsers] = useState([]);
+  const [companies, setCompanies] = useState([]);
+  const [deals, setDeals] = useState([]);
+  const [kpis, setKpis] = useState({});
+  const [trainings, setTrainings] = useState([]);
+  const [worklogs, setWorklogs] = useState([]);
+  const [knowledge, setKnowledge] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [gates, setGates] = useState({});
+  const [sessionId, setSessionId] = useState(null);
+
+  const [focusCompanyId, setFocusCompanyId] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        await ensureSession();
+        let u = await store.get("sales:users");
+        if (!u) {
+          const seed = seedData();
+          await Promise.all([
+            store.set("sales:users", seed.users),
+            store.set("sales:companies", seed.companies),
+            store.set("sales:deals", seed.deals),
+            store.set("sales:kpis", seed.kpis),
+            store.set("sales:trainings", seed.trainings),
+            store.set("sales:worklogs", seed.worklogs),
+            store.set("sales:knowledge", seed.knowledge),
+            store.set("sales:expenses", seed.expenses),
+            store.set("sales:gates", seed.gates),
+          ]);
+          setUsers(seed.users); setCompanies(seed.companies); setDeals(seed.deals); setKpis(seed.kpis);
+          setTrainings(seed.trainings); setWorklogs(seed.worklogs); setKnowledge(seed.knowledge); setExpenses(seed.expenses); setGates(seed.gates);
+        } else {
+          setUsers(u || []);
+          setCompanies((await store.get("sales:companies")) || []);
+          setDeals((await store.get("sales:deals")) || []);
+          setKpis((await store.get("sales:kpis")) || {});
+          setTrainings((await store.get("sales:trainings")) || []);
+          setWorklogs((await store.get("sales:worklogs")) || []);
+          setKnowledge((await store.get("sales:knowledge")) || []);
+          setExpenses((await store.get("sales:expenses")) || []);
+          setGates((await store.get("sales:gates")) || {});
+        }
+        const sess = await store.get("sales:session", false);
+        if (sess && sess.userId) setSessionId(sess.userId);
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    })();
+  }, []);
+
+  const persist = (key, val) => { store.set(key, val).then((ok) => { if (!ok) setSaveErr(true); }); };
+  const saveUsers = (v) => { setUsers(v); persist("sales:users", v); };
+  const saveCompanies = (v) => { setCompanies(v); persist("sales:companies", v); };
+  const saveDeals = (v) => { setDeals(v); persist("sales:deals", v); };
+  const saveKpis = (v) => { setKpis(v); persist("sales:kpis", v); };
+  const saveTrainings = (v) => { setTrainings(v); persist("sales:trainings", v); };
+  const saveWorklogs = (v) => { setWorklogs(v); persist("sales:worklogs", v); };
+  const saveKnowledge = (v) => { setKnowledge(v); persist("sales:knowledge", v); };
+  const saveExpenses = (v) => { setExpenses(v); persist("sales:expenses", v); };
+  const saveGates = (v) => { setGates(v); persist("sales:gates", v); };
+
+  const me = users.find((u) => u.id === sessionId) || null;
+  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates };
+  const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
+  const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
+
+  const login = (userId) => { setSessionId(userId); store.set("sales:session", { userId }, false); };
+  const logout = () => { setSessionId(null); store.set("sales:session", {}, false); };
+
+  const resetDemo = async () => {
+    const seed = seedData();
+    saveUsers(seed.users); saveCompanies(seed.companies); saveDeals(seed.deals); saveKpis(seed.kpis);
+    saveTrainings(seed.trainings); saveWorklogs(seed.worklogs); saveKnowledge(seed.knowledge); saveExpenses(seed.expenses); saveGates(seed.gates);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+        <div className="flex items-center gap-3 text-zinc-400 font-mono text-sm"><Loader2 className="animate-spin" size={18} /> loading sales os…</div>
+      </div>
+    );
+  }
+
+  if (!me) return <Login users={users} onLogin={login} />;
+
+  const goFix = (item) => { setTab(item.tab); if (item.type === "company") setFocusCompanyId(item.id); };
 
   return (
-    <div className="stepper">
-      {visibleStages.map((s, i) => {
-        const idx = STAGES.indexOf(s);
-        const done = !isLost && idx < activeIndex;
-        const current = !isLost && idx === activeIndex;
-        const gate = APPROVAL_GATES.includes(s);
-        return (
-          <React.Fragment key={s}>
-            <div
-              className={`step-node ${done ? "done" : ""} ${
-                current ? "current" : ""
-              } ${isLost && s === "Approval" ? "lost" : ""}`}
-              title={gate ? `${s} (approval required to advance)` : s}
-            >
-              <span className="step-dot">
-                {done ? (
-                  <CheckCircle2 size={13} />
-                ) : isLost && s === "Approval" ? (
-                  <Ban size={13} />
-                ) : (
-                  i + 1
+    <div className="min-h-screen bg-zinc-100 text-zinc-900 flex flex-col md:flex-row">
+      <Sidebar me={me} tab={tab} setTab={setTab} onLogout={logout} />
+      <div className="flex-1 min-w-0 flex flex-col">
+        <Topbar me={me} health={myHealth} onAlarmClick={() => setTab("performance")} />
+        {fixNow.length > 0 && (
+          <div className="bg-red-50 border-b border-red-200 px-4 md:px-6 py-2">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} className="text-red-600 mt-0.5 flex-none" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-red-700 uppercase tracking-wide">Fix this now — {fixNow.length} item{fixNow.length > 1 ? "s" : ""}</p>
+                <ul className="mt-1 space-y-0.5">
+                  {fixNow.slice(0, 3).map((it, i) => (
+                    <li key={i}>
+                      <button onClick={() => goFix(it)} className="text-sm text-red-800 hover:underline text-left">{it.label}</button>
+                    </li>
+                  ))}
+                </ul>
+                {fixNow.length > 3 && (
+                  <button onClick={() => setTab("performance")} className="text-xs text-red-700 font-medium hover:underline mt-1">+{fixNow.length - 3} more in Performance</button>
                 )}
-              </span>
-              <span className="step-label">
-                {s}
-                {gate && <span className="step-gate-mark">⚡</span>}
-              </span>
+              </div>
             </div>
-            {i < visibleStages.length - 1 && (
-              <div className={`step-trace ${done ? "done" : ""}`} />
-            )}
-          </React.Fragment>
-        );
-      })}
+          </div>
+        )}
+        <main className="flex-1 min-w-0 p-4 md:p-6 overflow-x-hidden">
+          {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
+          {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
+          {tab === "knowledge" && <KnowledgeView me={me} data={data} saveKnowledge={saveKnowledge} />}
+          {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
+          {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} resetDemo={resetDemo} />}
+        </main>
+        {saveErr && (
+          <div className="fixed bottom-3 left-3 z-50 bg-red-600 text-white text-xs px-3 py-2 rounded-md shadow-lg flex items-center gap-2">
+            <AlertCircle size={14} /> A save failed — check connection, then retry your last change.
+            <button onClick={() => setSaveErr(false)} className="ml-1 opacity-80 hover:opacity-100"><X size={12} /></button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Dashboard                                                                */
-/* ---------------------------------------------------------------------- */
+/* ---------- login ---------- */
 
-function Dashboard({ clients, projects, users, department, tier, userName, onOpen, onNew }) {
-  const [q, setQ] = useState("");
-  const [stageFilter, setStageFilter] = useState("All");
-  const [typeFilter, setTypeFilter] = useState("All");
-  const [quickFilter, setQuickFilter] = useState(null); // null | "awaiting" | "mine"
-
-  const isMainAdmin = tier === "Main Admin";
-  const isExecDept = EXECUTION_DEPARTMENTS.includes(department);
-  const canCreateRFQ = isMainAdmin || department === "Sales";
-  const budgetVisible = isMainAdmin || BUDGET_VISIBLE_DEPARTMENTS.includes(department);
-
-  const clientById = Object.fromEntries(clients.map((c) => [c.id, c]));
-
-  // Scoped to what this department/tier is allowed to see at all (before search/quick filters).
-  const scoped = projects.filter((p) => {
-    if (isMainAdmin) return true;
-    if (department === "Sales") {
-      if (tier === "User") return p.createdBy === userName || p.assignedTo === userName;
-      return true; // Managers see the whole Sales pipeline.
-    }
-    if (isExecDept) {
-      if (p.department !== department) return false; // department is set automatically from RFQ type at submission
-      if (tier === "User") return (p.assignees || []).some((a) => a.name === userName);
-      return true; // Managers (department heads) see the whole department queue.
-    }
-    return true; // Finance / HR / Product / Marketing see everything, read-only.
-  });
-
-  const visible = scoped.filter((p) => {
-    if (quickFilter === "awaiting" && !APPROVAL_GATES.includes(p.stage)) return false;
-    if (quickFilter === "mine" && p.createdBy !== userName && p.assignedTo !== userName) return false;
-    if (stageFilter !== "All" && p.stage !== stageFilter) return false;
-    if (typeFilter !== "All" && p.type !== typeFilter) return false;
-    if (q) {
-      const client = clientById[p.clientId];
-      const hay = `${p.id} ${client?.name || ""} ${client?.company || ""}`.toLowerCase();
-      if (!hay.includes(q.toLowerCase())) return false;
-    }
-    return true;
-  });
-
-  const totalBudget = scoped.reduce((sum, p) => sum + (parseFloat(p.budget) || 0), 0);
-  const activeClients = new Set(scoped.map((p) => p.clientId)).size;
-
-  const stageCounts = STAGES.map((s) => ({ stage: s, count: scoped.filter((p) => p.stage === s).length })).filter(
-    (s) => s.count > 0
+function Login({ users, onLogin }) {
+  return (
+    <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6">
+      <div className="w-full max-w-md">
+        <div className="flex items-center gap-2 justify-center mb-1">
+          <Dot color="cyan" pulse />
+          <span className="text-zinc-100 font-semibold tracking-widest text-lg">ELECBITS</span>
+        </div>
+        <p className="text-center font-mono text-xs text-zinc-500 mb-8">sales os · lead → po, nothing missed</p>
+        <div className="space-y-2">
+          {users.filter((u) => u.active !== false).map((u) => (
+            <button key={u.id} onClick={() => onLogin(u.id)}
+              className="w-full flex items-center gap-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-cyan-600 rounded-lg px-4 py-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500">
+              <Avatar name={u.name} />
+              <span className="flex-1 min-w-0">
+                <span className="block text-zinc-100 font-medium">{u.name}</span>
+                <span className="block text-xs text-zinc-500">{roleLabel(u.role)} · {u.dept}</span>
+              </span>
+              <ChevronRight size={16} className="text-zinc-600" />
+            </button>
+          ))}
+        </div>
+        <p className="text-center text-xs text-zinc-600 mt-8 leading-relaxed">
+          Shared workspace — everyone opening this app sees the same data.<br />Voice input works best in Chrome or Edge.
+        </p>
+      </div>
+    </div>
   );
-  const clientCounts = Object.values(
-    scoped.reduce((acc, p) => {
-      const c = clientById[p.clientId];
-      const key = c?.id || p.clientId;
-      if (!acc[key]) acc[key] = { name: c?.name || "Unknown", company: c?.company || "", count: 0 };
-      acc[key].count += 1;
-      return acc;
-    }, {})
-  ).sort((a, b) => b.count - a.count);
+}
 
-  // Sales-only "Admin Overview"-style summary.
-  const isSalesView = department === "Sales";
-  const salesTeam = (users || []).filter((u) => belongsToDept(u, "Sales"));
-  const pipelineValue = scoped
-    .filter((p) => !["Won", "Lost"].includes(p.stage))
-    .reduce((sum, p) => sum + (parseFloat(p.budget) || 0), 0);
-  const wonValue = scoped.filter((p) => p.stage === "Won").reduce((sum, p) => sum + (parseFloat(p.budget) || 0), 0);
-  const avgDealSize = scoped.length ? Math.round(totalBudget / scoped.length) : 0;
-  const STAGE_COLORS = { Inquiry: "blue", "RFQ Submitted": "purple", "Technical Review": "amber", Quotation: "orange", Approval: "cyan", Won: "green", Lost: "red" };
-  const stageBars = STAGES.filter((s) => s !== "Lost").map((s) => {
-    const count = scoped.filter((p) => p.stage === s).length;
-    const pct = scoped.length ? Math.round((count / scoped.length) * 100) : 0;
-    return { stage: s, count, pct, color: STAGE_COLORS[s] || "blue" };
-  });
+/* ---------- shell ---------- */
 
-  function clearFilters() {
-    setQuickFilter(null);
-    setStageFilter("All");
+function Sidebar({ me, tab, setTab, onLogout }) {
+  const items = [
+    { key: "pipeline", label: "Pipeline", icon: Columns },
+    { key: "companies", label: "Companies", icon: Building2 },
+    { key: "performance", label: "Performance", icon: TrendingUp },
+    { key: "knowledge", label: "Product / Service", icon: BookOpen },
+    { key: "expenses", label: "Expenses", icon: Receipt },
+  ];
+  if (me.role === "admin") items.push({ key: "admin", label: "Admin", icon: Settings });
+  return (
+    <>
+      {/* desktop rail */}
+      <aside className="hidden md:flex w-56 flex-none bg-zinc-950 text-zinc-400 flex-col">
+        <div className="px-4 py-5">
+          <div className="flex items-center gap-2">
+            <Dot color="cyan" pulse />
+            <span className="text-zinc-100 font-semibold tracking-widest">ELECBITS</span>
+          </div>
+          <p className="font-mono text-xs text-zinc-600 mt-0.5">sales os v1</p>
+        </div>
+        <nav className="flex-1 px-2 space-y-0.5">
+          {items.map((it) => (
+            <button key={it.key} onClick={() => setTab(it.key)}
+              className={cls("w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500",
+                tab === it.key ? "bg-zinc-900 text-cyan-400" : "hover:bg-zinc-900 hover:text-zinc-200")}>
+              <it.icon size={16} /> {it.label}
+            </button>
+          ))}
+        </nav>
+        <div className="p-3 border-t border-zinc-900">
+          <div className="flex items-center gap-2.5">
+            <Avatar name={me.name} size="sm" />
+            <span className="flex-1 min-w-0">
+              <span className="block text-sm text-zinc-200 truncate">{me.name}</span>
+              <span className="block text-xs text-zinc-600">{roleLabel(me.role)}</span>
+            </span>
+            <button onClick={onLogout} title="Log out" className="text-zinc-600 hover:text-zinc-300 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"><LogOut size={15} /></button>
+          </div>
+        </div>
+      </aside>
+      {/* mobile rail */}
+      <div className="md:hidden bg-zinc-950 px-3 py-2 flex items-center gap-1 overflow-x-auto">
+        <span className="flex items-center gap-1.5 pr-2 mr-1 border-r border-zinc-800">
+          <Dot color="cyan" pulse /><span className="text-zinc-100 font-semibold tracking-wider text-sm">EB</span>
+        </span>
+        {items.map((it) => (
+          <button key={it.key} onClick={() => setTab(it.key)}
+            className={cls("flex-none flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs",
+              tab === it.key ? "bg-zinc-900 text-cyan-400" : "text-zinc-400")}>
+            <it.icon size={14} /> {it.label}
+          </button>
+        ))}
+        <button onClick={onLogout} className="flex-none ml-auto text-zinc-500 px-2"><LogOut size={14} /></button>
+      </div>
+    </>
+  );
+}
+
+function Topbar({ me, health, onAlarmClick }) {
+  const hc = healthColor(health);
+  const alarm = health != null && health < 60;
+  return (
+    <header className={cls("h-12 flex-none flex items-center justify-between px-4 md:px-6 border-b transition-colors",
+      alarm ? "bg-red-700 border-red-800" : "bg-white border-zinc-200")}>
+      <div className={cls("text-sm font-medium", alarm ? "text-red-100" : "text-zinc-500")}>
+        {alarm ? "Performance alarm active" : "Workspace: Sales"}
+      </div>
+      {health == null ? (
+        <span className="flex items-center gap-2 text-xs font-mono text-zinc-400"><Dot color="zinc" /> OVERSIGHT MODE</span>
+      ) : (
+        <button onClick={onAlarmClick}
+          className={cls("flex items-center gap-2 rounded-md px-2.5 py-1.5 focus:outline-none focus-visible:ring-2",
+            alarm ? "bg-red-800 hover:bg-red-900 focus-visible:ring-white" : "bg-zinc-100 hover:bg-zinc-200 focus-visible:ring-cyan-500")}>
+          {alarm && <Flame size={14} className="text-amber-300" />}
+          <Dot color={hc} pulse={alarm} />
+          <span className={cls("font-mono text-sm tabular-nums", alarm ? "text-white" : "text-zinc-800")}>{health}%</span>
+          <span className={cls("text-xs font-semibold tracking-wide", alarm ? "text-red-100" : hc === "amber" ? "text-amber-600" : "text-emerald-600")}>
+            {alarm ? "BEHIND — FIX NOW" : hc === "amber" ? "AT RISK" : "ON TRACK"}
+          </span>
+        </button>
+      )}
+    </header>
+  );
+}
+
+/* ============================================================
+   COMPANIES
+   ============================================================ */
+
+function CompaniesView({ me, data, saveCompanies, saveDeals, focusCompanyId, setFocusCompanyId, setTab }) {
+  const { users, companies, deals } = data;
+  const [q, setQ] = useState("");
+  const [editing, setEditing] = useState(null); // company object or "new"
+  const openId = focusCompanyId;
+  const open = companies.find((c) => c.id === openId) || null;
+
+  const visible = companies.filter((c) => {
+    const s = (c.name + " " + c.cid + " " + (c.city || "") + " " + (c.contactPerson || "")).toLowerCase();
+    return s.includes(q.toLowerCase());
+  }).sort((a, b) => completeness(a) - completeness(b));
+
+  const upsert = (c) => {
+    const exists = companies.some((x) => x.id === c.id);
+    const next = exists ? companies.map((x) => (x.id === c.id ? c : x)) : [c, ...companies];
+    saveCompanies(next);
+    setEditing(null);
+    setFocusCompanyId(c.id);
+  };
+
+  if (open) {
+    return <CompanyDetail me={me} company={open} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals}
+      onBack={() => setFocusCompanyId(null)} onEdit={() => setEditing(open)} editing={editing} setEditing={setEditing} upsert={upsert} setTab={setTab} />;
   }
 
   return (
-    <div className="view">
-      <div className="view-header">
-        <div>
-          <h1>Dashboard</h1>
-          <p className="view-sub">
-            {isMainAdmin
-              ? "Showing all projects — Main Admin view"
-              : department === "Sales" && tier === "User"
-              ? `Showing projects assigned to ${userName}`
-              : isExecDept
-              ? `Showing ${department} projects assigned by PM`
-              : `Showing all projects — ${department} view`}
-          </p>
+    <div className="max-w-6xl mx-auto">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <h1 className="text-lg font-semibold mr-auto">Companies <span className="font-mono text-sm text-zinc-400">({companies.length})</span></h1>
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+          <Input placeholder="Search name, ID, city…" value={q} onChange={(e) => setQ(e.target.value)} className="pl-8 w-56" />
         </div>
-        {canCreateRFQ && (
-          <button className="btn btn-primary" onClick={onNew}>
-            <PlusCircle size={16} /> New RFQ
-          </button>
-        )}
-      </div>
-
-      <div className="quick-actions">
-        <button className={`quick-action ${quickFilter === "awaiting" ? "active" : ""}`} onClick={() => setQuickFilter(quickFilter === "awaiting" ? null : "awaiting")}>
-          <Clock size={14} /> Action – Need to do
-        </button>
-        {department === "Sales" && (
-          <button className={`quick-action ${quickFilter === "mine" ? "active" : ""}`} onClick={() => setQuickFilter(quickFilter === "mine" ? null : "mine")}>
-            <FileText size={14} /> My Requests
-          </button>
-        )}
-        {(department === "Sales" && tier === "Manager") || isMainAdmin ? (
-          <button className={`quick-action ${quickFilter === "awaiting" ? "active" : ""}`} onClick={() => setQuickFilter(quickFilter === "awaiting" ? null : "awaiting")}>
-            <ShieldCheck size={14} /> My Approvals
-          </button>
-        ) : null}
-        <button className="quick-action" onClick={clearFilters}>
-          <LayoutGrid size={14} /> All Projects
-        </button>
-      </div>
-
-      {isSalesView ? (
-        <>
-          <h2 style={{ marginTop: 4 }}>Sales Overview</h2>
-          <p className="view-sub" style={{ marginTop: -14 }}>
-            {tier === "User" ? "Your assigned pipeline" : "Full pipeline view across your team"}
-          </p>
-          <div className="stat-grid">
-            <div className="stat-card-v2" onClick={clearFilters}>
-              <div className="stat-card-v2-top">
-                <span className="stat-v2-label">Team Members</span>
-                <span className="stat-icon-badge stat-icon-purple"><Users size={15} /></span>
-              </div>
-              <div className="stat-value">{salesTeam.length}</div>
-            </div>
-            <div className="stat-card-v2" onClick={clearFilters}>
-              <div className="stat-card-v2-top">
-                <span className="stat-v2-label">Total Leads</span>
-                <span className="stat-icon-badge stat-icon-blue"><FileText size={15} /></span>
-              </div>
-              <div className="stat-value">{scoped.length}</div>
-            </div>
-            <div className="stat-card-v2" onClick={clearFilters}>
-              <div className="stat-card-v2-top">
-                <span className="stat-v2-label">Pipeline Value</span>
-                <span className="stat-icon-badge stat-icon-green"><Cpu size={15} /></span>
-              </div>
-              <div className="stat-value">₹{pipelineValue.toLocaleString()}</div>
-            </div>
-            <div className="stat-card-v2" onClick={() => setStageFilter("Won")}>
-              <div className="stat-card-v2-top">
-                <span className="stat-v2-label">Won Value</span>
-                <span className="stat-icon-badge stat-icon-green"><Trophy size={15} /></span>
-              </div>
-              <div className="stat-value">₹{wonValue.toLocaleString()}</div>
-            </div>
-            <div className="stat-card-v2" onClick={clearFilters}>
-              <div className="stat-card-v2-top">
-                <span className="stat-v2-label">Avg Deal Size</span>
-                <span className="stat-icon-badge stat-icon-amber"><ShieldCheck size={15} /></span>
-              </div>
-              <div className="stat-value">₹{avgDealSize.toLocaleString()}</div>
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="stat-row">
-          <div className="stat-card" onClick={clearFilters}>
-            <div className="stat-card-top">
-              <span className="stat-icon-badge"><FileText size={15} /></span>
-            </div>
-            <div className="stat-label">Total RFQs</div>
-            <div className="stat-value">{scoped.length}</div>
-            <span className="stat-link">Click to view <ChevronRight size={12} /></span>
-          </div>
-          <div className="stat-card stat-green" onClick={() => setStageFilter("Won")}>
-            <div className="stat-card-top">
-              <span className="stat-icon-badge"><Trophy size={15} /></span>
-            </div>
-            <div className="stat-label">Won</div>
-            <div className="stat-value">{scoped.filter((p) => p.stage === "Won").length}</div>
-            <span className="stat-link">Click to view <ChevronRight size={12} /></span>
-          </div>
-          <div className="stat-card stat-amber" onClick={() => setQuickFilter("awaiting")}>
-            <div className="stat-card-top">
-              <span className="stat-icon-badge"><Clock size={15} /></span>
-            </div>
-            <div className="stat-label">Awaiting Approval</div>
-            <div className="stat-value">{scoped.filter((p) => APPROVAL_GATES.includes(p.stage)).length}</div>
-            <span className="stat-link">Click to view <ChevronRight size={12} /></span>
-          </div>
-          <div className="stat-card" onClick={clearFilters}>
-            <div className="stat-card-top">
-              <span className="stat-icon-badge">{budgetVisible ? <ShieldCheck size={15} /> : <Building2 size={15} />}</span>
-            </div>
-            <div className="stat-label">{budgetVisible ? "Total Budget" : "Active Clients"}</div>
-            <div className="stat-value">{budgetVisible ? `₹${totalBudget.toLocaleString()}` : activeClients}</div>
-            <span className="stat-link">Click to view <ChevronRight size={12} /></span>
-          </div>
-        </div>
-      )}
-
-      {isSalesView && (
-        <div className="detail-grid">
-          <div className="panel">
-            <div className="panel-title-row">
-              <h3 className="panel-title">Sales Team</h3>
-              <Chip>{salesTeam.length} users</Chip>
-            </div>
-            {salesTeam.length === 0 ? (
-              <p className="field-hint">No Sales users yet — add some from the Users page.</p>
-            ) : (
-              <ul className="team-list">
-                {salesTeam.map((m) => {
-                  const count = scoped.filter((p) => p.createdBy === m.name).length;
-                  const initials = m.name
-                    .split(" ")
-                    .map((w) => w[0])
-                    .join("")
-                    .slice(0, 2)
-                    .toUpperCase();
-                  return (
-                    <li key={m.id}>
-                      <span className="team-avatar">{initials}</span>
-                      <div className="team-info">
-                        <div className="cell-primary">{m.name}</div>
-                        <div className="cell-sub">{m.tier}</div>
-                      </div>
-                      <Chip>{count} leads</Chip>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-
-          <div className="panel">
-            <h3 className="panel-title">Leads by Stage</h3>
-            <div className="stage-bars">
-              {stageBars.map((s) => (
-                <div className="stage-bar-row" key={s.stage}>
-                  <div className="stage-bar-label">
-                    <span>{s.stage}</span>
-                    <span className="cell-sub">
-                      {s.count} ({s.pct}%)
-                    </span>
-                  </div>
-                  <div className="stage-bar-track">
-                    <div className={`stage-bar-fill stage-bar-${s.color}`} style={{ width: `${s.pct}%` }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-
-      <div className="toolbar">
-        <div className="search-box">
-          <Search size={14} />
-          <input
-            placeholder="Search client, company, or project ID…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </div>
-        <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}>
-          <option>All</option>
-          {STAGES.map((s) => (
-            <option key={s}>{s}</option>
-          ))}
-        </select>
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-          <option>All</option>
-          {TYPES.map((t) => (
-            <option key={t}>{t}</option>
-          ))}
-        </select>
+        <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={15} /> Add company</Btn>
       </div>
 
       {visible.length === 0 ? (
-        <EmptyState
-          icon={FileText}
-          title="No projects match yet"
-          body={
-            projects.length === 0
-              ? "Create the first RFQ to get this pipeline moving."
-              : "Try clearing filters, or create a new RFQ."
-          }
-        />
+        <Empty icon={Building2} title="No companies yet" sub="Every client starts here. Add the company with full details — the pipeline pulls from this record." action={<Btn kind="primary" onClick={() => setEditing("new")}><Plus size={15} /> Add company</Btn>} />
       ) : (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>RFQ / Project ID</th>
-                <th>Client</th>
-                <th>Type</th>
-                <th>Stage</th>
-                {budgetVisible && <th>Budget</th>}
-                <th>Owner</th>
-                <th>Updated</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible
-                .slice()
-                .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
-                .map((p) => {
-                  const client = clientById[p.clientId];
-                  return (
-                    <tr key={p.id} onClick={() => onOpen(p.id)}>
-                      <td className="mono">
-                        {p.id}
-                        {p.projectId && <div className="cell-sub mono">{p.projectId}</div>}
-                      </td>
-                      <td>
-                        <div className="cell-primary">{client?.name || "—"}</div>
-                        <div className="cell-sub">{client?.company || ""}</div>
-                      </td>
-                      <td>
-                        <TypeBadge type={p.type} />
-                      </td>
-                      <td>
-                        <StageBadge stage={p.stage} />
-                      </td>
-                      {budgetVisible && (
-                        <td className="mono">{p.budget ? `₹${p.budget}` : "—"}</td>
-                      )}
-                      <td>{p.createdBy}</td>
-                      <td className="cell-sub">{timeAgo(p.updatedAt)}</td>
-                      <td>
-                        <ChevronRight size={16} className="row-arrow" />
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {!isSalesView && (
-        <div className="detail-grid">
-          <div className="panel">
-            <h3 className="panel-title">Projects by Stage</h3>
-            <p className="field-hint" style={{ marginBottom: 10 }}>
-              Breakdown of {isMainAdmin ? "every" : "your visible"} project by pipeline stage.
-            </p>
-            {stageCounts.length === 0 ? (
-              <p className="field-hint">No projects yet.</p>
-            ) : (
-              stageCounts.map((s) => (
-                <div className="kv" key={s.stage}>
-                  <span>{s.stage}</span>
-                  <span className="mono">{s.count}</span>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="panel">
-            <h3 className="panel-title">Projects by Client</h3>
-            <p className="field-hint" style={{ marginBottom: 10 }}>
-              Which clients account for the most active work.
-            </p>
-            {clientCounts.length === 0 ? (
-              <p className="field-hint">None yet.</p>
-            ) : (
-              clientCounts.slice(0, 6).map((c) => (
-                <div className="kv" key={c.name + c.company}>
-                  <span>
-                    {c.name}
-                    {c.company ? <span className="cell-sub"> · {c.company}</span> : null}
-                  </span>
-                  <span className="mono">{c.count}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* New RFQ flow                                                            */
-/* ---------------------------------------------------------------------- */
-
-/* ---------------------------------------------------------------------- */
-/* Leads (Sales intake → Manager approval → Client)                        */
-/* ---------------------------------------------------------------------- */
-
-const EMPTY_LEAD_FORM = { name: "", company: "", email: "", phone: "", notes: "" };
-
-function Leads({ leads, clients, userName, tier, onSubmitLead, onApproveLead, onRejectLead }) {
-  const [form, setForm] = useState(EMPTY_LEAD_FORM);
-  const [rejecting, setRejecting] = useState(null); // lead id currently showing a reject reason field
-  const [rejectReason, setRejectReason] = useState("");
-
-  const canApprove = tier === "Manager" || tier === "Main Admin";
-  const pending = leads.filter((l) => l.status === "Pending");
-  const mine = leads.filter((l) => l.submittedBy === userName);
-
-  function submit(e) {
-    e.preventDefault();
-    if (!form.name.trim() || !form.email.trim()) return;
-    onSubmitLead({ ...form }, canApprove); // Managers/Admin auto-approve their own submissions
-    setForm(EMPTY_LEAD_FORM);
-  }
-
-  function reject(lead) {
-    onRejectLead(lead, rejectReason);
-    setRejecting(null);
-    setRejectReason("");
-  }
-
-  return (
-    <div className="view">
-      <div className="view-header">
-        <div>
-          <h1>Leads</h1>
-          <p className="view-sub">
-            {canApprove ? "Review incoming leads, or add one directly (auto-approved)." : "Submit a lead for your manager to review."}
-          </p>
-        </div>
-      </div>
-
-      <form className="panel form-panel" onSubmit={submit}>
-        <h3 className="panel-title">{canApprove ? "Add a lead (auto-approved)" : "Submit a new lead"}</h3>
-        <p className="field-hint" style={{ marginBottom: 10 }}>
-          Required fields are a placeholder set — swap these out once the final field list is provided.
-        </p>
-        <div className="grid-2">
-          <Field label="Contact name">
-            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Jordan Rivera" />
-          </Field>
-          <Field label="Company">
-            <input value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} placeholder="Northwind Devices Inc." />
-          </Field>
-        </div>
-        <div className="grid-2">
-          <Field label="Email">
-            <input required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="jordan@northwind.com" />
-          </Field>
-          <Field label="Phone">
-            <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+1 555 0100" />
-          </Field>
-        </div>
-        <Field label="Notes">
-          <textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="How this lead came in, what they need…" />
-        </Field>
-        <div className="form-actions">
-          <button className="btn btn-primary" type="submit" style={{ marginLeft: "auto" }}>
-            {canApprove ? "Add lead" : "Submit for approval"}
-          </button>
-        </div>
-      </form>
-
-      {canApprove && (
-        <div className="panel">
-          <div className="panel-title-row">
-            <h3 className="panel-title">Pending approval</h3>
-            <Chip tone="amber">{pending.length}</Chip>
-          </div>
-          {pending.length === 0 ? (
-            <p className="field-hint">Nothing waiting on you right now.</p>
-          ) : (
-            <ul className="stake-list">
-              {pending.map((l) => {
-                const match = findMatchingClient(clients, l.email);
-                return (
-                  <li key={l.id}>
-                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-                      <div>
-                        <div className="cell-primary">{l.name} {l.company ? `· ${l.company}` : ""}</div>
-                        <div className="cell-sub">{l.email} {l.phone ? `· ${l.phone}` : ""}</div>
-                        {l.notes && <div className="cell-sub" style={{ marginTop: 4 }}>{l.notes}</div>}
-                        <div className="cell-sub" style={{ marginTop: 4 }}>
-                          Submitted by {l.submittedBy} · {timeAgo(l.createdAt)}
-                          {match ? ` · Matches existing client ${match.id}` : " · Will create a new client"}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                        <button className="btn btn-primary btn-sm" onClick={() => onApproveLead(l)}>
-                          <CheckCircle2 size={13} /> Approve
-                        </button>
-                        <button className="btn btn-danger btn-sm" onClick={() => setRejecting(rejecting === l.id ? null : l.id)}>
-                          <XCircle size={13} /> Reject
-                        </button>
-                      </div>
-                    </div>
-                    {rejecting === l.id && (
-                      <div className="inline-form" style={{ marginTop: 8 }}>
-                        <input placeholder="Reason (optional)" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
-                        <button className="btn btn-danger btn-sm" onClick={() => reject(l)}>Confirm reject</button>
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-      )}
-
-      <div className="panel">
-        <h3 className="panel-title">{canApprove ? "All leads" : "Your submitted leads"}</h3>
-        {(canApprove ? leads : mine).length === 0 ? (
-          <p className="field-hint">Nothing here yet.</p>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Company</th>
-                  <th>Status</th>
-                  <th>Submitted by</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(canApprove ? leads : mine)
-                  .slice()
-                  .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-                  .map((l) => (
-                    <tr key={l.id} style={{ cursor: "default" }}>
-                      <td className="cell-primary">{l.name}</td>
-                      <td className="cell-sub">{l.company || "—"}</td>
-                      <td>
-                        <Chip tone={l.status === "Approved" ? "green" : l.status === "Rejected" ? "red" : "amber"}>{l.status}</Chip>
-                      </td>
-                      <td className="cell-sub">{l.submittedBy}</td>
-                      <td className="cell-sub">{timeAgo(l.reviewedAt || l.createdAt)}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* New RFQ flow                                                            */
-/* ---------------------------------------------------------------------- */
-
-function NewRFQ({ clients, projects, userName, onCreateProject, onDone, onCancel }) {
-  const [step, setStep] = useState(1);
-  const [existingClientId, setExistingClientId] = useState("");
-  const [createdClient, setCreatedClient] = useState(null);
-
-  const [rfq, setRfq] = useState({
-    type: "Box Build",
-    technicalScope: "",
-    budget: "",
-    timeline: "",
-  });
-  const [createdProject, setCreatedProject] = useState(null);
-
-  function selectClient(e) {
-    e.preventDefault();
-    const c = clients.find((c) => c.id === existingClientId);
-    if (!c) return;
-    setCreatedClient(c);
-    setStep(2);
-  }
-
-  function submitRfq(e) {
-    e.preventDefault();
-    const now = new Date().toISOString();
-    const newProject = {
-      id: nextRfqId(projects), // stable RFQ reference — the formal Project ID comes later
-      projectId: null,
-      clientId: createdClient.id,
-      type: rfq.type,
-      stage: "Dept Review",
-      technicalScope: rfq.technicalScope,
-      budget: rfq.budget,
-      timeline: rfq.timeline,
-      notes: [],
-      architectureSummary: "",
-      stakeholders: [],
-      approvals: [],
-      history: [{ id: uid(), from: null, to: "Dept Review", by: userName, at: now }],
-      createdBy: userName,
-      assignedTo: userName, // Sales lead owner — reassignable by a Sales Manager
-      department: rfq.type, // routes straight to the matching department head for review
-      assignees: [], // execution team assigned by the receiving department's Manager, after approval
-      callLogs: [],
-      createdAt: now,
-      updatedAt: now,
-    };
-    onCreateProject(newProject);
-    setCreatedProject(newProject);
-    setStep(3);
-  }
-
-  return (
-    <div className="view">
-      <div className="view-header">
-        <div>
-          <h1>New RFQ</h1>
-          <p className="view-sub">Step {step} of 3</p>
-        </div>
-        <button className="btn btn-ghost" onClick={onCancel}>
-          <X size={16} /> Cancel
-        </button>
-      </div>
-
-      <div className="wizard-progress">
-        {["Client", "RFQ details", "Done"].map((label, i) => (
-          <div key={label} className={`wizard-step ${step === i + 1 ? "active" : ""} ${step > i + 1 ? "past" : ""}`}>
-            <span className="wizard-dot">{step > i + 1 ? <CheckCircle2 size={12} /> : i + 1}</span>
-            {label}
-          </div>
-        ))}
-      </div>
-
-      {step === 1 && (
-        <form className="panel form-panel" onSubmit={selectClient}>
-          {clients.length === 0 ? (
-            <p className="field-hint">
-              No approved clients yet. Submit and approve a lead on the Leads tab first — a Client ID is generated
-              there once a lead is approved.
-            </p>
-          ) : (
-            <Field label="Select client">
-              <select required value={existingClientId} onChange={(e) => setExistingClientId(e.target.value)}>
-                <option value="">Choose a client…</option>
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.id} — {c.name} ({c.company || "no company"})
-                  </option>
-                ))}
-              </select>
-            </Field>
-          )}
-
-          <div className="form-actions">
-            <button className="btn btn-primary" type="submit" disabled={clients.length === 0} style={{ marginLeft: "auto" }}>
-              Continue <ArrowRight size={15} />
-            </button>
-          </div>
-        </form>
-      )}
-
-      {step === 2 && createdClient && (
-        <>
-          <div className="id-callout">
-            <ShieldCheck size={16} />
-            Client ID <span className="mono">{createdClient.id}</span> — {createdClient.name}
-          </div>
-          <form className="panel form-panel" onSubmit={submitRfq}>
-            <Field label="Project type" hint="This determines which department head reviews the RFQ.">
-              <div className="segmented">
-                {TYPES.map((t) => (
-                  <button
-                    type="button"
-                    key={t}
-                    className={rfq.type === t ? "active" : ""}
-                    onClick={() => setRfq({ ...rfq, type: t })}
-                  >
-                    {t === "Box Build" ? <Building2 size={14} /> : <Cpu size={14} />}
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </Field>
-            <Field label="Technical scope" hint="What needs to be built — this feeds the AI architecture summary later.">
-              <textarea
-                rows={4}
-                value={rfq.technicalScope}
-                onChange={(e) => setRfq({ ...rfq, technicalScope: e.target.value })}
-                placeholder="e.g. Custom enclosure with 4-layer PCB, requires thermal management, target volume 5,000 units/quarter…"
-              />
-            </Field>
-            <div className="grid-2">
-              <Field label="Budget (INR)">
-                <input value={rfq.budget} onChange={(e) => setRfq({ ...rfq, budget: e.target.value })} placeholder="50000" />
-              </Field>
-              <Field label="Timeline">
-                <input value={rfq.timeline} onChange={(e) => setRfq({ ...rfq, timeline: e.target.value })} placeholder="8 weeks" />
-              </Field>
-            </div>
-            <p className="field-hint">
-              These questions are a placeholder set — swap in the real project questionnaire once it's provided.
-            </p>
-            <div className="form-actions">
-              <button type="button" className="btn btn-ghost" onClick={() => setStep(1)}>
-                <ChevronLeft size={15} /> Back
-              </button>
-              <button className="btn btn-primary" type="submit">
-                Submit to {rfq.type} <ArrowRight size={15} />
-              </button>
-            </div>
-          </form>
-        </>
-      )}
-
-      {step === 3 && createdProject && (
-        <div className="panel done-panel">
-          <CheckCircle2 size={32} className="done-icon" />
-          <h2>RFQ submitted</h2>
-          <p className="field-hint">Sent to the {createdProject.type} head for review. The formal Project ID is assigned once they approve.</p>
-          <div className="id-row">
-            <div>
-              <div className="field-label">Client ID</div>
-              <div className="mono big">{createdClient.id}</div>
-            </div>
-            <div>
-              <div className="field-label">RFQ ID</div>
-              <div className="mono big">{createdProject.id}</div>
-            </div>
-          </div>
-          <div className="form-actions">
-            <button className="btn btn-ghost" onClick={() => onDone(null)}>
-              Back to dashboard
-            </button>
-            <button className="btn btn-primary" onClick={() => onDone(createdProject.id)}>
-              Open project <ArrowRight size={15} />
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Guided AI note modal                                                    */
-/* ---------------------------------------------------------------------- */
-
-function NoteModal({ onClose, onSave, userName }) {
-  const [answers, setAnswers] = useState({
-    need: "",
-    budget: "",
-    timeline: "",
-    scope: "",
-    risks: "",
-  });
-  const [compiled, setCompiled] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  const questions = [
-    { key: "need", label: "What does the client actually need?" },
-    { key: "budget", label: "What's their budget signal or constraint?" },
-    { key: "timeline", label: "What timeline are they working to?" },
-    { key: "scope", label: "Any technical scope details discussed?" },
-    { key: "risks", label: "Any risks, blockers, or open questions?" },
-  ];
-
-  async function generate() {
-    setBusy(true);
-    setError("");
-    try {
-      const prompt = `You are compiling a sales call note for an internal CRM. Turn these raw answers into a tight, well-structured note (use short headers and bullet points, no preamble, no markdown code fences). Omit any field that was left blank instead of noting it's missing.\n\nClient need: ${answers.need || "(not provided)"}\nBudget signal: ${answers.budget || "(not provided)"}\nTimeline: ${answers.timeline || "(not provided)"}\nTechnical scope: ${answers.scope || "(not provided)"}\nRisks / open questions: ${answers.risks || "(not provided)"}`;
-      const text = await callClaude(prompt, 500);
-      setCompiled(text);
-    } catch (e) {
-      setError("Couldn't reach the AI service. You can still save your raw answers below.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function save() {
-    onSave({
-      id: uid(),
-      questions: answers,
-      compiled: compiled || Object.entries(answers).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n"),
-      author: userName,
-      createdAt: new Date().toISOString(),
-    });
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>
-            <Sparkles size={16} /> Guided note
-          </h3>
-          <button className="icon-btn" onClick={onClose}>
-            <X size={16} />
-          </button>
-        </div>
-        <div className="modal-body">
-          {questions.map((q) => (
-            <Field key={q.key} label={q.label}>
-              <textarea
-                rows={2}
-                value={answers[q.key]}
-                onChange={(e) => setAnswers({ ...answers, [q.key]: e.target.value })}
-              />
-            </Field>
-          ))}
-
-          <button className="btn btn-secondary" onClick={generate} disabled={busy}>
-            {busy ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
-            {busy ? "Compiling…" : "Compile with AI"}
-          </button>
-          {error && (
-            <div className="inline-warning">
-              <AlertTriangle size={13} /> {error}
-            </div>
-          )}
-          {compiled && (
-            <div className="ai-result">
-              <div className="ai-result-label">Compiled note</div>
-              <textarea rows={6} value={compiled} onChange={(e) => setCompiled(e.target.value)} />
-            </div>
-          )}
-        </div>
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn btn-primary" onClick={save}>
-            Save note
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Approval modal                                                          */
-/* ---------------------------------------------------------------------- */
-
-function ApprovalModal({ stage, onClose, onSubmit, userName }) {
-  const [approver, setApprover] = useState(userName);
-  const [comment, setComment] = useState("");
-
-  function decide(decision) {
-    onSubmit({
-      id: uid(),
-      stage,
-      approver,
-      decision,
-      comment,
-      createdAt: new Date().toISOString(),
-    });
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>
-            <ShieldCheck size={16} /> Approval — {stage}
-          </h3>
-          <button className="icon-btn" onClick={onClose}>
-            <X size={16} />
-          </button>
-        </div>
-        <div className="modal-body">
-          <Field label="Approver">
-            <input value={approver} onChange={(e) => setApprover(e.target.value)} />
-          </Field>
-          <Field label="Comment">
-            <textarea rows={3} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Reasoning, conditions, or notes for the record…" />
-          </Field>
-        </div>
-        <div className="modal-actions">
-          <button className="btn btn-danger" onClick={() => decide("Rejected")}>
-            <XCircle size={15} /> Reject
-          </button>
-          <button className="btn btn-primary" onClick={() => decide("Approved")}>
-            <CheckCircle2 size={15} /> Approve
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Project detail                                                          */
-/* ---------------------------------------------------------------------- */
-
-function ProjectDetail({ project, client, users, projects, department, tier, userName, onUpdate, onBack }) {
-  const [showNoteModal, setShowNoteModal] = useState(false);
-  const [showApprovalModal, setShowApprovalModal] = useState(false);
-  const [archBusy, setArchBusy] = useState(false);
-  const [archError, setArchError] = useState("");
-  const [stakeForm, setStakeForm] = useState({ name: "", role: "", department: "" });
-  const [assigneeForm, setAssigneeForm] = useState({ name: "", roleInProject: "" });
-
-  const isMainAdmin = tier === "Main Admin";
-  const isExecDept = EXECUTION_DEPARTMENTS.includes(department);
-  const isAssignedToMe = (project.assignees || []).some((a) => a.name === userName);
-  const canEdit =
-    isMainAdmin ||
-    department === "Sales" ||
-    (isExecDept && project.department === department && (tier === "Manager" || isAssignedToMe));
-  const canManageAssignees = isMainAdmin || (isExecDept && tier === "Manager" && project.department === department);
-  const canReassignLead = isMainAdmin || (department === "Sales" && tier === "Manager");
-  const canLogCalls = isMainAdmin || department === "Sales";
-  const budgetVisible = isMainAdmin || BUDGET_VISIBLE_DEPARTMENTS.includes(department);
-  const nextGate = APPROVAL_GATES.includes(project.stage);
-  // Dept Review can only be approved by the receiving department's Manager (or Main Admin) — everyone else's
-  // gate approvals (Technical Review, Quotation) stay with whoever can edit the project (Sales side).
-  const canApproveGate =
-    project.stage === "Dept Review"
-      ? isMainAdmin || (tier === "Manager" && department === project.department)
-      : canEdit;
-  const salesTeam = (users || []).filter((u) => belongsToDept(u, "Sales"));
-  const deptTeam = project.department ? (users || []).filter((u) => belongsToDept(u, project.department)) : [];
-
-
-  function patch(updates) {
-    onUpdate({ ...project, ...updates, updatedAt: new Date().toISOString() });
-  }
-
-  function advanceStage() {
-    const idx = STAGES.indexOf(project.stage);
-    const nextStage = STAGES[idx + 1];
-    if (!nextStage || nextStage === "Won" || nextStage === "Lost") return;
-    patch({
-      stage: nextStage,
-      history: [...project.history, { id: uid(), from: project.stage, to: nextStage, by: userName, at: new Date().toISOString() }],
-    });
-  }
-
-  function decideOutcome(outcome) {
-    patch({
-      stage: outcome,
-      history: [...project.history, { id: uid(), from: project.stage, to: outcome, by: userName, at: new Date().toISOString() }],
-    });
-  }
-
-  function submitApproval(record) {
-    const idx = STAGES.indexOf(project.stage);
-    const nextStage = record.decision === "Approved" ? STAGES[idx + 1] : "Lost";
-    const patchData = {
-      approvals: [...project.approvals, record],
-      stage: nextStage,
-      history: [
-        ...project.history,
-        { id: uid(), from: project.stage, to: nextStage, by: record.approver, at: record.createdAt, note: `${record.decision} at ${project.stage}` },
-      ],
-    };
-    if (project.stage === "Dept Review" && record.decision === "Approved" && !project.projectId) {
-      const newProjectId = nextProjectId(projects || [], project.type);
-      patchData.projectId = newProjectId;
-      patchData.history.push({
-        id: uid(),
-        label: `Project ID ${newProjectId} assigned`,
-        by: record.approver,
-        at: new Date().toISOString(),
-      });
-    }
-    patch(patchData);
-    setShowApprovalModal(false);
-  }
-
-  function saveNote(note) {
-    patch({ notes: [...project.notes, note] });
-    setShowNoteModal(false);
-  }
-
-  function reassignLead(newOwner) {
-    if (!newOwner || newOwner === project.assignedTo) return;
-    patch({
-      assignedTo: newOwner,
-      history: [
-        ...project.history,
-        { id: uid(), label: `Lead owner reassigned to ${newOwner}`, by: userName, at: new Date().toISOString() },
-      ],
-    });
-  }
-
-  function addAssignee(e) {
-    e.preventDefault();
-    if (!assigneeForm.name.trim()) return;
-    if ((project.assignees || []).some((a) => a.name === assigneeForm.name)) return;
-    patch({
-      assignees: [...(project.assignees || []), { id: uid(), name: assigneeForm.name, roleInProject: assigneeForm.roleInProject }],
-      history: [
-        ...project.history,
-        { id: uid(), label: `${assigneeForm.name} assigned to project${assigneeForm.roleInProject ? ` as ${assigneeForm.roleInProject}` : ""}`, by: userName, at: new Date().toISOString() },
-      ],
-    });
-    setAssigneeForm({ name: "", roleInProject: "" });
-  }
-
-  function removeAssignee(id) {
-    const removed = (project.assignees || []).find((a) => a.id === id);
-    patch({
-      assignees: (project.assignees || []).filter((a) => a.id !== id),
-      history: removed
-        ? [...project.history, { id: uid(), label: `${removed.name} removed from project`, by: userName, at: new Date().toISOString() }]
-        : project.history,
-    });
-  }
-
-  function logCall() {
-    patch({ callLogs: [...(project.callLogs || []), { id: uid(), by: userName, at: new Date().toISOString() }] });
-  }
-
-  async function generateArchitecture() {
-    setArchBusy(true);
-    setArchError("");
-    try {
-      const prompt = `Write a concise draft system architecture summary for an internal engineering/sales handoff document. Project type: ${project.type}. Technical scope as described by sales: ${project.technicalScope || "(not specified)"}. Timeline: ${project.timeline || "(not specified)"}. Structure it with short headers (Overview, Key components, Considerations). Keep it under 200 words. No markdown code fences, no preamble.`;
-      const text = await callClaude(prompt, 500);
-      patch({ architectureSummary: text });
-    } catch (e) {
-      setArchError("Couldn't reach the AI service — try again in a moment.");
-    } finally {
-      setArchBusy(false);
-    }
-  }
-
-  function addStakeholder(e) {
-    e.preventDefault();
-    if (!stakeForm.name.trim()) return;
-    patch({ stakeholders: [...project.stakeholders, { id: uid(), ...stakeForm }] });
-    setStakeForm({ name: "", role: "", department: "" });
-  }
-
-  return (
-    <div className="view">
-      <button className="back-link" onClick={onBack}>
-        <ChevronLeft size={14} /> Dashboard
-      </button>
-
-      <div className="detail-header">
-        <div>
-          <div className="detail-ids">
-            <span className="mono id-chip">{project.id}</span>
-            {project.projectId && <span className="mono id-chip">{project.projectId}</span>}
-            <span className="mono id-chip subtle">{client?.id}</span>
-            <TypeBadge type={project.type} />
-          </div>
-          <h1>{client?.name || "Unknown client"}</h1>
-          <p className="view-sub">{client?.company}</p>
-        </div>
-        <StageBadge stage={project.stage} />
-      </div>
-
-      <div className="panel stepper-panel">
-        <StageStepper stage={project.stage} />
-        {canApproveGate && !["Won", "Lost"].includes(project.stage) && (
-          <div className="stage-controls">
-            {project.stage === "Approval" ? (
-              <>
-                <button className="btn btn-primary" onClick={() => decideOutcome("Won")}>
-                  <Trophy size={15} /> Mark Won
-                </button>
-                <button className="btn btn-danger" onClick={() => decideOutcome("Lost")}>
-                  <Ban size={15} /> Mark Lost
-                </button>
-              </>
-            ) : nextGate ? (
-              <button className="btn btn-secondary" onClick={() => setShowApprovalModal(true)}>
-                <ShieldCheck size={15} /> {project.stage === "Dept Review" ? `Review as ${department} head` : "Request approval to advance"}
-              </button>
-            ) : (
-              <button className="btn btn-primary" onClick={advanceStage}>
-                Advance to {STAGES[STAGES.indexOf(project.stage) + 1]} <ArrowRight size={15} />
-              </button>
-            )}
-          </div>
-        )}
-        {project.stage === "Dept Review" && !canApproveGate && (
-          <div className="finance-note">
-            Waiting on the {project.department} head to review this RFQ before a Project ID is assigned.
-          </div>
-        )}
-        {!canEdit && project.stage !== "Dept Review" && (
-          <div className="finance-note">
-            {roleLabel(department, tier)} view — read only.
-            {isExecDept && project.department !== department
-              ? ` This project isn't assigned to ${department}.`
-              : isExecDept && !isAssignedToMe
-              ? " You're not personally assigned to this project yet."
-              : budgetVisible
-              ? " Budget and stage history are visible below."
-              : " Stage history is visible below."}
-          </div>
-        )}
-      </div>
-
-      <div className="panel">
-        <h3 className="panel-title">
-          <Building2 size={14} /> Routing
-        </h3>
-        <div className="kv">
-          <span>Department</span>
-          <span>{project.department || "—"}</span>
-        </div>
-        <div className="kv">
-          <span>Project ID</span>
-          <span className="mono">{project.projectId || "Assigned once the department head approves"}</span>
-        </div>
-      </div>
-
-      {project.department && (
-        <div className="panel">
-          <div className="panel-title-row">
-            <h3 className="panel-title">
-              <Users size={14} /> Assigned people ({project.department})
-            </h3>
-            <span className="field-hint">Only assigned people (and the {project.department} Manager) can see this project.</span>
-          </div>
-          {(project.assignees || []).length === 0 ? (
-            <p className="field-hint">No one assigned yet{canManageAssignees ? " — assign from your team below." : "."}</p>
-          ) : (
-            <ul className="stake-list">
-              {(project.assignees || []).map((a) => (
-                <li key={a.id}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span>
-                      <span className="cell-primary">{a.name}</span>
-                      {a.roleInProject && <span className="cell-sub"> · {a.roleInProject}</span>}
-                    </span>
-                    {canManageAssignees && (
-                      <button className="icon-btn" onClick={() => removeAssignee(a.id)} title="Remove">
-                        <X size={14} />
-                      </button>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-          {canManageAssignees && (
-            <form className="inline-form" onSubmit={addAssignee}>
-              <select value={assigneeForm.name} onChange={(e) => setAssigneeForm({ ...assigneeForm, name: e.target.value })}>
-                <option value="">Choose team member…</option>
-                {deptTeam.map((u) => (
-                  <option key={u.id} value={u.name}>
-                    {u.name} ({u.tier})
-                  </option>
-                ))}
-              </select>
-              <input
-                placeholder="Role in project (optional — TBD list)"
-                value={assigneeForm.roleInProject}
-                onChange={(e) => setAssigneeForm({ ...assigneeForm, roleInProject: e.target.value })}
-              />
-              <button className="btn btn-secondary btn-sm" type="submit">Assign</button>
-            </form>
-          )}
-        </div>
-      )}
-
-      <div className="detail-grid">
-        <div className="panel">
-          <h3 className="panel-title">Overview</h3>
-          {department === "Sales" || isMainAdmin ? (
-            <div className="kv">
-              <span>Lead owner</span>
-              {canReassignLead ? (
-                <select
-                  value={project.assignedTo || ""}
-                  onChange={(e) => reassignLead(e.target.value)}
-                  style={{ width: "auto", padding: "4px 8px", fontSize: 12.5 }}
-                >
-                  {salesTeam.map((u) => (
-                    <option key={u.id} value={u.name}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <span>{project.assignedTo || "—"}</span>
-              )}
-            </div>
-          ) : null}
-          {canEdit ? (
-            <>
-              <Field label="Technical scope">
-                <textarea rows={3} value={project.technicalScope} onChange={(e) => patch({ technicalScope: e.target.value })} />
-              </Field>
-              <div className="grid-2">
-                <Field label="Budget (INR)">
-                  <input value={project.budget} onChange={(e) => patch({ budget: e.target.value })} />
-                </Field>
-                <Field label="Timeline">
-                  <input value={project.timeline} onChange={(e) => patch({ timeline: e.target.value })} />
-                </Field>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="kv"><span>Scope</span><span>{project.technicalScope || "—"}</span></div>
-              {budgetVisible && (
-                <div className="kv"><span>Budget</span><span className="mono">{project.budget ? `₹${project.budget}` : "—"}</span></div>
-              )}
-              <div className="kv"><span>Timeline</span><span>{project.timeline || "—"}</span></div>
-            </>
-          )}
-          {canLogCalls && (
-            <div className="kv">
-              <span>Calls logged</span>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span className="mono">{(project.callLogs || []).length}</span>
-                <button className="btn btn-secondary btn-sm" onClick={logCall}>
-                  <Clock size={12} /> Log a call
-                </button>
-              </span>
-            </div>
-          )}
-        </div>
-
-        <div className="panel">
-          <h3 className="panel-title">
-            <Cpu size={14} /> AI architecture summary
-          </h3>
-          {project.architectureSummary ? (
-            <p className="arch-text">{project.architectureSummary}</p>
-          ) : (
-            <p className="field-hint">Generate a draft architecture summary from the technical scope above.</p>
-          )}
-          {canEdit && (
-            <button className="btn btn-secondary" onClick={generateArchitecture} disabled={archBusy}>
-              {archBusy ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-              {archBusy ? "Generating…" : project.architectureSummary ? "Regenerate" : "Generate summary"}
-            </button>
-          )}
-          {archError && (
-            <div className="inline-warning">
-              <AlertTriangle size={13} /> {archError}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-title-row">
-          <h3 className="panel-title">
-            <FileText size={14} /> Notes
-          </h3>
-          {canEdit && (
-            <button className="btn btn-secondary btn-sm" onClick={() => setShowNoteModal(true)}>
-              <Sparkles size={13} /> Add guided note
-            </button>
-          )}
-        </div>
-        {project.notes.length === 0 ? (
-          <p className="field-hint">No notes yet.</p>
-        ) : (
-          <div className="note-list">
-            {project.notes
-              .slice()
-              .reverse()
-              .map((n) => (
-                <div key={n.id} className="note-card">
-                  <div className="note-meta">
-                    <span>{n.author}</span>
-                    <span>{timeAgo(n.createdAt)}</span>
-                  </div>
-                  <div className="note-text">{n.compiled}</div>
-                </div>
-              ))}
-          </div>
-        )}
-      </div>
-
-      <div className="detail-grid">
-        <div className="panel">
-          <h3 className="panel-title">
-            <Users size={14} /> Stakeholders
-          </h3>
-          {project.stakeholders.length === 0 ? (
-            <p className="field-hint">None added yet.</p>
-          ) : (
-            <ul className="stake-list">
-              {project.stakeholders.map((s) => (
-                <li key={s.id}>
-                  <span className="cell-primary">{s.name}</span>
-                  <span className="cell-sub">{s.role} · {s.department}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {canEdit && (
-            <form className="inline-form" onSubmit={addStakeholder}>
-              <input placeholder="Name" value={stakeForm.name} onChange={(e) => setStakeForm({ ...stakeForm, name: e.target.value })} />
-              <input placeholder="Role" value={stakeForm.role} onChange={(e) => setStakeForm({ ...stakeForm, role: e.target.value })} />
-              <input placeholder="Department" value={stakeForm.department} onChange={(e) => setStakeForm({ ...stakeForm, department: e.target.value })} />
-              <button className="btn btn-secondary btn-sm" type="submit">Add</button>
-            </form>
-          )}
-        </div>
-
-        <div className="panel">
-          <h3 className="panel-title">
-            <ShieldCheck size={14} /> Approvals
-          </h3>
-          {project.approvals.length === 0 ? (
-            <p className="field-hint">No approvals logged yet.</p>
-          ) : (
-            <ul className="approval-list">
-              {project.approvals.map((a) => (
-                <li key={a.id}>
-                  <span className={`chip chip-${a.decision === "Approved" ? "green" : "red"}`}>{a.decision}</span>
-                  <span className="cell-sub">{a.stage} · {a.approver} · {timeAgo(a.createdAt)}</span>
-                  {a.comment && <div className="approval-comment">{a.comment}</div>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-
-      <div className="panel">
-        <h3 className="panel-title">
-          <History size={14} /> History
-        </h3>
-        <ul className="history-list">
-          {project.history
-            .slice()
-            .reverse()
-            .map((h) => (
-              <li key={h.id}>
-                <Clock size={12} />
-                <span>
-                  {h.label ? h.label : h.from ? `${h.from} → ${h.to}` : `Created at ${h.to}`} by {h.by}
-                </span>
-                <span className="cell-sub">{timeAgo(h.at)}</span>
-              </li>
-            ))}
-        </ul>
-      </div>
-
-      {showNoteModal && (
-        <NoteModal userName={userName} onClose={() => setShowNoteModal(false)} onSave={saveNote} />
-      )}
-      {showApprovalModal && (
-        <ApprovalModal stage={project.stage} userName={userName} onClose={() => setShowApprovalModal(false)} onSubmit={submitApproval} />
-      )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Sign-in gate                                                            */
-/* ---------------------------------------------------------------------- */
-
-function LoginScreen({ users }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  // Authenticates against Supabase Auth. On success the session is established
-  // and App's onAuthStateChange listener takes over (loads data, resolves the
-  // profile, shows the department picker) — so there's nothing to return here.
-  async function attemptSignIn(loginEmail, loginPassword) {
-    setError("");
-    setBusy(true);
-    const { error: authError } = await supabase.auth.signInWithPassword({
-      email: loginEmail.trim().toLowerCase(),
-      password: loginPassword,
-    });
-    setBusy(false);
-    if (authError) {
-      setError("Invalid credentials. Use one of the test accounts on the right, or your exact email + password.");
-    }
-  }
-
-  function handleSubmit(e) {
-    e.preventDefault();
-    if (!email || !password) {
-      setError("Enter your organization email and password to continue.");
-      return;
-    }
-    attemptSignIn(email, password);
-  }
-
-  function quickFill(user) {
-    setEmail(user.email);
-    setPassword(user.password);
-    setError("");
-    attemptSignIn(user.email, user.password);
-  }
-
-  const mainAdmins = users.filter((u) => u.tier === "Main Admin" && u.active !== false);
-  const byDept = DEPARTMENTS.map((d) => ({
-    department: d,
-    users: users.filter((u) => u.department === d && u.active !== false),
-  }));
-
-  return (
-    <div className="login-screen">
-      <div className="login-layout">
-        <div className="login-card">
-          <div className="login-brand">
-            <Zap size={24} className="brand-bolt" fill="currentColor" />
-            <span className="brand-text">Elecbits</span>
-          </div>
-          <div className="login-product">Sales OS</div>
-          <div className="login-tagline">RFQ · Approvals · Pipeline</div>
-
-          <div className="login-divider" />
-
-          <h1 className="login-heading">Welcome back</h1>
-          <p className="login-sub">Sign in with your @elecbits.in email</p>
-
-          <form onSubmit={handleSubmit}>
-            <Field label="Organization Email">
-              <div className="input-icon-wrap">
-                <Mail size={15} />
-                <input
-                  type="email"
-                  placeholder="your.name@elecbits.in"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </div>
-            </Field>
-            <Field label="Password">
-              <div className="input-icon-wrap">
-                <Lock size={15} />
-                <input
-                  type="password"
-                  placeholder="Enter password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </div>
-            </Field>
-
-            {error && (
-              <div className="inline-warning">
-                <AlertTriangle size={13} /> {error}
-              </div>
-            )}
-
-            <button className="btn btn-primary login-submit" type="submit" disabled={busy}>
-              {busy ? (<><Loader2 size={15} className="spin" /> Signing in…</>) : "Sign In"}
-            </button>
-          </form>
-
-          <div className="login-footer">
-            <a href="#" onClick={(e) => e.preventDefault()}>Reset password</a>
-            <span className="login-footer-dot">·</span>
-            <a href="#" onClick={(e) => e.preventDefault()}>Forgot password?</a>
-          </div>
-          <div className="login-footer-secondary">
-            New here? <a href="#" onClick={(e) => e.preventDefault()}>Create an account</a>
-          </div>
-        </div>
-
-        <div className="test-users-panel">
-          <div className="test-users-title">
-            <ShieldCheck size={14} /> Test accounts
-          </div>
-          <p className="test-users-hint">For trying out the prototype — click one to sign in instantly.</p>
-
-          {mainAdmins.map((u) => (
-            <button key={u.email} className="test-user-card" onClick={() => quickFill(u)}>
-              <div className="test-user-row">
-                <span className="test-user-name">{u.name}</span>
-                <Chip tone={roleTone(u.department, u.tier)}>{tierLabel(u.tier)}</Chip>
-              </div>
-              <div className="test-user-email mono">{u.email}</div>
-              <div className="test-user-pw mono">pw: {u.password}</div>
-            </button>
-          ))}
-
-          {byDept.map(
-            (group) =>
-              group.users.length > 0 && (
-                <div key={group.department} className="test-user-group">
-                  <div className="test-user-group-label">{group.department}</div>
-                  {group.users.map((u) => (
-                    <button key={u.email} className="test-user-card" onClick={() => quickFill(u)}>
-                      <div className="test-user-row">
-                        <span className="test-user-name">{u.name}</span>
-                        <Chip tone={roleTone(u.department, u.tier)}>{tierLabel(u.tier)}</Chip>
-                      </div>
-                      <div className="test-user-email mono">{u.email}</div>
-                      <div className="test-user-pw mono">pw: {u.password}</div>
-                    </button>
-                  ))}
-                </div>
-              )
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Department picker — shown right after login                            */
-/* ---------------------------------------------------------------------- */
-
-function DepartmentSelect({ user, onSelect, onBack }) {
-  const isMainAdmin = user.tier === "Main Admin";
-  // Access is assigned by Main Admin on the Users page (department + additional departments).
-  // Main Admin has standing access to every department, so all are offered.
-  const myDepartments = isMainAdmin
-    ? DEPARTMENTS
-    : [user.department, ...(user.additionalDepartments || [])].filter(Boolean);
-
-  return (
-    <div className="login-screen">
-      <div className="dept-select-card">
-        <div className="login-brand" style={{ justifyContent: "center" }}>
-          <Zap size={22} className="brand-bolt" fill="currentColor" />
-          <span className="brand-text">Elecbits</span>
-        </div>
-        <p className="dept-select-sub">
-          Signed in as <strong>{user.name}</strong> · {tierLabel(user.tier)}
-        </p>
-        <h1 className="login-heading" style={{ textAlign: "center" }}>Choose a department</h1>
-        <p className="login-sub" style={{ textAlign: "center" }}>
-          You'll only see departments you've been given access to — Main Admin assigns this on the Users page.
-        </p>
-
-        <div className="dept-select-grid">
-          {isMainAdmin && (
-            <button className="dept-select-btn dept-select-btn-admin" onClick={() => onSelect(null)}>
-              <ShieldCheck size={22} />
-              <span>All Departments</span>
-              <span className="dept-select-btn-sub">Main Admin view</span>
-            </button>
-          )}
-          {myDepartments.map((d) => {
-            const Icon = departmentIcon(d);
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {visible.map((c) => {
+            const comp = completeness(c);
+            const cc = comp >= 90 ? "emerald" : comp >= 70 ? "amber" : "red";
+            const owner = users.find((u) => u.id === c.accountOwner);
+            const activeDeals = deals.filter((d) => d.companyId === c.id && !d.lost).length;
             return (
-              <button className="dept-select-btn" key={d} onClick={() => onSelect(d)}>
-                <Icon size={22} />
-                <span>{d}</span>
-                <span className="dept-select-btn-sub">
-                  {isMainAdmin ? "Full access" : d === user.department ? "Primary" : "Additional access"}
-                </span>
+              <button key={c.id} onClick={() => setFocusCompanyId(c.id)}
+                className="text-left bg-white border border-zinc-200 rounded-lg p-4 hover:border-cyan-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-zinc-900 truncate">{c.name}</p>
+                    <p className="font-mono text-xs text-zinc-400">{c.cid}</p>
+                  </div>
+                  <Dot color={cc} />
+                </div>
+                <p className="text-xs text-zinc-500 mt-2 truncate">{[c.city, c.industry].filter(Boolean).join(" · ") || "—"}</p>
+                <div className="mt-3">
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-zinc-500">Data</span>
+                    <span className={cls("font-mono tabular-nums", cc === "red" ? "text-red-600 font-semibold" : "text-zinc-600")}>{comp}%</span>
+                  </div>
+                  <Bar pct={comp} color={cc} />
+                </div>
+                <div className="flex items-center justify-between mt-3">
+                  <span className="flex items-center gap-1.5 text-xs text-zinc-500">{owner && <Avatar name={owner.name} size="sm" />} {owner ? owner.name : "Unassigned"}</span>
+                  <span className="font-mono text-xs text-zinc-400">{activeDeals} deal{activeDeals === 1 ? "" : "s"}</span>
+                </div>
               </button>
             );
           })}
         </div>
-
-        {myDepartments.length === 0 && !isMainAdmin && (
-          <p className="field-hint" style={{ textAlign: "center" }}>
-            You don't have any department access yet — contact your Main Admin.
-          </p>
-        )}
-
-        <button className="back-link" style={{ margin: "18px auto 0", justifyContent: "center" }} onClick={onBack}>
-          <ChevronLeft size={14} /> Sign in as someone else
-        </button>
-      </div>
-    </div>
-  );
-}
-
-
-/* ---------------------------------------------------------------------- */
-/* User management (Main Admin only)                                       */
-/* ---------------------------------------------------------------------- */
-
-const EMPTY_USER_FORM = { id: null, name: "", email: "", password: "", department: "Sales", tier: "User" };
-
-/* ---------------------------------------------------------------------- */
-/* Task Manager                                                            */
-/* ---------------------------------------------------------------------- */
-
-const TASK_STATUSES = ["To Do", "In Progress", "Done"];
-
-function TaskManager({ tasks, projects, clients, users, workUpdates, userId, userName, department, tier, onCreate, onUpdate }) {
-  const [showForm, setShowForm] = useState(false);
-  const [quickFilter, setQuickFilter] = useState("relevant"); // relevant | mine | created | team
-  const [form, setForm] = useState({ title: "", description: "", assignedTo: userName, projectId: "", dueDate: "" });
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiError, setAiError] = useState("");
-  const [suggestions, setSuggestions] = useState(null); // null = not generated yet, [] = generated but empty
-  const [selected, setSelected] = useState({}); // index -> boolean
-
-  const isMainAdmin = tier === "Main Admin";
-  const deptTeam = (users || []).filter((u) => belongsToDept(u, department));
-  const clientById = Object.fromEntries((clients || []).map((c) => [c.id, c]));
-
-  // Same scoping rules as tasks/work updates elsewhere: Main Admin sees everything, a Manager
-  // sees their department, a User sees only their own.
-  const relevantUpdates = (workUpdates || [])
-    .filter((u) => {
-      if (isMainAdmin) return true;
-      if (tier === "Manager") return u.department === department;
-      return u.userId === userId;
-    })
-    .slice()
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 15);
-
-  async function generateSuggestions() {
-    if (relevantUpdates.length === 0) return;
-    setAiBusy(true);
-    setAiError("");
-    setSuggestions(null);
-    try {
-      const teamNames = deptTeam.map((u) => u.name).join(", ");
-      const updatesText = relevantUpdates
-        .map((u) => `- ${u.userName} (${u.department}), ${u.date}: ${u.summary}`)
-        .join("\n");
-      const prompt = `You review recent work-log entries from a sales/operations team and suggest concrete follow-up tasks based on what people said they worked on. Only suggest a task when the log entry clearly implies unfinished work or a natural next step — do not invent work that wasn't mentioned.
-
-Team members available to assign to: ${teamNames || "(none listed)"}
-
-Recent work updates:
-${updatesText}
-
-Respond with ONLY a JSON array (no markdown fences, no preamble), 2-5 items, each shaped exactly like:
-{"title": "short task title, under 10 words", "description": "one sentence of context", "assignee": "a name from the team list above, or empty string if unclear"}`;
-      const text = await callClaude(prompt, 600);
-      const cleaned = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(cleaned);
-      const list = Array.isArray(parsed) ? parsed : [];
-      setSuggestions(list);
-      setSelected(Object.fromEntries(list.map((_, i) => [i, true])));
-    } catch (e) {
-      setAiError("Couldn't generate suggestions — try again in a moment.");
-    } finally {
-      setAiBusy(false);
-    }
-  }
-
-  function updateSuggestion(i, changes) {
-    setSuggestions((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...changes } : s)));
-  }
-
-  function addSelectedSuggestions() {
-    const now = new Date().toISOString();
-    suggestions.forEach((s, i) => {
-      if (!selected[i]) return;
-      const assignee = deptTeam.some((u) => u.name === s.assignee) ? s.assignee : userName;
-      onCreate({
-        id: uid(),
-        title: s.title,
-        description: s.description || "",
-        projectId: null,
-        assignedTo: assignee,
-        createdBy: userName,
-        department,
-        status: "To Do",
-        dueDate: null,
-        history: [{ id: uid(), from: null, to: "To Do", by: userName, at: now, note: "Created from AI work-update suggestion" }],
-        createdAt: now,
-        updatedAt: now,
-      });
-    });
-    setSuggestions(null);
-    setSelected({});
-  }
-
-  // Base scope: what this person is allowed to see at all.
-  const scoped = tasks.filter((t) => {
-    if (isMainAdmin) return true;
-    if (tier === "Manager") return t.department === department;
-    return t.assignedTo === userName || t.createdBy === userName;
-  });
-
-  const visible = scoped.filter((t) => {
-    if (quickFilter === "mine") return t.assignedTo === userName;
-    if (quickFilter === "created") return t.createdBy === userName;
-    return true; // "relevant" / "team" both just show the full scoped set
-  });
-
-  function submit(e) {
-    e.preventDefault();
-    if (!form.title.trim() || !form.assignedTo) return;
-    const now = new Date().toISOString();
-    onCreate({
-      id: uid(),
-      title: form.title.trim(),
-      description: form.description.trim(),
-      projectId: form.projectId || null,
-      assignedTo: form.assignedTo,
-      createdBy: userName,
-      department,
-      status: "To Do",
-      dueDate: form.dueDate || null,
-      history: [{ id: uid(), from: null, to: "To Do", by: userName, at: now }],
-      createdAt: now,
-      updatedAt: now,
-    });
-    setForm({ title: "", description: "", assignedTo: userName, projectId: "", dueDate: "" });
-    setShowForm(false);
-  }
-
-  function moveStatus(task, newStatus) {
-    onUpdate({
-      ...task,
-      status: newStatus,
-      history: [...task.history, { id: uid(), from: task.status, to: newStatus, by: userName, at: new Date().toISOString() }],
-      updatedAt: new Date().toISOString(),
-    });
-  }
-
-  const columns = TASK_STATUSES.map((s) => ({ status: s, items: visible.filter((t) => t.status === s) }));
-
-  return (
-    <div className="view">
-      <div className="view-header">
-        <div>
-          <h1>Tasks</h1>
-          <p className="view-sub">
-            {isMainAdmin ? "Every task across the company" : tier === "Manager" ? `Every task in ${department}` : "Tasks assigned to or created by you"}
-          </p>
-        </div>
-        <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
-          <PlusCircle size={16} /> {showForm ? "Cancel" : "New Task"}
-        </button>
-      </div>
-
-      {showForm && (
-        <form className="panel form-panel" onSubmit={submit}>
-          <div className="grid-2">
-            <Field label="Title">
-              <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Follow up on quote" />
-            </Field>
-            <Field label="Assign to">
-              <select value={form.assignedTo} onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}>
-                {deptTeam.map((u) => (
-                  <option key={u.id} value={u.name}>
-                    {u.name}
-                    {u.name === userName ? " (me)" : ""}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-          <div className="grid-2">
-            <Field label="Link to project (optional)">
-              <select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>
-                <option value="">No project</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.id} — {clientById[p.clientId]?.name || "Unknown"}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Due date (optional)">
-              <input type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
-            </Field>
-          </div>
-          <Field label="Description (optional)">
-            <textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-          </Field>
-          <div className="form-actions">
-            <button className="btn btn-primary" type="submit" style={{ marginLeft: "auto" }}>
-              Create task
-            </button>
-          </div>
-        </form>
       )}
 
-      <div className="panel">
-        <div className="panel-title-row">
-          <h3 className="panel-title">
-            <Sparkles size={14} /> AI task suggestions from Work Updates
-          </h3>
-          <button className="btn btn-secondary btn-sm" onClick={generateSuggestions} disabled={aiBusy || relevantUpdates.length === 0}>
-            {aiBusy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
-            {aiBusy ? "Reading updates…" : "Generate suggestions"}
-          </button>
-        </div>
-        {relevantUpdates.length === 0 ? (
-          <p className="field-hint">No work updates in scope yet — suggestions need some entries on the Work Updates tab first.</p>
-        ) : (
-          <p className="field-hint">Reads the {relevantUpdates.length} most recent work updates you can see and proposes follow-up tasks.</p>
-        )}
-        {aiError && (
-          <div className="inline-warning">
-            <AlertTriangle size={13} /> {aiError}
-          </div>
-        )}
-        {suggestions && (
-          suggestions.length === 0 ? (
-            <p className="field-hint">No clear follow-up tasks found in those updates.</p>
-          ) : (
-            <>
-              <div className="ai-suggestion-list">
-                {suggestions.map((s, i) => (
-                  <div className="ai-suggestion-card" key={i}>
-                    <label className="ai-suggestion-check">
-                      <input type="checkbox" checked={!!selected[i]} onChange={(e) => setSelected({ ...selected, [i]: e.target.checked })} />
-                    </label>
-                    <div className="ai-suggestion-body">
-                      <input
-                        className="ai-suggestion-title"
-                        value={s.title}
-                        onChange={(e) => updateSuggestion(i, { title: e.target.value })}
-                      />
-                      <textarea
-                        className="ai-suggestion-desc"
-                        rows={2}
-                        value={s.description || ""}
-                        onChange={(e) => updateSuggestion(i, { description: e.target.value })}
-                      />
-                      <select value={s.assignee || ""} onChange={(e) => updateSuggestion(i, { assignee: e.target.value })}>
-                        <option value="">Assign to me ({userName})</option>
-                        {deptTeam.map((u) => (
-                          <option key={u.id} value={u.name}>{u.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="form-actions">
-                <button className="btn btn-ghost" onClick={() => setSuggestions(null)}>
-                  Discard
-                </button>
-                <button className="btn btn-primary" onClick={addSelectedSuggestions} disabled={!Object.values(selected).some(Boolean)}>
-                  Add {Object.values(selected).filter(Boolean).length} selected task{Object.values(selected).filter(Boolean).length === 1 ? "" : "s"}
-                </button>
-              </div>
-            </>
-          )
-        )}
-      </div>
-
-      <div className="quick-actions">
-        <button className={`quick-action ${quickFilter === "relevant" ? "active" : ""}`} onClick={() => setQuickFilter("relevant")}>
-          <LayoutGrid size={14} /> {isMainAdmin ? "All Tasks" : tier === "Manager" ? "Team Tasks" : "My Scope"}
-        </button>
-        <button className={`quick-action ${quickFilter === "mine" ? "active" : ""}`} onClick={() => setQuickFilter("mine")}>
-          <FileText size={14} /> Assigned to Me
-        </button>
-        <button className={`quick-action ${quickFilter === "created" ? "active" : ""}`} onClick={() => setQuickFilter("created")}>
-          <Sparkles size={14} /> Created by Me
-        </button>
-      </div>
-
-      <div className="kanban">
-        {columns.map((col) => (
-          <div className="kanban-col" key={col.status}>
-            <div className="kanban-col-header">
-              <span>{col.status}</span>
-              <Chip>{col.items.length}</Chip>
-            </div>
-            <div className="kanban-col-body">
-              {col.items.length === 0 ? (
-                <p className="field-hint" style={{ padding: "0 4px" }}>No tasks.</p>
-              ) : (
-                col.items.map((t) => {
-                  const project = projects.find((p) => p.id === t.projectId);
-                  const nextIdx = TASK_STATUSES.indexOf(t.status) + 1;
-                  const prevIdx = TASK_STATUSES.indexOf(t.status) - 1;
-                  return (
-                    <div className="task-card" key={t.id}>
-                      <div className="task-card-title">{t.title}</div>
-                      {t.description && <div className="task-card-desc">{t.description}</div>}
-                      <div className="task-card-meta">
-                        <span className="cell-sub">{t.assignedTo}</span>
-                        {t.dueDate && <span className="cell-sub">Due {t.dueDate}</span>}
-                      </div>
-                      {project && (
-                        <div className="task-card-meta">
-                          <span className="mono id-chip subtle" style={{ fontSize: 10.5 }}>{project.id}</span>
-                        </div>
-                      )}
-                      <div className="task-card-actions">
-                        {prevIdx >= 0 && (
-                          <button className="btn btn-ghost btn-sm" onClick={() => moveStatus(t, TASK_STATUSES[prevIdx])}>
-                            <ChevronLeft size={12} /> {TASK_STATUSES[prevIdx]}
-                          </button>
-                        )}
-                        {nextIdx < TASK_STATUSES.length && (
-                          <button className="btn btn-secondary btn-sm" onClick={() => moveStatus(t, TASK_STATUSES[nextIdx])}>
-                            {TASK_STATUSES[nextIdx]} <ArrowRight size={12} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
+      {editing && <CompanyModal me={me} data={data} company={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={upsert} />}
     </div>
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Work Updates (visible to all — scoped by role)                          */
-/* ---------------------------------------------------------------------- */
-
-function WorkUpdates({ updates, userId, userName, department, tier, onCreate }) {
-  const [summary, setSummary] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [hours, setHours] = useState("");
-  const [justAddedId, setJustAddedId] = useState(null);
-
-  const isMainAdmin = tier === "Main Admin";
-
-  const visible = updates.filter((u) => {
-    if (isMainAdmin) return true;
-    if (tier === "Manager") return u.department === department;
-    return u.userId === userId;
+function CompanyModal({ me, data, company, onClose, onSave }) {
+  const { users, companies } = data;
+  const [f, setF] = useState(() => company ? { ...company, custom: [...(company.custom || [])] } : {
+    id: uid(), cid: nextSeq(companies, "cid", "EB-C-"), accountOwner: me.id, createdBy: me.id, createdAt: nowTS(),
+    custom: [], activity: [{ at: nowTS(), by: me.id, text: "Company created." }],
   });
-
-  function submit(e) {
-    e.preventDefault();
-    if (!summary.trim()) return;
-    const newEntry = {
-      id: uid(),
-      userId,
-      userName,
-      department,
-      tier,
-      date,
-      hours: hours ? parseFloat(hours) : null,
-      summary: summary.trim(),
-      createdAt: new Date().toISOString(),
-    };
-    onCreate(newEntry);
-    setSummary("");
-    setHours("");
-    setJustAddedId(newEntry.id);
-  }
-
-  useEffect(() => {
-    if (!justAddedId) return;
-    const el = document.getElementById(`update-${justAddedId}`);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-    const t = setTimeout(() => setJustAddedId(null), 2500);
-    return () => clearTimeout(t);
-  }, [justAddedId, updates]);
-
-  const grouped = Object.values(
-    visible
-      .slice()
-      .sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt))
-      .reduce((acc, u) => {
-        if (!acc[u.date]) acc[u.date] = { date: u.date, entries: [] };
-        acc[u.date].entries.push(u);
-        return acc;
-      }, {})
-  ).sort((a, b) => b.date.localeCompare(a.date));
-
+  const [err, setErr] = useState("");
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const setCustom = (i, k, v) => setF((p) => { const c = [...p.custom]; c[i] = { ...c[i], [k]: v }; return { ...p, custom: c }; });
+  const canPickOwner = me.role === "admin" || me.role === "dept_head";
+  const save = () => {
+    if (!String(f.name || "").trim()) { setErr("Company name is required."); return; }
+    if (!String(f.contactPerson || "").trim()) { setErr("Contact person is required."); return; }
+    onSave({ ...f, custom: f.custom.filter((c) => String(c.k || "").trim() || String(c.v || "").trim()) });
+  };
   return (
-    <div className="view">
-      <div className="view-header">
-        <div>
-          <h1>Work Updates</h1>
-          <p className="view-sub">
-            {isMainAdmin
-              ? "Showing updates from everyone"
-              : tier === "Manager"
-              ? `Showing updates from your ${department} team`
-              : "Showing your own updates"}
-          </p>
+    <Modal wide title={company ? "Edit " + company.name : "Add company"} onClose={onClose}
+      footer={<>
+        <span className="mr-auto text-xs text-red-600">{err}</span>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" onClick={save}><Check size={15} /> Save company</Btn>
+      </>}>
+      <p className="text-xs text-zinc-500 mb-3">Fields marked <span className="text-red-600">*</span> count towards data completeness. Missing data turns this account red.</p>
+      <div className="grid sm:grid-cols-2 gap-3">
+        {COMPANY_FIELDS.map((fd) => (
+          <div key={fd.k} className={fd.long ? "sm:col-span-2" : ""}>
+            <Field label={fd.label} req={fd.req}>
+              {fd.long
+                ? <TA value={f[fd.k] || ""} onChange={(e) => set(fd.k, e.target.value)} />
+                : <Input type={fd.num ? "number" : "text"} value={f[fd.k] || ""} onChange={(e) => set(fd.k, fd.num ? e.target.value.replace(/[^\d]/g, "") : e.target.value)} />}
+            </Field>
+          </div>
+        ))}
+        <Field label="Account owner">
+          <Sel value={f.accountOwner} onChange={(e) => set("accountOwner", e.target.value)} disabled={!canPickOwner}>
+            {users.filter((u) => u.role === "agent" || u.role === "dept_head").map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </Sel>
+        </Field>
+      </div>
+      <div className="mt-4">
+        <SectionTitle right={<Btn size="sm" onClick={() => setF((p) => ({ ...p, custom: [...p.custom, { k: "", v: "" }] }))}><Plus size={13} /> Add field</Btn>}>
+          Custom fields — every minute detail
+        </SectionTitle>
+        {f.custom.length === 0 && <p className="text-xs text-zinc-400">Anything that doesn't fit above: GST no., plant locations, buying cycle, birthdays — add it here so it is never lost.</p>}
+        <div className="space-y-2">
+          {f.custom.map((c, i) => (
+            <div key={i} className="flex gap-2">
+              <Input placeholder="Field name" value={c.k} onChange={(e) => setCustom(i, "k", e.target.value)} className="w-44" />
+              <Input placeholder="Value" value={c.v} onChange={(e) => setCustom(i, "v", e.target.value)} />
+              <Btn size="sm" onClick={() => setF((p) => ({ ...p, custom: p.custom.filter((_, j) => j !== i) }))}><Trash2 size={13} /></Btn>
+            </div>
+          ))}
         </div>
       </div>
+    </Modal>
+  );
+}
 
-      <form className="panel form-panel" onSubmit={submit}>
-        <h3 className="panel-title">Log today's update</h3>
-        <div className="grid-2">
-          <Field label="Date">
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </Field>
-          <Field label="Hours spent (optional)">
-            <input value={hours} onChange={(e) => setHours(e.target.value)} placeholder="e.g. 6.5" />
-          </Field>
-        </div>
-        <Field label="What did you work on?">
-          <textarea rows={3} value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="Summarize today's work…" />
-        </Field>
-        <div className="form-actions">
-          {justAddedId && (
-            <span className="inline-warning" style={{ color: "var(--green)" }}>
-              <CheckCircle2 size={13} /> Update added — see it highlighted below.
-            </span>
-          )}
-          <button className="btn btn-primary" type="submit" style={{ marginLeft: "auto" }}>
-            Add update
-          </button>
-        </div>
-      </form>
+function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack, onEdit, editing, setEditing, upsert, setTab }) {
+  const { users, deals, companies } = data;
+  const comp = completeness(c);
+  const cc = comp >= 90 ? "emerald" : comp >= 70 ? "amber" : "red";
+  const owner = users.find((u) => u.id === c.accountOwner);
+  const myDeals = deals.filter((d) => d.companyId === c.id);
+  const [note, setNote] = useState("");
+  const [newDeal, setNewDeal] = useState(false);
 
-      {grouped.length === 0 ? (
-        <EmptyState icon={FileText} title="No updates yet" body="Once entries are logged, they'll show up here." />
-      ) : (
-        grouped.map((g) => (
-          <div className="panel" key={g.date}>
-            <h3 className="panel-title">{new Date(g.date + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}</h3>
-            <div className="note-list">
-              {g.entries.map((e) => (
-                <div className={`note-card ${e.id === justAddedId ? "note-card-new" : ""}`} id={`update-${e.id}`} key={e.id}>
-                  <div className="note-meta">
-                    <span>
-                      {e.userName}
-                      {!isMainAdmin && tier !== "Manager" ? "" : ` · ${e.department}`}
-                      {e.hours ? ` · ${e.hours}h` : ""}
-                    </span>
-                    <span>{e.id === justAddedId ? "Just now" : timeAgo(e.createdAt)}</span>
-                  </div>
-                  <div className="note-text">{e.summary}</div>
-                </div>
+  const addNote = () => {
+    if (!note.trim()) return;
+    const next = companies.map((x) => x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text: note.trim() }] } : x);
+    saveCompanies(next); setNote("");
+  };
+  const createDeal = (value, ownerId) => {
+    const d = {
+      id: uid(), did: nextSeq(deals, "did", "EB-D-"), companyId: c.id, ownerId, value: Number(value || 0),
+      stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
+      history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created." }],
+    };
+    saveDeals([d, ...deals]); setNewDeal(false); setTab("pipeline");
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto">
+      <button onClick={onBack} className="text-sm text-zinc-500 hover:text-zinc-800 mb-3 inline-flex items-center gap-1">← All companies</button>
+      <div className="bg-white border border-zinc-200 rounded-lg p-5">
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="min-w-0 mr-auto">
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-semibold">{c.name}</h1>
+              <Dot color={cc} />
+            </div>
+            <p className="font-mono text-xs text-zinc-400 mt-0.5">{c.cid} · created {fmtDate(c.createdAt)}</p>
+          </div>
+          <div className="text-right">
+            <p className={cls("font-mono text-2xl tabular-nums", cc === "red" ? "text-red-600" : cc === "amber" ? "text-amber-600" : "text-emerald-600")}>{comp}%</p>
+            <p className="text-xs text-zinc-400">data complete</p>
+          </div>
+          <Btn onClick={onEdit}><Pencil size={14} /> Edit</Btn>
+        </div>
+        {comp < 100 && (
+          <div className={cls("mt-4 rounded-md border px-3 py-2 text-sm flex items-start gap-2", cc === "red" ? "bg-red-50 border-red-200 text-red-800" : "bg-amber-50 border-amber-200 text-amber-800")}>
+            <AlertTriangle size={15} className="mt-0.5 flex-none" />
+            <span><span className="font-semibold">Missing:</span> {missingFields(c).join(", ")}. No excuses — fill these before the next stage move.</span>
+          </div>
+        )}
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3 mt-5">
+          {COMPANY_FIELDS.map((fd) => (
+            <div key={fd.k} className={fd.long ? "sm:col-span-2 lg:col-span-3" : ""}>
+              <p className="text-xs text-zinc-400">{fd.label}</p>
+              <p className={cls("text-sm mt-0.5", String(c[fd.k] || "").trim() ? "text-zinc-800" : "text-red-500 italic")}>
+                {fd.num && c[fd.k] ? fmtINR(c[fd.k]) : (String(c[fd.k] || "").trim() || "missing")}
+              </p>
+            </div>
+          ))}
+          <div>
+            <p className="text-xs text-zinc-400">Account owner</p>
+            <p className="text-sm mt-0.5 flex items-center gap-1.5">{owner && <Avatar name={owner.name} size="sm" />}{owner ? owner.name : "—"}</p>
+          </div>
+        </div>
+        {(c.custom || []).length > 0 && (
+          <div className="mt-5 border-t border-zinc-100 pt-4">
+            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">Custom fields</p>
+            <div className="grid sm:grid-cols-2 gap-x-6 gap-y-2">
+              {c.custom.map((cf, i) => (
+                <div key={i} className="flex gap-2 text-sm"><span className="text-zinc-400 flex-none">{cf.k}:</span><span className="text-zinc-800">{cf.v}</span></div>
               ))}
             </div>
           </div>
-        ))
-      )}
+        )}
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4 mt-4">
+        <div className="bg-white border border-zinc-200 rounded-lg p-5">
+          <SectionTitle right={<Btn size="sm" kind="primary" onClick={() => setNewDeal(true)}><Plus size={13} /> New deal</Btn>}>Deals</SectionTitle>
+          {myDeals.length === 0 ? <p className="text-sm text-zinc-400">No deals yet. Start one to put this company on the board.</p> : (
+            <div className="space-y-2">
+              {myDeals.map((d) => {
+                const o = users.find((u) => u.id === d.ownerId);
+                return (
+                  <button key={d.id} onClick={() => setTab("pipeline")} className="w-full text-left border border-zinc-200 rounded-md px-3 py-2 hover:border-cyan-500 transition-colors">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs text-zinc-400">{d.did}</span>
+                      {d.lost ? <Chip color="red">Lost</Chip> : <Chip color="cyan">{stageName(d.stage)}</Chip>}
+                    </div>
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="font-mono text-sm tabular-nums">{fmtINRc(d.value)}</span>
+                      <span className="text-xs text-zinc-500">{o ? o.name : ""}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div className="bg-white border border-zinc-200 rounded-lg p-5">
+          <SectionTitle>Activity & history</SectionTitle>
+          <div className="flex gap-2 mb-3">
+            <Input placeholder="Add a note — call outcome, gossip, anything useful" value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addNote()} />
+            <Btn onClick={addNote}><Plus size={14} /></Btn>
+          </div>
+          <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+            {[...(c.activity || [])].reverse().map((a, i) => {
+              const by = users.find((u) => u.id === a.by);
+              return (
+                <div key={i} className="text-sm border-l-2 border-zinc-200 pl-3">
+                  <p className="text-zinc-800 whitespace-pre-wrap">{a.text}</p>
+                  <p className="text-xs text-zinc-400 mt-0.5">{by ? by.name : "?"} · {fmtDate(a.at)}</p>
+                </div>
+              );
+            })}
+            {(c.activity || []).length === 0 && <p className="text-sm text-zinc-400">Nothing logged yet.</p>}
+          </div>
+        </div>
+      </div>
+
+      {editing && <CompanyModal me={me} data={data} company={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={upsert} />}
+      {newDeal && <NewDealModal me={me} data={data} fixedCompany={c} onClose={() => setNewDeal(false)} onCreate={createDeal} />}
     </div>
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Finance (visible to everyone — integration pending)                     */
-/* ---------------------------------------------------------------------- */
+function NewDealModal({ me, data, fixedCompany, onClose, onCreate }) {
+  const { users, companies } = data;
+  const [companyId, setCompanyId] = useState(fixedCompany ? fixedCompany.id : (companies[0] ? companies[0].id : ""));
+  const [value, setValue] = useState("");
+  const [ownerId, setOwnerId] = useState(me.role === "agent" ? me.id : (users.find((u) => u.role === "agent") || me).id);
+  const canPickOwner = me.role !== "agent";
+  return (
+    <Modal title="New deal" onClose={onClose}
+      footer={<>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" disabled={!companyId} onClick={() => onCreate(value, ownerId, companyId)}><Check size={15} /> Create deal</Btn>
+      </>}>
+      <div className="space-y-3">
+        <Field label="Company" req>
+          {fixedCompany ? <Input value={fixedCompany.name} disabled />
+            : <Sel value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
+                {companies.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.cid})</option>)}
+              </Sel>}
+        </Field>
+        <Field label="Estimated value (₹)"><Input type="number" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 1500000" /></Field>
+        <Field label="Deal owner">
+          <Sel value={ownerId} onChange={(e) => setOwnerId(e.target.value)} disabled={!canPickOwner}>
+            {users.filter((u) => u.role === "agent" || u.role === "dept_head").map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </Sel>
+        </Field>
+        <p className="text-xs text-zinc-500">New deals always start at <span className="font-medium">Lead</span>. Every stage move after this goes through the AI gate — no silent drags.</p>
+      </div>
+    </Modal>
+  );
+}
 
-function FinancePlaceholder() {
-  const previewCards = [
-    { label: "Total Payment Reqs", icon: FileText },
-    { label: "Paid", icon: CheckCircle2 },
-    { label: "Pending", icon: Clock },
-    { label: "Active Budgets", icon: ShieldCheck },
-  ];
+/* ============================================================
+   PIPELINE + AI STAGE GATE
+   ============================================================ */
+
+function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
+  const { users, companies, deals, gates } = data;
+  const [scope, setScope] = useState(me.role === "agent" ? "mine" : "team");
+  const [showLost, setShowLost] = useState(false);
+  const [gate, setGate] = useState(null); // {deal, from, to, mode}
+  const [newDeal, setNewDeal] = useState(false);
+  const dragId = useRef(null);
+
+  const scopeIds = scope === "mine" ? [me.id]
+    : me.role === "dept_head" ? [me.id, ...teamOf(me, users).map((u) => u.id)]
+    : users.map((u) => u.id);
+  const visible = deals.filter((d) => scopeIds.includes(d.ownerId) && (showLost ? d.lost : !d.lost));
+
+  const onDrop = (toKey) => {
+    const d = deals.find((x) => x.id === dragId.current);
+    dragId.current = null;
+    if (!d || d.lost) return;
+    if (d.stage === toKey) return;
+    const fromI = stageIdx(d.stage), toI = stageIdx(toKey);
+    setGate({ deal: d, from: d.stage, to: toKey, mode: toI < fromI ? "back" : "advance" });
+  };
+
+  const applyMove = (deal, to, entryExtra) => {
+    const entry = { from: deal.stage, to, at: nowTS(), by: me.id, ...entryExtra };
+    const nextDeals = deals.map((x) => x.id === deal.id
+      ? { ...x, stage: to === "lost" ? x.stage : to, lost: to === "lost" ? true : x.lost, lostInfo: to === "lost" ? entryExtra : x.lostInfo, updatedAt: nowTS(), history: [...(x.history || []), entry] }
+      : x);
+    saveDeals(nextDeals);
+    const c = companies.find((x) => x.id === deal.companyId);
+    if (c) {
+      const text = to === "lost"
+        ? "Deal " + deal.did + " marked LOST. " + (entryExtra.summary || "")
+        : "Deal " + deal.did + " moved " + stageName(deal.stage) + " → " + stageName(to) + ". " + (entryExtra.summary || "");
+      saveCompanies(companies.map((x) => x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text }] } : x));
+    }
+    setGate(null);
+  };
+
+  const createDeal = (value, ownerId, companyId) => {
+    const d = {
+      id: uid(), did: nextSeq(deals, "did", "EB-D-"), companyId, ownerId, value: Number(value || 0),
+      stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
+      history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created." }],
+    };
+    saveDeals([d, ...deals]); setNewDeal(false);
+  };
+
+  const totalOpen = visible.filter((d) => !d.lost).reduce((s, d) => s + Number(d.value || 0), 0);
 
   return (
-    <div className="view">
-      <div className="view-header">
-        <div>
-          <h1>Finance</h1>
-          <p className="view-sub">Budget · PO · Payment Management</p>
-        </div>
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <h1 className="text-lg font-semibold mr-1">Pipeline</h1>
+        <span className="font-mono text-xs text-zinc-400 mr-auto">{visible.length} deals · {fmtINRc(totalOpen)}</span>
+        {me.role !== "agent" && (
+          <div className="flex rounded-md border border-zinc-300 overflow-hidden">
+            {[["mine", "Mine"], ["team", me.role === "admin" ? "Everyone" : "My team"]].map(([k, l]) => (
+              <button key={k} onClick={() => setScope(k)} className={cls("px-2.5 py-1 text-xs", scope === k ? "bg-zinc-900 text-white" : "bg-white text-zinc-600 hover:bg-zinc-100")}>{l}</button>
+            ))}
+          </div>
+        )}
+        <button onClick={() => setShowLost(!showLost)} className={cls("px-2.5 py-1 text-xs rounded-md border", showLost ? "bg-red-600 text-white border-red-600" : "bg-white text-zinc-600 border-zinc-300 hover:bg-zinc-100")}>
+          {showLost ? "Showing lost" : "Show lost"}
+        </button>
+        <Btn kind="primary" onClick={() => setNewDeal(true)}><Plus size={15} /> New deal</Btn>
       </div>
 
-      <div className="panel not-connected-panel">
-        <span className="stat-icon-badge stat-icon-amber" style={{ width: 40, height: 40 }}>
-          <AlertTriangle size={18} />
-        </span>
-        <h3 style={{ margin: "10px 0 4px" }}>Not connected yet</h3>
-        <p className="field-hint" style={{ maxWidth: 480, margin: "0 auto" }}>
-          This tab is visible to everyone so the Finance module is easy to find once it's wired up. It isn't
-          connected to live data yet — budgets, POs, and payments will appear here once that integration is in
-          place.
-        </p>
-      </div>
+      <p className="text-xs text-zinc-500 mb-3 flex items-center gap-1.5"><Sparkles size={13} className="text-cyan-600" /> Drag a card to the next stage — the AI gate will interview you before it moves. No data, no move.</p>
 
-      <div className="stat-row">
-        {previewCards.map((c) => (
-          <div className="stat-card" key={c.label} style={{ cursor: "default" }}>
-            <div className="stat-card-top">
-              <span className="stat-icon-badge"><c.icon size={15} /></span>
+      <div className="flex gap-3 overflow-x-auto pb-4 items-start">
+        {STAGES.map((s) => {
+          const col = visible.filter((d) => d.stage === s.key);
+          const colVal = col.reduce((sum, d) => sum + Number(d.value || 0), 0);
+          return (
+            <div key={s.key} className="w-64 flex-none bg-zinc-50 border border-zinc-200 rounded-lg"
+              onDragOver={(e) => e.preventDefault()} onDrop={() => onDrop(s.key)}>
+              <div className="px-3 py-2 border-b border-zinc-200 flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-700">{s.name}</span>
+                <span className="font-mono text-xs text-zinc-400 tabular-nums">{col.length}{colVal > 0 ? " · " + fmtINRc(colVal) : ""}</span>
+              </div>
+              <div className="p-2 space-y-2 min-h-16">
+                {col.map((d) => {
+                  const c = companies.find((x) => x.id === d.companyId);
+                  const o = users.find((u) => u.id === d.ownerId);
+                  const stale = dealStaleDays(d);
+                  const sc = d.lost ? "red" : stale >= STALE_RED ? "red" : stale >= STALE_AMBER ? "amber" : "emerald";
+                  const compPct = c ? completeness(c) : 0;
+                  return (
+                    <div key={d.id} draggable={!d.lost} onDragStart={() => (dragId.current = d.id)}
+                      className={cls("bg-white border rounded-md p-2.5 cursor-grab active:cursor-grabbing border-l-4",
+                        sc === "red" ? "border-zinc-200 border-l-red-600" : sc === "amber" ? "border-zinc-200 border-l-amber-500" : "border-zinc-200 border-l-emerald-500")}>
+                      <div className="flex items-start justify-between gap-2">
+                        <button onClick={() => c && openCompany(c.id)} className="font-medium text-sm text-zinc-900 hover:text-cyan-700 text-left truncate">{c ? c.name : "?"}</button>
+                        <span className="font-mono text-xs text-zinc-400 flex-none">{d.did}</span>
+                      </div>
+                      <div className="flex items-center justify-between mt-1.5">
+                        <span className="font-mono text-sm tabular-nums text-zinc-800">{fmtINRc(d.value)}</span>
+                        <span className={cls("flex items-center gap-1 font-mono text-xs tabular-nums", sc === "red" ? "text-red-600 font-semibold" : sc === "amber" ? "text-amber-600" : "text-zinc-400")}>
+                          <Clock size={11} /> {stale}d
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between mt-2">
+                        <span className="flex items-center gap-1 text-xs text-zinc-500">{o && <Avatar name={o.name} size="sm" />}</span>
+                        <div className="flex items-center gap-2">
+                          {c && compPct < 70 && <span title="Company data incomplete"><AlertTriangle size={13} className="text-red-500" /></span>}
+                          {!d.lost && d.stage !== "po" && (
+                            <button onClick={() => setGate({ deal: d, from: d.stage, to: "lost", mode: "lost" })}
+                              className="text-xs text-zinc-400 hover:text-red-600" title="Mark lost">lost?</button>
+                          )}
+                        </div>
+                      </div>
+                      {d.lost && <p className="mt-1.5 text-xs text-red-600 line-clamp-2">{(d.lostInfo && d.lostInfo.summary) || "Lost."}</p>}
+                    </div>
+                  );
+                })}
+                {col.length === 0 && <p className="text-xs text-zinc-300 text-center py-3">—</p>}
+              </div>
             </div>
-            <div className="stat-label">{c.label}</div>
-            <div className="stat-value" style={{ color: "var(--text-faint)" }}>—</div>
+          );
+        })}
+      </div>
+
+      {gate && gate.mode === "back" && (
+        <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
+      )}
+      {gate && (gate.mode === "advance" || gate.mode === "lost") && (
+        <StageGateModal me={me} data={data} gate={gate} onClose={() => setGate(null)} onComplete={(payload) => applyMove(gate.deal, gate.mode === "lost" ? "lost" : gate.to, payload)} />
+      )}
+      {newDeal && <NewDealModal me={me} data={data} onClose={() => setNewDeal(false)} onCreate={createDeal} />}
+    </div>
+  );
+}
+
+function BackMoveModal({ gate, onClose, onConfirm }) {
+  const [reason, setReason] = useState("");
+  return (
+    <Modal title={"Move back to " + stageName(gate.to)} onClose={onClose}
+      footer={<>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="danger" disabled={reason.trim().length < 10} onClick={() => onConfirm(reason.trim())}>Confirm downgrade</Btn>
+      </>}>
+      <p className="text-sm text-zinc-600 mb-2">Moving a deal backwards is a downgrade. Say exactly why (min 10 characters) — this goes on permanent record.</p>
+      <TA value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Client paused budget till next quarter; RFQ withdrawn." />
+    </Modal>
+  );
+}
+
+function StageGateModal({ me, data, gate, onClose, onComplete }) {
+  const { users, companies, gates } = data;
+  const { deal, from, to, mode } = gate;
+  const company = companies.find((c) => c.id === deal.companyId) || {};
+  const isLost = mode === "lost";
+  const marker = isLost ? "LOST_COMPLETE" : "STAGE_COMPLETE";
+  const reqs = isLost
+    ? ["What exactly did you pitch", "The story / angle you used", "The exact objection and who said it", "Competitor or alternative they chose", "What would revive this deal"]
+    : (gates[to] && gates[to].length ? gates[to] : DEFAULT_GATES[to] || []);
+
+  const [msgs, setMsgs] = useState([]); // {role:'user'|'assistant', content}
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(null); // parsed JSON
+  const [forceReason, setForceReason] = useState("");
+  const [showForce, setShowForce] = useState(false);
+  const bodyRef = useRef(null);
+  const speech = useSpeech((t) => setInput((p) => (p ? p + " " : "") + t));
+
+  const system = useMemo(() => {
+    const histTail = (deal.history || []).slice(-5).map((h) => fmtDate(h.at) + " " + (h.from ? stageName(h.from) + "→" : "") + stageName(h.to) + ": " + (h.summary || "")).join("\n");
+    const compJSON = JSON.stringify({
+      name: company.name, contact: company.contactPerson, designation: company.designation, phone: company.phone,
+      city: company.city, industry: company.industry, whatTheyDo: company.whatTheyDo, source: company.source,
+      potential: company.potential, custom: company.custom, dataCompleteness: completeness(company) + "%", missing: missingFields(company),
+    });
+    return [
+      "You are the sales-ops gatekeeper at Elecbits, an Indian electronics ODM/EMS company (design + manufacturing).",
+      isLost
+        ? "A sales agent wants to mark a deal LOST. Your job: extract the full post-mortem so the team learns something. Do not let them off easy."
+        : "A sales agent wants to move a deal from \"" + stageName(from) + "\" to \"" + stageName(to) + "\". Your job: extract complete, specific information before the move is allowed.",
+      "COMPANY RECORD: " + compJSON,
+      "DEAL: " + deal.did + ", value " + fmtINR(deal.value) + ", currently in " + stageName(deal.stage) + " for " + dealStaleDays(deal) + " days.",
+      "RECENT HISTORY:\n" + (histTail || "(none)"),
+      "REQUIRED BEFORE " + (isLost ? "MARKING LOST" : "\"" + stageName(to) + "\"") + ":\n- " + reqs.join("\n- "),
+      "RULES:",
+      "- Ask ONE short, pointed question at a time. You already know the company record — never ask for what is already there; reference it to sound informed.",
+      "- Tone: a sharp, fair sales head who hates vague answers. Professional, a little tough, never rude.",
+      "- If an answer is vague (\"client not interested\", \"meeting was ok\", \"will see\"), probe immediately: what exactly was pitched, what story was used, what was the precise objection, who said it.",
+      "- Never accept one-word or evasive answers for a required item. Push back once, then accept their best honest answer and move on.",
+      "- If one answer covers several required items, accept them all and continue.",
+      "- Keep every reply under 60 words.",
+      "- When ALL required items are covered with specifics, reply with ONLY this on one line and nothing else: " + marker + " {\"summary\":\"2-3 sentence factual summary\",\"facts\":{\"key\":\"value pairs of what you learned\"},\"risks\":[\"risk strings\"],\"next_action\":\"single concrete next step with timeframe\"}",
+      "- The JSON must be valid. Do not use markdown.",
+    ].join("\n");
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setBusy(true);
+      try {
+        const first = await askClaude(system, [{ role: "user", content: "Begin the gate check now. Ask your first question." }]);
+        if (alive) setMsgs([{ role: "assistant", content: first }]);
+      } catch (e) { if (alive) setErr("Could not reach the AI gate. Check connection and retry."); }
+      if (alive) setBusy(false);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy, done]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy || done) return;
+    setInput(""); setErr("");
+    const nextMsgs = [...msgs, { role: "user", content: text }];
+    setMsgs(nextMsgs); setBusy(true);
+    try {
+      const reply = await askClaude(system, [{ role: "user", content: "Begin the gate check now. Ask your first question." }, ...nextMsgs.map((m) => ({ role: m.role, content: m.content }))]);
+      const parsed = extractMarkedJSON(reply, marker);
+      if (parsed) { setDone(parsed); setMsgs([...nextMsgs, { role: "assistant", content: "Gate cleared. Review the summary below and confirm." }]); }
+      else setMsgs([...nextMsgs, { role: "assistant", content: reply }]);
+    } catch (e) { setErr("AI call failed. Your last answer is kept — press send again to retry."); setInput(text); setMsgs(msgs); }
+    setBusy(false);
+  };
+
+  const confirm = () => {
+    onComplete({
+      summary: done.summary || "", facts: done.facts || {}, risks: done.risks || [], next_action: done.next_action || "",
+      transcript: msgs.map((m) => (m.role === "user" ? "Agent: " : "Gate: ") + m.content),
+      gated: true,
+    });
+  };
+  const force = () => {
+    onComplete({ summary: "FORCED by " + me.name + ": " + forceReason.trim(), facts: {}, risks: ["Gate bypassed by admin"], next_action: "", forced: true });
+  };
+
+  return (
+    <Modal wide onClose={onClose}
+      title={
+        <span className="flex items-center gap-2">
+          <Sparkles size={16} className="text-cyan-600" />
+          {isLost ? "Lost post-mortem — " + (company.name || deal.did) : (company.name || deal.did) + ": " + stageName(from) + " → " + stageName(to)}
+        </span>
+      }>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {reqs.map((r, i) => <Chip key={i} color="zinc">{r}</Chip>)}
+      </div>
+      <div ref={bodyRef} className="h-80 overflow-y-auto border border-zinc-200 rounded-lg bg-zinc-50 p-3 space-y-3">
+        {msgs.map((m, i) => (
+          <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+            <div className={cls("max-w-md rounded-lg px-3 py-2 text-sm whitespace-pre-wrap",
+              m.role === "user" ? "bg-zinc-900 text-zinc-100" : "bg-white border border-zinc-200 text-zinc-800")}>
+              {m.content}
+            </div>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Profile (visible to everyone — will link to the HR employee portal)     */
-/* ---------------------------------------------------------------------- */
-
-function Profile({ users, userId, userName, department, tier }) {
-  const me = (users || []).find((u) => u.id === userId);
-  const initials = (userName || "?")
-    .split(" ")
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-
-  const documents = [
-    { label: "Offer Letter" },
-    { label: "ID Proof" },
-    { label: "Tax Documents" },
-    { label: "Payslips" },
-  ];
-
-  return (
-    <div className="view">
-      <div className="view-header">
-        <div>
-          <h1>My Profile</h1>
-          <p className="view-sub">Personal details and documents</p>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <div className="topbar-avatar" style={{ width: 52, height: 52, fontSize: 18 }}>{initials}</div>
-          <div>
-            <h2 style={{ margin: 0 }}>{userName}</h2>
-            <Chip tone={roleTone(department, tier)}>{roleLabel(department, tier)}</Chip>
-          </div>
-        </div>
-        <div className="kv" style={{ marginTop: 16 }}>
-          <span>Email</span>
-          <span className="mono">{me?.email || "—"}</span>
-        </div>
-        <div className="kv">
-          <span>Department</span>
-          <span>{department || "—"}</span>
-        </div>
-        <div className="kv">
-          <span>Tier</span>
-          <span>{tierLabel(tier)}</span>
-        </div>
-        <p className="field-hint" style={{ marginTop: 10 }}>
-          To update these details, contact your Main Admin on the Users page.
-        </p>
-      </div>
-
-      <div className="panel">
-        <h3 className="panel-title">Documents</h3>
-        <p className="field-hint" style={{ marginBottom: 10 }}>
-          This section will link to the HR Employee Data Portal — not connected yet.
-        </p>
-        <ul className="stake-list">
-          {documents.map((d) => (
-            <li key={d.label}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span className="cell-primary">{d.label}</span>
-                <Chip>Not available yet</Chip>
+        {busy && <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono"><Loader2 size={13} className="animate-spin" /> gate is thinking…</div>}
+        {err && <div className="text-xs text-red-600 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</div>}
+        {done && (
+          <div className="bg-white border-2 border-emerald-500 rounded-lg p-3">
+            <p className="flex items-center gap-1.5 text-emerald-700 font-semibold text-sm"><CheckCircle2 size={15} /> Gate cleared</p>
+            <p className="text-sm text-zinc-800 mt-1.5">{done.summary}</p>
+            {done.facts && Object.keys(done.facts).length > 0 && (
+              <div className="mt-2 grid sm:grid-cols-2 gap-x-4 gap-y-1">
+                {Object.entries(done.facts).map(([k, v]) => (
+                  <p key={k} className="text-xs"><span className="text-zinc-400">{k}:</span> <span className="text-zinc-700">{String(v)}</span></p>
+                ))}
               </div>
-            </li>
-          ))}
-        </ul>
+            )}
+            {done.risks && done.risks.length > 0 && (
+              <p className="text-xs text-amber-700 mt-2 flex items-start gap-1"><AlertTriangle size={12} className="mt-0.5 flex-none" /> {done.risks.join(" · ")}</p>
+            )}
+            {done.next_action && <p className="text-xs text-zinc-600 mt-1.5"><span className="font-semibold">Next:</span> {done.next_action}</p>}
+          </div>
+        )}
       </div>
+
+      {!done ? (
+        <div className="mt-3">
+          <div className="flex gap-2 items-end">
+            <TA value={input} onChange={(e) => setInput(e.target.value)} placeholder={speech.on ? "Listening… speak your answer" : "Type your answer, or use the mic"}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} className="flex-1 min-h-12" />
+            {speech.supported && (
+              <Btn kind={speech.on ? "danger" : "ghost"} onClick={speech.toggle} title={speech.on ? "Stop recording" : "Record answer"}>
+                {speech.on ? <MicOff size={15} /> : <Mic size={15} />}
+              </Btn>
+            )}
+            <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={15} /></Btn>
+          </div>
+          <div className="flex items-center justify-between mt-2">
+            <p className="text-xs text-zinc-400">Enter to send · Shift+Enter for a new line{speech.supported ? " · mic transcribes as you speak" : ""}</p>
+            {me.role === "admin" && !showForce && <button onClick={() => setShowForce(true)} className="text-xs text-zinc-400 hover:text-red-600">Force move (admin)</button>}
+          </div>
+          {showForce && (
+            <div className="mt-2 flex gap-2">
+              <Input placeholder="Reason for bypassing the gate (goes on record)" value={forceReason} onChange={(e) => setForceReason(e.target.value)} />
+              <Btn kind="danger" size="sm" disabled={forceReason.trim().length < 10} onClick={force}>Force</Btn>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="mt-3 flex justify-end gap-2">
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn kind="success" onClick={confirm}><Check size={15} /> {isLost ? "Confirm lost" : "Confirm move to " + stageName(to)}</Btn>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/* ============================================================
+   PERFORMANCE — KPI · TRAINING · WORK UPDATE SHEET
+   ============================================================ */
+
+function canSetTargets(me, u) {
+  if (me.role === "admin") return u.role === "dept_head" || u.role === "agent";
+  if (me.role === "dept_head") return u.role === "agent" && u.dept === me.dept;
+  return false;
+}
+
+function PerformanceView({ me, data, saveKpis, saveTrainings, saveWorklogs, fixNow, goFix }) {
+  const { users } = data;
+  const [viewId, setViewId] = useState(me.id);
+  const [ptab, setPtab] = useState("kpi");
+  const team = teamOf(me, users);
+  const viewUser = users.find((u) => u.id === viewId) || me;
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <h1 className="text-lg font-semibold mr-auto">Performance</h1>
+        {team.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {[me, ...team].map((u) => (
+              <button key={u.id} onClick={() => setViewId(u.id)}
+                className={cls("px-2.5 py-1 rounded-md text-xs border", viewId === u.id ? "bg-zinc-900 text-white border-zinc-900" : "bg-white text-zinc-600 border-zinc-300 hover:bg-zinc-100")}>
+                {u.id === me.id ? "Me" : u.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {team.length > 0 && <TeamTable me={me} data={data} team={team} onPick={setViewId} />}
+
+      <div className="flex gap-1 border-b border-zinc-200 mb-4 mt-2">
+        {[["kpi", "KPI", TrendingUp], ["training", "Training", GraduationCap], ["worklog", "Work update sheet", ClipboardList]].map(([k, l, I]) => (
+          <button key={k} onClick={() => setPtab(k)}
+            className={cls("flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px", ptab === k ? "border-cyan-600 text-cyan-700 font-medium" : "border-transparent text-zinc-500 hover:text-zinc-800")}>
+            <I size={14} /> {l}
+          </button>
+        ))}
+      </div>
+
+      {ptab === "kpi" && <KpiTab me={me} viewUser={viewUser} data={data} saveKpis={saveKpis} goFix={goFix} />}
+      {ptab === "training" && <TrainingTab me={me} viewUser={viewUser} data={data} saveTrainings={saveTrainings} />}
+      {ptab === "worklog" && <WorklogTab me={me} viewUser={viewUser} data={data} saveWorklogs={saveWorklogs} />}
     </div>
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Reports (Sales Manager / Main Admin)                                    */
-/* ---------------------------------------------------------------------- */
-
-function Reports({ clients, projects, users }) {
-  const salesTeam = (users || []).filter((u) => belongsToDept(u, "Sales"));
-
-  const rows = salesTeam.map((m) => {
-    const clientsAdded = clients.filter((c) => c.createdBy === m.name).length;
-    const leadsCreated = projects.filter((p) => p.createdBy === m.name).length;
-    const callsMade = projects.reduce((sum, p) => sum + (p.callLogs || []).filter((c) => c.by === m.name).length, 0);
-    const stageChanges = projects.reduce((sum, p) => sum + (p.history || []).filter((h) => h.by === m.name).length, 0);
-    return { ...m, clientsAdded, leadsCreated, callsMade, stageChanges };
-  });
-
-  const totals = rows.reduce(
-    (acc, r) => ({
-      clientsAdded: acc.clientsAdded + r.clientsAdded,
-      leadsCreated: acc.leadsCreated + r.leadsCreated,
-      callsMade: acc.callsMade + r.callsMade,
-      stageChanges: acc.stageChanges + r.stageChanges,
-    }),
-    { clientsAdded: 0, leadsCreated: 0, callsMade: 0, stageChanges: 0 }
-  );
-
+function TeamTable({ me, data, team, onPick }) {
+  const { users, companies, deals, kpis, trainings, worklogs } = data;
   return (
-    <div className="view">
-      <div className="view-header">
-        <div>
-          <h1>Reports</h1>
-          <p className="view-sub">Per-rep activity across the Sales team.</p>
-        </div>
+    <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden mb-4">
+      <div className="px-4 py-2 border-b border-zinc-200 flex items-center gap-2">
+        <Users size={14} className="text-zinc-400" />
+        <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">Team status — red rows need action today</span>
       </div>
-
-      <div className="stat-row">
-        <div className="stat-card">
-          <div className="stat-card-top"><span className="stat-icon-badge stat-icon-blue"><Building2 size={15} /></span></div>
-          <div className="stat-label">Clients Added</div>
-          <div className="stat-value">{totals.clientsAdded}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-card-top"><span className="stat-icon-badge stat-icon-purple"><FileText size={15} /></span></div>
-          <div className="stat-label">Leads Created</div>
-          <div className="stat-value">{totals.leadsCreated}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-card-top"><span className="stat-icon-badge stat-icon-amber"><Clock size={15} /></span></div>
-          <div className="stat-label">Calls Made</div>
-          <div className="stat-value">{totals.callsMade}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-card-top"><span className="stat-icon-badge stat-icon-green"><RefreshCw size={15} /></span></div>
-          <div className="stat-label">Stage Changes</div>
-          <div className="stat-value">{totals.stageChanges}</div>
-        </div>
-      </div>
-
-      <div className="table-wrap">
-        <table>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
           <thead>
-            <tr>
-              <th>Rep</th>
-              <th>Tier</th>
-              <th>Clients Added</th>
-              <th>Leads Created</th>
-              <th>Calls Made</th>
-              <th>Stage Changes</th>
+            <tr className="text-left text-xs text-zinc-400 border-b border-zinc-100">
+              <th className="px-4 py-2 font-medium">Person</th>
+              <th className="px-4 py-2 font-medium">Health</th>
+              <th className="px-4 py-2 font-medium">KPI pace</th>
+              <th className="px-4 py-2 font-medium">Missed logs (7d)</th>
+              <th className="px-4 py-2 font-medium">Overdue training</th>
+              <th className="px-4 py-2" />
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="field-hint" style={{ padding: 16 }}>
-                  No Sales team members yet.
-                </td>
-              </tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={r.id}>
-                  <td className="cell-primary">{r.name}</td>
-                  <td><Chip tone={roleTone(r.department, r.tier)}>{tierLabel(r.tier)}</Chip></td>
-                  <td className="mono">{r.clientsAdded}</td>
-                  <td className="mono">{r.leadsCreated}</td>
-                  <td className="mono">{r.callsMade}</td>
-                  <td className="mono">{r.stageChanges}</td>
+            {team.map((u) => {
+              const h = healthOf(u, data);
+              const hc = healthColor(h);
+              const pace = kpiPace(u, users, companies, deals, kpis);
+              const missed = disciplineScore(u.id, worklogs).missed.length;
+              const od = trainingScore(u.id, trainings).overdue.length;
+              return (
+                <tr key={u.id} className={cls("border-b border-zinc-50", hc === "red" && "bg-red-50")}>
+                  <td className="px-4 py-2"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" /> {u.name}<span className="text-xs text-zinc-400">· {roleLabel(u.role)}</span></span></td>
+                  <td className="px-4 py-2"><span className="flex items-center gap-1.5 font-mono tabular-nums"><Dot color={hc} pulse={hc === "red"} />{h == null ? "—" : h + "%"}</span></td>
+                  <td className="px-4 py-2 font-mono tabular-nums">{pace == null ? "no targets" : Math.round(pace * 100) + "%"}</td>
+                  <td className={cls("px-4 py-2 font-mono tabular-nums", missed > 0 ? "text-red-600 font-semibold" : "text-zinc-500")}>{missed}</td>
+                  <td className={cls("px-4 py-2 font-mono tabular-nums", od > 0 ? "text-red-600 font-semibold" : "text-zinc-500")}>{od}</td>
+                  <td className="px-4 py-2 text-right"><Btn size="sm" onClick={() => onPick(u.id)}>Open <ArrowRight size={12} /></Btn></td>
                 </tr>
-              ))
-            )}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -2354,991 +1541,729 @@ function Reports({ clients, projects, users }) {
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* User management (Main Admin only)                                       */
-/* ---------------------------------------------------------------------- */
+function KpiTab({ me, viewUser, data, saveKpis, goFix }) {
+  const { users, companies, deals, kpis } = data;
+  const [editTargets, setEditTargets] = useState(false);
+  if (viewUser.role === "admin" || viewUser.role === "finance") {
+    return <Empty icon={TrendingUp} title="No KPI targets for this role" sub="Pick a team member above to review their numbers." />;
+  }
+  const t = kpis[viewUser.id];
+  const mk = monthKey();
+  const a = actualsForUser(viewUser, users, companies, deals, mk);
+  const now = new Date();
+  const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const frac = Math.max(0.05, now.getDate() / dim);
+  const pace = kpiPace(viewUser, users, companies, deals, kpis);
+  const alarm = pace != null && pace < 0.6;
+  const items = fixNowItems(viewUser, data);
+  const setterAllowed = canSetTargets(me, viewUser);
+  const monthLabel = now.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
 
-function UserManagement({ users, currentUserId, onCreate, onSave, onDelete }) {
-  const [form, setForm] = useState(EMPTY_USER_FORM);
-  const [showForm, setShowForm] = useState(false);
-  const [error, setError] = useState("");
-  const [query, setQuery] = useState("");
+  return (
+    <div>
+      {alarm && (
+        <div className="rounded-lg bg-red-700 text-white p-4 mb-4">
+          <p className="flex items-center gap-2 font-semibold"><Flame size={18} className="text-amber-300" /> {viewUser.id === me.id ? "YOU ARE BEHIND TARGET" : viewUser.name.toUpperCase() + " IS BEHIND TARGET"} — pace {Math.round(pace * 100)}%</p>
+          <p className="text-sm text-red-100 mt-1">This board stays red until the items below are cleared. {viewUser.role === "dept_head" ? "Team numbers roll up to you." : "Every day behind pace makes the month harder."}</p>
+          <ul className="mt-3 space-y-1">
+            {items.slice(0, 8).map((it, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm">
+                <XCircle size={14} className="mt-0.5 flex-none text-red-200" />
+                <button onClick={() => goFix(it)} className="text-left hover:underline">{it.label}</button>
+              </li>
+            ))}
+            {items.length === 0 && <li className="text-sm text-red-100">KPI pace is the gap — add companies, book meetings, push deals forward.</li>}
+          </ul>
+        </div>
+      )}
 
-  const activeCount = users.filter((u) => u.active !== false).length;
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm text-zinc-500">{monthLabel} · day {now.getDate()} of {dim} · pace expectation <span className="font-mono tabular-nums">{Math.round(frac * 100)}%</span> of monthly target{viewUser.role === "dept_head" ? " · team roll-up" : ""}</p>
+        {setterAllowed && <Btn size="sm" onClick={() => setEditTargets(true)}><Pencil size={13} /> Set targets</Btn>}
+      </div>
 
-  const visible = users.filter((u) => {
-    if (!query) return true;
-    const hay = `${u.name} ${u.email} ${u.department || ""}`.toLowerCase();
-    return hay.includes(query.toLowerCase());
+      {!t ? (
+        <Empty icon={TrendingUp} title="No targets set yet"
+          sub={viewUser.id === me.id ? "Ask your " + (viewUser.role === "dept_head" ? "admin" : "department head") + " to set your monthly targets." : "Set monthly targets to activate pace tracking and the alarm system."}
+          action={setterAllowed ? <Btn kind="primary" onClick={() => setEditTargets(true)}><Plus size={14} /> Set targets</Btn> : null} />
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {KPI_METRICS.map((m) => {
+            const target = Number(t[m.key] || 0);
+            if (target <= 0) return null;
+            const actual = a[m.key];
+            const expected = m.pace ? target * frac : target;
+            const ratio = clamp01(actual / Math.max(0.0001, expected));
+            const color = ratio >= 0.85 ? "emerald" : ratio >= 0.6 ? "amber" : "red";
+            const fmt = (v) => m.money ? fmtINRc(v) : Math.round(v) + (m.pct ? "%" : "");
+            return (
+              <div key={m.key} className={cls("bg-white border rounded-lg p-4", color === "red" ? "border-red-300 ring-1 ring-red-200" : "border-zinc-200")}>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-zinc-500">{m.label}</p>
+                  <Dot color={color} pulse={color === "red"} />
+                </div>
+                <p className="mt-2 font-mono tabular-nums text-2xl text-zinc-900">{fmt(actual)}<span className="text-sm text-zinc-400"> / {fmt(target)}</span></p>
+                <Bar pct={target > 0 ? (actual / target) * 100 : 0} color={color} className="mt-2" />
+                <p className="text-xs text-zinc-400 mt-1.5">{m.pace ? "Pace by today: " + fmt(expected) : "Fixed standard, no pace"} · <span className={cls("font-mono tabular-nums", color === "red" ? "text-red-600 font-semibold" : color === "amber" ? "text-amber-600" : "text-emerald-600")}>{Math.round(ratio * 100)}%</span></p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editTargets && <KpiModal viewUser={viewUser} kpis={kpis} onClose={() => setEditTargets(false)} onSave={(vals) => { saveKpis({ ...kpis, [viewUser.id]: vals }); setEditTargets(false); }} />}
+    </div>
+  );
+}
+
+function KpiModal({ viewUser, kpis, onClose, onSave }) {
+  const [v, setV] = useState(() => ({ ...(kpis[viewUser.id] || {}) }));
+  return (
+    <Modal title={"Monthly targets — " + viewUser.name} onClose={onClose}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" onClick={() => onSave(v)}><Check size={15} /> Save targets</Btn></>}>
+      <p className="text-xs text-zinc-500 mb-3">Set 0 to skip a metric. Pace is measured daily against these — falling behind turns the dashboard red immediately, not at month end.</p>
+      <div className="grid sm:grid-cols-2 gap-3">
+        {KPI_METRICS.map((m) => (
+          <Field key={m.key} label={m.label + (m.money ? " (₹)" : m.pct ? " (%)" : "")}>
+            <Input type="number" value={v[m.key] == null ? "" : v[m.key]} onChange={(e) => setV((p) => ({ ...p, [m.key]: e.target.value === "" ? 0 : Number(e.target.value) }))} />
+          </Field>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+function TrainingTab({ me, viewUser, data, saveTrainings }) {
+  const { users, trainings, knowledge } = data;
+  const [assign, setAssign] = useState(false);
+  const mine = trainings.filter((t) => t.assignedTo === viewUser.id);
+  const canAssign = me.role === "admin" || me.role === "dept_head";
+  const canUpdate = (t) => me.id === viewUser.id || me.role === "admin" || t.assignedBy === me.id;
+  const setStatus = (t, status) => saveTrainings(trainings.map((x) => x.id === t.id ? { ...x, status } : x));
+  const remove = (t) => saveTrainings(trainings.filter((x) => x.id !== t.id));
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+        <p className="text-sm text-zinc-500">Assigned learning for <span className="font-medium text-zinc-800">{viewUser.id === me.id ? "you" : viewUser.name}</span>. Overdue items pull the health score down like a missed KPI.</p>
+        {canAssign && <Btn size="sm" kind="primary" onClick={() => setAssign(true)}><Plus size={13} /> Assign training</Btn>}
+      </div>
+      {mine.length === 0 ? (
+        <Empty icon={GraduationCap} title="No training assigned" sub="Knowledge is power — random pitching is not a strategy. Assign product and commercial modules from the knowledge base." action={canAssign ? <Btn kind="primary" onClick={() => setAssign(true)}><Plus size={14} /> Assign training</Btn> : null} />
+      ) : (
+        <div className="space-y-2">
+          {mine.map((t) => {
+            const overdue = t.status !== "done" && t.due && t.due < todayStr();
+            const k = knowledge.find((x) => x.id === t.knowledgeId);
+            const by = users.find((u) => u.id === t.assignedBy);
+            return (
+              <div key={t.id} className={cls("bg-white border rounded-lg p-3 flex flex-wrap items-center gap-3", overdue ? "border-red-300 ring-1 ring-red-200" : "border-zinc-200")}>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm text-zinc-900">{t.title}</p>
+                  <p className="text-xs text-zinc-400 mt-0.5">Due {fmtDate(t.due)} · by {by ? by.name : "?"}{k ? " · material: " + k.title : ""}</p>
+                </div>
+                {overdue && <Chip color="red"><AlertTriangle size={11} /> Overdue</Chip>}
+                {t.status === "done" ? <Chip color="emerald"><Check size={11} /> Done</Chip>
+                  : canUpdate(t) ? (
+                    <Sel value={t.status} onChange={(e) => setStatus(t, e.target.value)} className="w-36">
+                      <option value="assigned">Assigned</option>
+                      <option value="in_progress">In progress</option>
+                      <option value="done">Done</option>
+                    </Sel>
+                  ) : <Chip color={t.status === "in_progress" ? "cyan" : "zinc"}>{t.status === "in_progress" ? "In progress" : "Assigned"}</Chip>}
+                {(me.role === "admin" || t.assignedBy === me.id) && <Btn size="sm" onClick={() => remove(t)} title="Remove"><Trash2 size={13} /></Btn>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {assign && <AssignTrainingModal me={me} data={data} defaultTo={viewUser.role === "agent" ? viewUser.id : ""} onClose={() => setAssign(false)}
+        onSave={(t) => { saveTrainings([{ ...t, id: uid(), assignedBy: me.id, status: "assigned" }, ...trainings]); setAssign(false); }} />}
+    </div>
+  );
+}
+
+function AssignTrainingModal({ me, data, defaultTo, onClose, onSave }) {
+  const { users, knowledge } = data;
+  const pool = me.role === "admin" ? users.filter((u) => u.role === "agent" || u.role === "dept_head") : teamOf(me, users);
+  const [f, setF] = useState({ title: "", assignedTo: defaultTo || (pool[0] ? pool[0].id : ""), due: todayStr(), knowledgeId: "" });
+  return (
+    <Modal title="Assign training" onClose={onClose}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={!f.title.trim() || !f.assignedTo} onClick={() => onSave(f)}><Check size={15} /> Assign</Btn></>}>
+      <div className="space-y-3">
+        <Field label="Title" req><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="e.g. ESL product line deep-dive" /></Field>
+        <Field label="Assign to" req>
+          <Sel value={f.assignedTo} onChange={(e) => setF({ ...f, assignedTo: e.target.value })}>
+            {pool.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </Sel>
+        </Field>
+        <Field label="Due date"><Input type="date" value={f.due} onChange={(e) => setF({ ...f, due: e.target.value })} /></Field>
+        <Field label="Link knowledge material (optional)">
+          <Sel value={f.knowledgeId} onChange={(e) => setF({ ...f, knowledgeId: e.target.value })}>
+            <option value="">— none —</option>
+            {knowledge.map((k) => <option key={k.id} value={k.id}>{k.title}</option>)}
+          </Sel>
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+function last7Days() {
+  return [...Array(7)].map((_, i) => {
+    const d = new Date(Date.now() - (6 - i) * 86400000);
+    return { date: localISO(d), dow: d.getDay(), label: d.toLocaleDateString("en-IN", { weekday: "short" }), dnum: d.getDate() };
   });
+}
 
-  function resetForm() {
-    setForm(EMPTY_USER_FORM);
-    setError("");
-    setShowForm(false);
-  }
+function WorklogTab({ me, viewUser, data, saveWorklogs }) {
+  const { users, worklogs } = data;
+  const days = last7Days();
+  const today = todayStr();
+  const existing = worklogs.find((w) => w.userId === me.id && w.date === today);
+  const [f, setF] = useState(() => existing || { companiesWorked: "", calls: "", meetings: "", progress: "", blockers: "", next: "" });
+  const [saved, setSaved] = useState(false);
+  const [viewLog, setViewLog] = useState(null);
+  const isSelf = viewUser.id === me.id && (me.role === "agent" || me.role === "dept_head");
+  const team = teamOf(me, users);
 
-  function submit(e) {
-    e.preventDefault();
-    if (!form.name.trim() || !form.email.trim() || !form.password.trim()) {
-      setError("Name, email, and password are all required.");
-      return;
-    }
-    const duplicate = users.find((u) => u.email.toLowerCase() === form.email.trim().toLowerCase());
-    if (duplicate) {
-      setError("Another user already has that email.");
-      return;
-    }
-    onCreate({
-      id: uid(),
-      name: form.name.trim(),
-      email: form.email.trim(),
-      password: form.password,
-      department: form.tier === "Main Admin" ? null : form.department,
-      additionalDepartments: [],
-      tier: form.tier,
-      active: true,
-      createdAt: new Date().toISOString(),
-    });
-    resetForm();
-  }
+  const submit = () => {
+    if (!String(f.progress || "").trim()) return;
+    const entry = { id: existing ? existing.id : uid(), userId: me.id, date: today, companiesWorked: f.companiesWorked || "", calls: Number(f.calls || 0), meetings: Number(f.meetings || 0), progress: f.progress || "", blockers: f.blockers || "", next: f.next || "" };
+    const next = worklogs.some((w) => w.id === entry.id) ? worklogs.map((w) => (w.id === entry.id ? entry : w)) : [entry, ...worklogs];
+    saveWorklogs(next); setSaved(true); setTimeout(() => setSaved(false), 2000);
+  };
 
-  function updateUser(u, changes) {
-    onSave({ ...u, ...changes });
-  }
-
-  function addAdditionalDept(u, dept) {
-    if (!dept || dept === u.department || (u.additionalDepartments || []).includes(dept)) return;
-    updateUser(u, { additionalDepartments: [...(u.additionalDepartments || []), dept] });
-  }
-
-  function removeAdditionalDept(u, dept) {
-    updateUser(u, { additionalDepartments: (u.additionalDepartments || []).filter((d) => d !== dept) });
-  }
+  const cellFor = (userId, d) => {
+    const log = worklogs.find((w) => w.userId === userId && w.date === d.date);
+    if (d.dow === 0) return { state: "off" };
+    if (log) return { state: "ok", log };
+    if (d.date === today) return { state: "due" };
+    return { state: "miss" };
+  };
 
   return (
-    <div className="view">
-      <div className="view-header">
-        <div className="admin-console-title">
-          <span className="stat-icon-badge stat-icon-purple"><Users size={16} /></span>
-          <div>
-            <h1 style={{ margin: 0 }}>Employees</h1>
-            <p className="view-sub">
-              {users.length} total · <span style={{ color: "var(--green)", fontWeight: 600 }}>{activeCount} active</span>
-            </p>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <div className="search-box" style={{ width: 220 }}>
-            <Search size={14} />
-            <input placeholder="Search name, email, dept…" value={query} onChange={(e) => setQuery(e.target.value)} />
-          </div>
-          <button className="btn btn-secondary" onClick={() => setShowForm(!showForm)}>
-            <PlusCircle size={15} /> Add user
-          </button>
+    <div>
+      <div className="bg-white border border-zinc-200 rounded-lg p-4 mb-4">
+        <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">{viewUser.id === me.id ? "Your" : viewUser.name + "'s"} last 7 days — a red X is a missed day, on record</p>
+        <div className="flex gap-2 flex-wrap">
+          {days.map((d) => {
+            const c = cellFor(viewUser.id, d);
+            return (
+              <button key={d.date} onClick={() => c.log && setViewLog(c.log)} disabled={!c.log}
+                className={cls("w-16 rounded-md border px-2 py-1.5 text-center", c.log && "hover:border-cyan-500",
+                  c.state === "ok" ? "bg-emerald-50 border-emerald-200" : c.state === "miss" ? "bg-red-50 border-red-300" : c.state === "due" ? "bg-amber-50 border-amber-300" : "bg-zinc-50 border-zinc-200")}>
+                <span className="block text-xs text-zinc-500">{d.label}</span>
+                <span className="mt-0.5 flex justify-center">
+                  {c.state === "ok" && <Check size={14} className="text-emerald-600" />}
+                  {c.state === "miss" && <X size={14} className="text-red-600" />}
+                  {c.state === "due" && <Clock size={14} className="text-amber-600" />}
+                  {c.state === "off" && <span className="text-xs text-zinc-300">off</span>}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
-      <p className="field-hint" style={{ marginTop: -14 }}>
-        Assign each employee a role and department — they can belong to more than one. Role and status changes save immediately.
-      </p>
 
-      {showForm && (
-        <form className="panel form-panel" onSubmit={submit}>
-          <h3 className="panel-title">Add employee</h3>
-          <div className="grid-2">
-            <Field label="Name">
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Jordan Rivera" />
-            </Field>
-            <Field label="Email">
-              <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="jordan.rivera@elecbits.in" />
-            </Field>
+      {isSelf && (
+        <div className="bg-white border border-zinc-200 rounded-lg p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm font-semibold text-zinc-800">Today's update — {fmtDate(today)}</p>
+            {existing ? <Chip color="emerald"><Check size={11} /> Logged, editable</Chip> : <Chip color="amber"><Clock size={11} /> Not logged yet</Chip>}
           </div>
-          <div className="grid-2">
-            <Field label="Password">
-              <input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Set a password" />
-            </Field>
-            <Field label="Role">
-              <select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
-                {TIERS.map((t) => (
-                  <option key={t} value={t}>{tierLabel(t)}</option>
-                ))}
-              </select>
-            </Field>
+          <div className="grid sm:grid-cols-3 gap-3 mb-3">
+            <Field label="Companies worked"><Input value={f.companiesWorked} onChange={(e) => setF({ ...f, companiesWorked: e.target.value })} placeholder="Nevon, Sunrise…" /></Field>
+            <Field label="Calls made"><Input type="number" value={f.calls} onChange={(e) => setF({ ...f, calls: e.target.value })} /></Field>
+            <Field label="Meetings held"><Input type="number" value={f.meetings} onChange={(e) => setF({ ...f, meetings: e.target.value })} /></Field>
           </div>
-          {form.tier !== "Main Admin" && (
-            <Field label="Department">
-              <select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}>
-                {DEPARTMENTS.map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
-            </Field>
-          )}
-          {error && (
-            <div className="inline-warning">
-              <AlertTriangle size={13} /> {error}
-            </div>
-          )}
-          <div className="form-actions">
-            <button type="button" className="btn btn-ghost" onClick={resetForm}>
-              Cancel
-            </button>
-            <button className="btn btn-primary" type="submit">
-              Add user
-            </button>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="What moved forward today" req><TA value={f.progress} onChange={(e) => setF({ ...f, progress: e.target.value })} /></Field>
+            <Field label="Blockers"><TA value={f.blockers} onChange={(e) => setF({ ...f, blockers: e.target.value })} /></Field>
+            <Field label="Next actions"><TA value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} /></Field>
           </div>
-        </form>
+          <div className="flex items-center justify-end gap-2 mt-3">
+            {saved && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 size={13} /> Logged</span>}
+            <Btn kind="primary" disabled={!String(f.progress || "").trim()} onClick={submit}><Check size={15} /> {existing ? "Update log" : "Log update"}</Btn>
+          </div>
+        </div>
       )}
 
-      <div className="employee-list">
-        {visible.map((u) => {
-          const extraOptions = DEPARTMENTS.filter((d) => d !== u.department && !(u.additionalDepartments || []).includes(d));
-          const isInactive = u.active === false;
-          return (
-            <div className={`employee-card ${isInactive ? "inactive" : ""}`} key={u.id}>
-              <div className="employee-card-top">
-                <div>
-                  <div className="employee-name-row">
-                    <span className="cell-primary" style={{ fontSize: 15 }}>{u.name}</span>
-                    <Chip tone={isInactive ? "default" : "green"}>{isInactive ? "INACTIVE" : "ACTIVE"}</Chip>
-                  </div>
-                  <div className="cell-sub">
-                    {u.email}
-                    {u.department ? ` · ${u.department}` : ""}
-                    {u.createdAt ? ` · Joined ${new Date(u.createdAt).toLocaleDateString()}` : ""}
-                  </div>
-                </div>
-              </div>
-
-              <div className="employee-card-controls">
-                <Field label="Role">
-                  <select value={u.tier} onChange={(e) => updateUser(u, { tier: e.target.value, department: e.target.value === "Main Admin" ? null : u.department || "Sales" })}>
-                    {TIERS.map((t) => (
-                      <option key={t} value={t}>{tierLabel(t)}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Department">
-                  <select
-                    value={u.department || ""}
-                    disabled={u.tier === "Main Admin"}
-                    onChange={(e) => updateUser(u, { department: e.target.value })}
-                  >
-                    {u.tier === "Main Admin" ? (
-                      <option value="">—</option>
-                    ) : (
-                      DEPARTMENTS.map((d) => (
-                        <option key={d} value={d}>{d}</option>
-                      ))
-                    )}
-                  </select>
-                </Field>
-                <Field label="Additional departments">
-                  <select value="" disabled={u.tier === "Main Admin"} onChange={(e) => addAdditionalDept(u, e.target.value)}>
-                    <option value="">+ Add…</option>
-                    {extraOptions.map((d) => (
-                      <option key={d} value={d}>{d}</option>
-                    ))}
-                  </select>
-                </Field>
-                <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <button className="btn btn-secondary btn-sm" onClick={() => updateUser(u, { active: isInactive })}>
-                    {isInactive ? <CheckCircle2 size={13} /> : <Ban size={13} />} {isInactive ? "Activate" : "Deactivate"}
-                  </button>
-                  <button
-                    className="btn btn-danger btn-sm"
-                    disabled={u.id === currentUserId}
-                    title={u.id === currentUserId ? "You can't remove your own account" : "Delete"}
-                    onClick={() => u.id !== currentUserId && onDelete(u.id)}
-                  >
-                    <X size={13} /> Delete
-                  </button>
-                </div>
-              </div>
-
-              {(u.additionalDepartments || []).length > 0 && (
-                <div className="employee-dept-chips">
-                  {u.additionalDepartments.map((d) => (
-                    <span className="chip chip-default" key={d}>
-                      {d}
-                      <button className="chip-remove" onClick={() => removeAdditionalDept(u, d)} title="Remove">
-                        <X size={11} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* App shell                                                               */
-/* ---------------------------------------------------------------------- */
-
-/* ---------------------------------------------------------------------- */
-/* Auth splash + account-notice screens                                    */
-/* ---------------------------------------------------------------------- */
-
-function AuthSplash({ message = "Loading…" }) {
-  return (
-    <div className="app-shell">
-      <style>{APP_STYLES + SALES_STYLES}</style>
-      <div className="login-screen">
-        <div className="dept-select-card" style={{ textAlign: "center" }}>
-          <div className="login-brand" style={{ justifyContent: "center" }}>
-            <Zap size={22} className="brand-bolt" fill="currentColor" />
-            <span className="brand-text">Elecbits</span>
+      {team.length > 0 && (
+        <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-2 border-b border-zinc-200"><span className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">Team sheet — click a green day to read the log</span></div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs text-zinc-400 border-b border-zinc-100">
+                <th className="px-4 py-2 font-medium">Agent</th>
+                {days.map((d) => <th key={d.date} className="px-2 py-2 font-mono font-medium text-center">{d.label} {d.dnum}</th>)}
+              </tr></thead>
+              <tbody>
+                {team.map((u) => (
+                  <tr key={u.id} className="border-b border-zinc-50">
+                    <td className="px-4 py-2"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" />{u.name}</span></td>
+                    {days.map((d) => {
+                      const c = cellFor(u.id, d);
+                      return (
+                        <td key={d.date} className="px-2 py-2 text-center">
+                          <button onClick={() => c.log && setViewLog(c.log)} disabled={!c.log}
+                            className={cls("inline-flex items-center justify-center w-7 h-7 rounded", c.log && "hover:ring-2 hover:ring-cyan-400",
+                              c.state === "ok" ? "bg-emerald-100" : c.state === "miss" ? "bg-red-100" : c.state === "due" ? "bg-amber-100" : "bg-zinc-100")}>
+                            {c.state === "ok" && <Check size={13} className="text-emerald-700" />}
+                            {c.state === "miss" && <X size={13} className="text-red-600" />}
+                            {c.state === "due" && <Clock size={13} className="text-amber-600" />}
+                            {c.state === "off" && <span className="text-zinc-300 text-xs">·</span>}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <p className="login-sub" style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 18 }}>
-            <Loader2 size={16} className="spin" /> {message}
-          </p>
         </div>
-      </div>
-    </div>
-  );
-}
+      )}
 
-function AccountNotice({ title, body, onSignOut }) {
-  return (
-    <div className="app-shell">
-      <style>{APP_STYLES + SALES_STYLES}</style>
-      <div className="login-screen">
-        <div className="dept-select-card" style={{ textAlign: "center" }}>
-          <div className="login-brand" style={{ justifyContent: "center" }}>
-            <Zap size={22} className="brand-bolt" fill="currentColor" />
-            <span className="brand-text">Elecbits</span>
+      {viewLog && (
+        <Modal title={"Work update — " + ((users.find((u) => u.id === viewLog.userId) || {}).name || "") + " · " + fmtDate(viewLog.date)} onClose={() => setViewLog(null)}>
+          <div className="space-y-2 text-sm">
+            <p><span className="text-zinc-400">Companies:</span> {viewLog.companiesWorked || "—"}</p>
+            <p><span className="text-zinc-400">Calls:</span> <span className="font-mono">{viewLog.calls}</span> · <span className="text-zinc-400">Meetings:</span> <span className="font-mono">{viewLog.meetings}</span></p>
+            <p><span className="text-zinc-400">Progress:</span> {viewLog.progress}</p>
+            {viewLog.blockers && <p><span className="text-zinc-400">Blockers:</span> {viewLog.blockers}</p>}
+            {viewLog.next && <p><span className="text-zinc-400">Next:</span> {viewLog.next}</p>}
           </div>
-          <h1 className="login-heading" style={{ textAlign: "center", marginTop: 16 }}>{title}</h1>
-          <p className="login-sub" style={{ textAlign: "center" }}>{body}</p>
-          <button className="btn btn-secondary" style={{ margin: "18px auto 0" }} onClick={onSignOut}>
-            <LogOut size={15} /> Sign out
-          </button>
-        </div>
-      </div>
+        </Modal>
+      )}
     </div>
   );
 }
 
-function HealthBanner({ health, onGoto }) {
-  const danger = health.alerts.some((a) => a.level === "danger");
-  if (health.alerts.length === 0) {
-    return (
-      <div className="health-banner health-ok">
-        <div className="health-title"><CheckCircle2 size={15} /> You're on top of it — no gaps in your pipeline right now.</div>
-      </div>
-    );
-  }
-  return (
-    <div className={`health-banner ${danger ? "health-danger" : ""}`}>
-      <div className="health-title">
-        <AlertTriangle size={15} /> {danger ? "Action needed — your pipeline has gaps" : "A few things need your attention"}
-      </div>
-      {health.alerts.map((a, i) => (
-        <div className="health-alert" key={i}>
-          <span className={`dot ${a.level}`} /> {a.text}
-          {a.tag === "data" && <button className="btn btn-ghost btn-sm" onClick={() => onGoto("companies")}>Fix now →</button>}
-          {a.tag === "stale" && <button className="btn btn-ghost btn-sm" onClick={() => onGoto("pipeline")}>Open pipeline →</button>}
-          {a.tag === "kpi" && <button className="btn btn-ghost btn-sm" onClick={() => onGoto("performance")}>See KPI →</button>}
-        </div>
-      ))}
-    </div>
-  );
-}
+/* ============================================================
+   PRODUCT / SERVICE — KNOWLEDGE CHAT + TEMPLATES
+   ============================================================ */
 
-export default function App() {
-  const [loading, setLoading] = useState(true);
-  const [clients, setClients] = useState([]);
-  const [projects, setProjects] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [workUpdates, setWorkUpdates] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [leads, setLeads] = useState([]);
-  // Sales-OS collections (companies, deals/pipeline, KPIs, knowledge, expenses, AI config)
-  const [companies, setCompanies] = useState([]);
-  const [deals, setDeals] = useState([]);
-  const [kpis, setKpis] = useState([]);
-  const [knowledgeDocs, setKnowledgeDocs] = useState([]);
-  const [templates, setTemplates] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [salesConfig, setSalesConfig] = useState({});
-  const [view, setView] = useState("dashboard"); // dashboard | pipeline | companies | new | detail | users
-  const [selectedId, setSelectedId] = useState(null);
-  const [department, setDepartment] = useState(null);
-  const [tier, setTier] = useState(null);
-  const [userName, setUserName] = useState("");
-  const [userId, setUserId] = useState(null);
-  const [saveError, setSaveError] = useState("");
+const TEMPLATE_TYPES = ["Intro email", "WhatsApp follow-up", "Capability one-pager", "Quote cover note"];
 
-  // --- Supabase Auth session ---
-  const [session, setSession] = useState(null);
-  const [authChecking, setAuthChecking] = useState(true);
-  const [dataLoaded, setDataLoaded] = useState(false);
-  const [deptChosen, setDeptChosen] = useState(false);
+function KnowledgeView({ me, data, saveKnowledge }) {
+  const { companies, knowledge } = data;
+  const canManage = me.role === "admin" || me.role === "dept_head";
+  const canSee = (k) => k.access === "all" || (k.access === "leadership" && (me.role === "admin" || me.role === "dept_head")) || (k.access === "admin" && me.role === "admin");
+  const accessible = knowledge.filter(canSee);
 
-  // Track the session on mount and whenever it changes (sign in / out / refresh).
-  useEffect(() => {
-    let active = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (!active) return;
-      setSession(data.session);
-      setAuthChecking(false);
-    });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-      if (!s) {
-        // Signed out — clear everything so the next login re-loads fresh.
-        setDataLoaded(false);
-        setDeptChosen(false);
-        setDepartment(null);
-        setUserName("");
-        setTier(null);
-        setUserId(null);
-      }
-    });
-    return () => {
-      active = false;
-      sub.subscription.unsubscribe();
-    };
-  }, []);
+  const [editing, setEditing] = useState(null); // entry | "new"
+  const [msgs, setMsgs] = useState([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [companyId, setCompanyId] = useState("");
+  const [tpl, setTpl] = useState(null); // {type, text}
+  const [tplBusy, setTplBusy] = useState("");
+  const bodyRef = useRef(null);
+  const speech = useSpeech((t) => setInput((p) => (p ? p + " " : "") + t));
 
-  // Load (and, on first run, seed) the collections once we have a session.
-  // RLS only permits reads/writes for authenticated users, so this must run
-  // after sign-in — not on mount.
-  useEffect(() => {
-    if (!session || dataLoaded) return;
-    let active = true;
-    (async () => {
-      setLoading(true);
-      const [c, p, u, w, t, l, co, de, kp, kd, tp, ex, cfg] = await Promise.all([
-        loadList("crm-clients"),
-        loadList("crm-projects"),
-        loadList("crm-users"),
-        loadList("crm-work-updates"),
-        loadList("crm-tasks"),
-        loadList("crm-leads"),
-        loadList("crm-companies"),
-        loadList("crm-deals"),
-        loadList("crm-kpis"),
-        loadList("crm-knowledge"),
-        loadList("crm-templates"),
-        loadList("crm-expenses"),
-        loadList("crm-config"),
-      ]);
-      if (!active) return;
-      setCompanies(co);
-      setDeals(de);
-      setKpis(kp);
-      setKnowledgeDocs(kd);
-      setTemplates(tp);
-      setExpenses(ex);
-      setSalesConfig(Array.isArray(cfg) && cfg[0] ? cfg[0] : {});
-      if (u.length === 0) {
-        setUsers(DEFAULT_USERS);
-        saveList("crm-users", DEFAULT_USERS);
-      } else {
-        setUsers(u);
-      }
-      if (c.length === 0 && p.length === 0 && l.length === 0) {
-        // First run — seed the linked sample dataset (leads -> clients -> RFQs -> dept review -> project IDs).
-        setClients(SAMPLE_CLIENTS);
-        saveList("crm-clients", SAMPLE_CLIENTS);
-        setProjects(SAMPLE_PROJECTS);
-        saveList("crm-projects", SAMPLE_PROJECTS);
-        setLeads(SAMPLE_LEADS);
-        saveList("crm-leads", SAMPLE_LEADS);
-      } else {
-        setClients(c);
-        setProjects(p);
-        setLeads(l);
-      }
-      if (t.length === 0) {
-        setTasks(SAMPLE_TASKS);
-        saveList("crm-tasks", SAMPLE_TASKS);
-      } else {
-        setTasks(t);
-      }
-      if (w.length === 0) {
-        setWorkUpdates(SAMPLE_WORK_UPDATES);
-        saveList("crm-work-updates", SAMPLE_WORK_UPDATES);
-      } else {
-        setWorkUpdates(w);
-      }
-      setDataLoaded(true);
-      setLoading(false);
-    })();
-    return () => {
-      active = false;
-    };
-  }, [session, dataLoaded]);
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
 
-  const persistClients = useCallback(async (list) => {
-    setClients(list);
-    const ok = await saveList("crm-clients", list);
-    if (!ok) setSaveError("Couldn't save — check your connection and try again.");
-  }, []);
+  const buildSystem = () => {
+    const kb = accessible.map((k) => "### " + k.title + "\n" + String(k.content || "").slice(0, 4000)).join("\n\n").slice(0, 15000);
+    const comp = companies.find((c) => c.id === companyId);
+    return [
+      "You are the Elecbits product & commercial knowledge assistant for the sales team.",
+      "Answer ONLY using the knowledge entries below. If the answer is not covered, say exactly: \"Not in the knowledge base yet — ask admin to add it.\" Never invent specs, prices, or terms.",
+      "Be tight and practical. Short paragraphs or bullet lists. This is for an agent mid-conversation with a client.",
+      comp ? "The agent is preparing for this client — tailor framing to them, but facts still come only from the knowledge base: " + JSON.stringify({ name: comp.name, industry: comp.industry, city: comp.city, whatTheyDo: comp.whatTheyDo, potential: comp.potential }) : "",
+      "KNOWLEDGE ENTRIES:\n" + (kb || "(empty)"),
+    ].filter(Boolean).join("\n\n");
+  };
 
-  const persistProjects = useCallback(async (list) => {
-    setProjects(list);
-    const ok = await saveList("crm-projects", list);
-    if (!ok) setSaveError("Couldn't save — check your connection and try again.");
-  }, []);
-
-  const persistUsers = useCallback(async (list) => {
-    setUsers(list);
-    const ok = await saveList("crm-users", list);
-    if (!ok) setSaveError("Couldn't save — check your connection and try again.");
-  }, []);
-
-  const persistWorkUpdates = useCallback(async (list) => {
-    setWorkUpdates(list);
-    const ok = await saveList("crm-work-updates", list);
-    if (!ok) setSaveError("Couldn't save — check your connection and try again.");
-  }, []);
-
-  function handleCreateWorkUpdate(entry) {
-    persistWorkUpdates([...workUpdates, entry]);
-  }
-
-  const persistTasks = useCallback(async (list) => {
-    setTasks(list);
-    const ok = await saveList("crm-tasks", list);
-    if (!ok) setSaveError("Couldn't save — check your connection and try again.");
-  }, []);
-
-  function handleCreateTask(newTask) {
-    persistTasks([...tasks, newTask]);
-  }
-
-  function handleUpdateTask(updated) {
-    persistTasks(tasks.map((t) => (t.id === updated.id ? updated : t)));
-  }
-
-  function handleCreateClient(newClient) {
-    persistClients([...clients, newClient]);
-  }
-
-  /* ---- Sales-OS persistence ---- */
-  function mkPersist(key, setter) {
-    return async (list) => {
-      setter(list);
-      const ok = await saveList(key, list);
-      if (!ok) setSaveError("Couldn't save — check your connection and try again.");
-    };
-  }
-  const persistCompanies = useCallback(mkPersist("crm-companies", setCompanies), []);
-  const persistDeals = useCallback(mkPersist("crm-deals", setDeals), []);
-  const persistKpis = useCallback(mkPersist("crm-kpis", setKpis), []);
-  const persistKnowledge = useCallback(mkPersist("crm-knowledge", setKnowledgeDocs), []);
-  const persistTemplates = useCallback(mkPersist("crm-templates", setTemplates), []);
-  const persistExpenses = useCallback(mkPersist("crm-expenses", setExpenses), []);
-
-  const saveSalesConfig = useCallback(async (cfg) => {
-    setSalesConfig(cfg);
-    const ok = await saveList("crm-config", [cfg]);
-    if (!ok) setSaveError("Couldn't save config — check your connection and try again.");
-  }, []);
-
-  // Companies
-  const handleCreateCompany = (c) => persistCompanies([...companies, c]);
-  const handleSaveCompany = (u) => persistCompanies(companies.map((c) => (c.id === u.id ? u : c)));
-  const handleDeleteCompany = (id) => persistCompanies(companies.filter((c) => c.id !== id));
-  // Deals
-  const handleCreateDeal = (d) => persistDeals([...deals, d]);
-  const handleUpdateDeal = (u) => persistDeals(deals.map((d) => (d.id === u.id ? u : d)));
-  // KPIs (one record per user+period — upsert)
-  const handleSaveKpi = (rec) => persistKpis([...kpis.filter((k) => !(k.userId === rec.userId && k.period === rec.period)), rec]);
-  // Knowledge + templates
-  const now = () => new Date().toISOString();
-  const handleSaveDoc = (d) => d.id
-    ? persistKnowledge(knowledgeDocs.map((x) => (x.id === d.id ? { ...x, ...d } : x)))
-    : persistKnowledge([...knowledgeDocs, { ...d, id: uid(), createdBy: userName, createdAt: now() }]);
-  const handleDeleteDoc = (id) => persistKnowledge(knowledgeDocs.filter((d) => d.id !== id));
-  const handleSaveTemplate = (t) => t.id
-    ? persistTemplates(templates.map((x) => (x.id === t.id ? { ...x, ...t } : x)))
-    : persistTemplates([...templates, { ...t, id: uid(), createdBy: userName, createdAt: now() }]);
-  const handleDeleteTemplate = (id) => persistTemplates(templates.filter((t) => t.id !== id));
-  // Expenses
-  const handleCreateExpense = (e) => persistExpenses([...expenses, e]);
-  const handleUpdateExpense = (u) => persistExpenses(expenses.map((e) => (e.id === u.id ? u : e)));
-
-  const persistLeads = useCallback(async (list) => {
-    setLeads(list);
-    const ok = await saveList("crm-leads", list);
-    if (!ok) setSaveError("Couldn't save — check your connection and try again.");
-  }, []);
-
-  function approveLeadRecord(lead, approverName) {
-    const match = findMatchingClient(clients, lead.email);
-    let clientId = match?.id;
-    if (!match) {
-      const newClient = {
-        id: nextClientId(clients),
-        name: lead.name,
-        company: lead.company,
-        email: lead.email,
-        phone: lead.phone,
-        createdBy: lead.submittedBy,
-        createdAt: new Date().toISOString(),
-      };
-      persistClients([...clients, newClient]);
-      clientId = newClient.id;
-    }
-    const now = new Date().toISOString();
-    persistLeads(
-      leads.some((l) => l.id === lead.id)
-        ? leads.map((l) => (l.id === lead.id ? { ...l, status: "Approved", reviewedBy: approverName, reviewedAt: now, clientId } : l))
-        : [...leads, { ...lead, status: "Approved", reviewedBy: approverName, reviewedAt: now, clientId }]
-    );
-  }
-
-  function handleSubmitLead(leadForm, autoApprove) {
-    const now = new Date().toISOString();
-    const newLead = {
-      id: uid(),
-      ...leadForm,
-      submittedBy: userName,
-      status: "Pending",
-      reviewedBy: null,
-      reviewedAt: null,
-      clientId: null,
-      createdAt: now,
-    };
-    if (autoApprove) {
-      approveLeadRecord(newLead, userName);
-    } else {
-      persistLeads([...leads, newLead]);
-    }
-  }
-
-  function handleApproveLead(lead) {
-    approveLeadRecord(lead, userName);
-  }
-
-  function handleRejectLead(lead, reason) {
-    persistLeads(
-      leads.map((l) =>
-        l.id === lead.id ? { ...l, status: "Rejected", reviewedBy: userName, reviewedAt: new Date().toISOString(), rejectionReason: reason } : l
-      )
-    );
-  }
-
-  function handleCreateProject(newProject) {
-    persistProjects([...projects, newProject]);
-  }
-
-  function handleUpdateProject(updated) {
-    persistProjects(projects.map((p) => (p.id === updated.id ? updated : p)));
-  }
-
-  // Calls the admin serverless function with the caller's access token.
-  async function callAdmin(payload) {
-    const token = session?.access_token;
-    const res = await fetch("/api/admin", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json.error || "Request failed.");
-    return json;
-  }
-
-  // Creating a user also provisions a Supabase Auth login so they can sign in.
-  async function handleCreateUser(newUser) {
-    setSaveError("");
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput(""); setErr("");
+    const next = [...msgs, { role: "user", content: text }];
+    setMsgs(next); setBusy(true);
     try {
-      const { authId } = await callAdmin({
-        action: "create",
-        email: newUser.email,
-        password: newUser.password,
-      });
-      persistUsers([...users, { ...newUser, authId }]);
-    } catch (e) {
-      setSaveError(e.message || "Couldn't create a login for this user.");
-    }
-  }
+      const reply = await askClaude(buildSystem(), next.map((m) => ({ role: m.role, content: m.content })));
+      setMsgs([...next, { role: "assistant", content: reply }]);
+    } catch (e) { setErr("AI call failed — try again."); setInput(text); setMsgs(msgs); }
+    setBusy(false);
+  };
 
-  function handleSaveUser(updated) {
-    persistUsers(users.map((u) => (u.id === updated.id ? updated : u)));
-  }
+  const templatise = async (type) => {
+    const lastA = [...msgs].reverse().find((m) => m.role === "assistant");
+    const lastQ = [...msgs].reverse().find((m) => m.role === "user");
+    if (!lastA) return;
+    setTplBusy(type);
+    try {
+      const comp = companies.find((c) => c.id === companyId);
+      const sys = "You write client-ready sales collateral for Elecbits, an Indian electronics ODM/EMS company. Output plain text only — ready to paste and send. No markdown symbols, no commentary, no labels except 'Subject:' when writing an email. Confident, concise Indian business English.";
+      const usr = "Turn this Q&A into a " + type + (comp ? " addressed to " + comp.name + " (" + (comp.industry || "client") + ", contact: " + (comp.contactPerson || "the client") + ")" : "") + ".\n\nQuestion: " + (lastQ ? lastQ.content : "") + "\n\nAnswer to base it on:\n" + lastA.content;
+      const out = await askClaude(sys, [{ role: "user", content: usr }]);
+      setTpl({ type, text: out });
+    } catch (e) { setErr("Template generation failed — try again."); }
+    setTplBusy("");
+  };
 
-  // Removing a user also deletes their Supabase Auth login (best effort).
-  async function handleDeleteUser(id) {
-    const target = users.find((u) => u.id === id);
-    persistUsers(users.filter((u) => u.id !== id));
-    if (target) {
-      try {
-        await callAdmin({ action: "delete", authId: target.authId, email: target.email });
-      } catch (e) {
-        setSaveError(e.message || "User removed, but their login could not be deleted.");
-      }
-    }
-  }
-
-  const selectedProject = projects.find((p) => p.id === selectedId);
-  const selectedClient = selectedProject && clients.find((c) => c.id === selectedProject.clientId);
-  const isMainAdmin = tier === "Main Admin";
-  const canCreateRFQ = isMainAdmin || department === "Sales";
-
-  async function handleSignOut() {
-    await supabase.auth.signOut();
-    // onAuthStateChange clears the rest of the state.
-  }
-
-  // The signed-in user's app profile (tier / department / name) comes from the
-  // crm-users collection, matched by their auth email.
-  const me =
-    session && users.find((u) => (u.email || "").toLowerCase() === (session.user.email || "").toLowerCase());
-
-  // 1. Still checking for an existing session.
-  if (authChecking) {
-    return <AuthSplash />;
-  }
-
-  // 2. Not signed in → login screen.
-  if (!session) {
-    return (
-      <div className="app-shell">
-        <style>{APP_STYLES + SALES_STYLES}</style>
-        <LoginScreen users={users.length ? users : DEFAULT_USERS} />
-      </div>
-    );
-  }
-
-  // 3. Signed in, but collections still loading.
-  if (loading || !dataLoaded) {
-    return <AuthSplash message="Loading your workspace…" />;
-  }
-
-  // 4. Authenticated, but no matching app profile / deactivated.
-  if (!me) {
-    return <AccountNotice title="No profile found" body={`No employee record is linked to ${session.user.email}. Ask your Main Admin to add you on the Employees page.`} onSignOut={handleSignOut} />;
-  }
-  if (me.active === false) {
-    return <AccountNotice title="Account deactivated" body="This account has been deactivated. Contact your Main Admin." onSignOut={handleSignOut} />;
-  }
-
-  // 5. Pick a department before entering the app.
-  if (!deptChosen) {
-    return (
-      <div className="app-shell">
-        <style>{APP_STYLES + SALES_STYLES}</style>
-        <DepartmentSelect
-          user={me}
-          onSelect={(dept) => {
-            setUserName(me.name);
-            setTier(me.tier);
-            setUserId(me.id);
-            setDepartment(dept);
-            setDeptChosen(true);
-          }}
-          onBack={handleSignOut}
-        />
-      </div>
-    );
-  }
-
-  // "Firing tool" health summary for Sales staff / admins — turns the workspace
-  // red when the signed-in user is behind KPI, has stalled deals, or incomplete
-  // company records. Nudges them to fill data and work the pipeline.
-  const myKpiRec = kpis.find((k) => k.userId === userId && k.period === periodKey());
-  const salesHealth =
-    (department === "Sales" || isMainAdmin)
-      ? buildHealthAlerts({ userName, companies, deals, kpi: myKpiRec })
-      : null;
+  const upsertEntry = (k) => {
+    const exists = knowledge.some((x) => x.id === k.id);
+    saveKnowledge(exists ? knowledge.map((x) => (x.id === k.id ? k : x)) : [k, ...knowledge]);
+    setEditing(null);
+  };
 
   return (
-    <div className="app-shell">
-      <style>{APP_STYLES + SALES_STYLES}</style>
-
-      <header className="topbar">
-        <div className="topbar-left">
-          <div className="brand">
-            <Zap size={20} className="brand-bolt" fill="currentColor" />
-            <span className="brand-text">Elecbits</span>
+    <div className="max-w-6xl mx-auto grid lg:grid-cols-5 gap-4 items-start">
+      <div className="lg:col-span-2">
+        <SectionTitle right={canManage ? <Btn size="sm" kind="primary" onClick={() => setEditing("new")}><Plus size={13} /> Add entry</Btn> : null}>
+          Knowledge base
+        </SectionTitle>
+        {accessible.length === 0 ? (
+          <Empty icon={BookOpen} title="Knowledge base is empty" sub="Admin trains this: capabilities, product lines, pricing rules. The chat answers only from what is here." action={canManage ? <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={14} /> Add entry</Btn> : null} />
+        ) : (
+          <div className="space-y-2">
+            {accessible.map((k) => (
+              <div key={k.id} className="bg-white border border-zinc-200 rounded-lg p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-sm text-zinc-900">{k.title}</p>
+                  <div className="flex items-center gap-1.5 flex-none">
+                    <Chip color={k.access === "all" ? "emerald" : k.access === "leadership" ? "cyan" : "zinc"}>{k.access === "all" ? "Everyone" : k.access === "leadership" ? "Leadership" : "Admin only"}</Chip>
+                    {canManage && <>
+                      <button onClick={() => setEditing(k)} className="text-zinc-400 hover:text-zinc-700"><Pencil size={13} /></button>
+                      <button onClick={() => saveKnowledge(knowledge.filter((x) => x.id !== k.id))} className="text-zinc-400 hover:text-red-600"><Trash2 size={13} /></button>
+                    </>}
+                  </div>
+                </div>
+                <p className="text-xs text-zinc-500 mt-1 line-clamp-3">{k.content}</p>
+                <p className="font-mono text-xs text-zinc-300 mt-1.5">updated {fmtDate(k.updatedAt)}</p>
+              </div>
+            ))}
           </div>
-          <div className="topbar-divider" />
-          <div className="topbar-product">
-            <span className="topbar-product-name">Sales OS</span>
-            <span className="topbar-product-tag">RFQ · Approvals · Pipeline</span>
-          </div>
-        </div>
-        <div className="topbar-right">
-          <button className="topbar-bell" title="Notifications">
-            <Bell size={18} />
-          </button>
-          <div className="topbar-user">
-            <div className="topbar-user-info">
-              <div className="topbar-user-name">{userName}</div>
-              <div className="topbar-user-role">{tierLabel(tier)}</div>
-            </div>
-            <div className="topbar-avatar">{userName ? userName[0].toUpperCase() : "?"}</div>
-          </div>
-          <button className="topbar-signout" title="Sign out" onClick={handleSignOut}>
-            <LogOut size={17} />
-          </button>
-        </div>
-      </header>
-
-      <div className="role-banner">
-        <ShieldCheck size={15} />
-        <strong>
-          {tier}
-          {tier === "Main Admin" ? " (Special Access)" : tier === "Manager" ? " (Department Head)" : ""}
-        </strong>
-        <span className="role-banner-dept">· Dept: {department || "All"}</span>
+        )}
       </div>
 
-      <nav className="nav-tabs-bar">
-        <span className="nav-tabs-label">MENU</span>
-        <button className={`nav-tab ${view === "dashboard" ? "active" : ""}`} onClick={() => setView("dashboard")}>
-          Dashboard
-        </button>
-        {(isMainAdmin || department === "Sales") && (
-          <button className={`nav-tab ${view === "companies" ? "active" : ""}`} onClick={() => setView("companies")}>
-            Companies
-          </button>
-        )}
-        {(isMainAdmin || department === "Sales") && (
-          <button className={`nav-tab ${view === "pipeline" ? "active" : ""}`} onClick={() => setView("pipeline")}>
-            Pipeline
-          </button>
-        )}
-        {(isMainAdmin || department === "Sales") && (
-          <button className={`nav-tab ${view === "leads" ? "active" : ""}`} onClick={() => setView("leads")}>
-            Leads
-          </button>
-        )}
-        {canCreateRFQ && (
-          <button className={`nav-tab ${view === "new" ? "active" : ""}`} onClick={() => setView("new")}>
-            New RFQ
-          </button>
-        )}
-        <button className={`nav-tab ${view === "performance" ? "active" : ""}`} onClick={() => setView("performance")}>
-          Performance
-        </button>
-        {(isMainAdmin || tier === "Manager") && (
-          <button className={`nav-tab ${view === "kpis" ? "active" : ""}`} onClick={() => setView("kpis")}>
-            KPIs
-          </button>
-        )}
-        <button className={`nav-tab ${view === "knowledge" ? "active" : ""}`} onClick={() => setView("knowledge")}>
-          Product &amp; Services
-        </button>
-        <button className={`nav-tab ${view === "expenses" ? "active" : ""}`} onClick={() => setView("expenses")}>
-          Expenses
-        </button>
-        {(isMainAdmin || (department === "Sales" && tier === "Manager")) && (
-          <button className={`nav-tab ${view === "reports" ? "active" : ""}`} onClick={() => setView("reports")}>
-            Reports
-          </button>
-        )}
-        {isMainAdmin && (
-          <button className={`nav-tab ${view === "users" ? "active" : ""}`} onClick={() => setView("users")}>
-            Users
-          </button>
-        )}
-        <button className={`nav-tab ${view === "tasks" ? "active" : ""}`} onClick={() => setView("tasks")}>
-          Tasks
-        </button>
-        <button className={`nav-tab ${view === "workupdates" ? "active" : ""}`} onClick={() => setView("workupdates")}>
-          Work Updates
-        </button>
-        <button className={`nav-tab ${view === "finance" ? "active" : ""}`} onClick={() => setView("finance")}>
-          Finance
-        </button>
-        <button className={`nav-tab ${view === "profile" ? "active" : ""}`} onClick={() => setView("profile")}>
-          Profile
-        </button>
-      </nav>
+      <div className="lg:col-span-3">
+        <SectionTitle right={
+          <Sel value={companyId} onChange={(e) => setCompanyId(e.target.value)} className="w-52">
+            <option value="">Context: none</option>
+            {companies.map((c) => <option key={c.id} value={c.id}>For: {c.name}</option>)}
+          </Sel>
+        }>Ask the company brain</SectionTitle>
+        <div className="bg-white border border-zinc-200 rounded-lg flex flex-col">
+          <div ref={bodyRef} className="h-96 overflow-y-auto p-3 space-y-3">
+            {msgs.length === 0 && (
+              <div className="text-sm text-zinc-400 p-4">
+                <p className="font-medium text-zinc-500 mb-2">Ask anything the company should know:</p>
+                <ul className="space-y-1 list-disc pl-4">
+                  <li>"What's our MOQ for consumer devices?"</li>
+                  <li>"How do I pitch ESL to a 40-store retail chain?"</li>
+                  <li>"What payment terms can I offer without approval?"</li>
+                </ul>
+              </div>
+            )}
+            {msgs.map((m, i) => (
+              <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+                <div className={cls("max-w-lg rounded-lg px-3 py-2 text-sm whitespace-pre-wrap", m.role === "user" ? "bg-zinc-900 text-zinc-100" : "bg-zinc-50 border border-zinc-200 text-zinc-800")}>{m.content}</div>
+              </div>
+            ))}
+            {busy && <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono"><Loader2 size={13} className="animate-spin" /> searching the knowledge base…</div>}
+            {err && <p className="text-xs text-red-600 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
+            {msgs.some((m) => m.role === "assistant") && !busy && (
+              <div className="flex flex-wrap gap-1.5 pt-1 items-center">
+                <span className="text-xs text-zinc-400 flex items-center gap-1"><Sparkles size={12} className="text-cyan-600" /> Templatise last answer:</span>
+                {TEMPLATE_TYPES.map((t) => (
+                  <Btn key={t} size="sm" kind="subtle" disabled={!!tplBusy} onClick={() => templatise(t)}>
+                    {tplBusy === t ? <Loader2 size={12} className="animate-spin" /> : null} {t}
+                  </Btn>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="border-t border-zinc-200 p-3 flex gap-2 items-end">
+            <TA value={input} onChange={(e) => setInput(e.target.value)} placeholder={speech.on ? "Listening…" : "Ask about products, pricing rules, capabilities…"}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} className="flex-1 min-h-10" />
+            {speech.supported && <Btn kind={speech.on ? "danger" : "ghost"} onClick={speech.toggle}>{speech.on ? <MicOff size={15} /> : <Mic size={15} />}</Btn>}
+            <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={15} /></Btn>
+          </div>
+        </div>
+      </div>
 
-      {saveError && (
-        <div className="save-error">
-          <AlertTriangle size={12} /> {saveError}
+      {editing && <KnowledgeModal entry={editing === "new" ? null : editing} me={me} onClose={() => setEditing(null)} onSave={upsertEntry} />}
+      {tpl && <TemplateModal tpl={tpl} onClose={() => setTpl(null)} />}
+    </div>
+  );
+}
+
+function KnowledgeModal({ entry, me, onClose, onSave }) {
+  const [f, setF] = useState(() => entry || { id: uid(), title: "", content: "", access: "all", createdBy: me.id });
+  return (
+    <Modal wide title={entry ? "Edit entry" : "Add knowledge entry"} onClose={onClose}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={!f.title.trim() || !f.content.trim()} onClick={() => onSave({ ...f, updatedAt: nowTS() })}><Check size={15} /> Save entry</Btn></>}>
+      <div className="space-y-3">
+        <Field label="Title" req><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="e.g. ESL pricing structure" /></Field>
+        <Field label="Content" req hint="Paste specs, pitch angles, pricing rules, FAQs. The chat can only answer from what you put here.">
+          <TA value={f.content} onChange={(e) => setF({ ...f, content: e.target.value })} className="min-h-48" />
+        </Field>
+        <Field label="Who can access this">
+          <Sel value={f.access} onChange={(e) => setF({ ...f, access: e.target.value })}>
+            <option value="all">Everyone</option>
+            <option value="leadership">Leadership (dept heads + admin)</option>
+            <option value="admin">Admin only</option>
+          </Sel>
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+function TemplateModal({ tpl, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(tpl.text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) {}
+  };
+  return (
+    <Modal wide title={tpl.type + " — ready to send"} onClose={onClose}
+      footer={<><Btn onClick={onClose}>Close</Btn><Btn kind="primary" onClick={copy}><Copy size={14} /> {copied ? "Copied" : "Copy text"}</Btn></>}>
+      <TA readOnly value={tpl.text} className="min-h-64 font-mono text-xs" />
+    </Modal>
+  );
+}
+
+/* ============================================================
+   EXPENSES
+   ============================================================ */
+
+function ExpensesView({ me, data, saveExpenses }) {
+  const { users, companies, expenses } = data;
+  const [creating, setCreating] = useState(false);
+  const [notes, setNotes] = useState({});
+  const isApprover = me.role === "admin" || me.role === "finance";
+  const mine = expenses.filter((e) => e.userId === me.id);
+  const pendingQueue = expenses.filter((e) => e.status === "pending" && e.userId !== me.id);
+  const decided = expenses.filter((e) => e.status !== "pending");
+
+  const decide = (e, status) => {
+    saveExpenses(expenses.map((x) => x.id === e.id ? { ...x, status, decidedBy: me.id, decidedAt: nowTS(), decisionNote: (notes[e.id] || "").trim() } : x));
+  };
+
+  const StatusChip = ({ s }) => s === "approved" ? <Chip color="emerald"><CheckCircle2 size={11} /> Approved</Chip>
+    : s === "rejected" ? <Chip color="red"><XCircle size={11} /> Rejected</Chip>
+    : <Chip color="amber"><Clock size={11} /> Pending</Chip>;
+
+  const ExpCard = ({ e, actions }) => {
+    const u = users.find((x) => x.id === e.userId);
+    const c = companies.find((x) => x.id === e.companyId);
+    const d = users.find((x) => x.id === e.decidedBy);
+    return (
+      <div className="bg-white border border-zinc-200 rounded-lg p-4">
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-sm text-zinc-900">{e.purpose}</p>
+            <p className="text-xs text-zinc-500 mt-0.5">{u ? u.name : "?"}{c ? " · " + c.name : ""} · {e.city} · {fmtDate(e.from)} → {fmtDate(e.to)} · {e.mode}</p>
+            {e.notes && <p className="text-xs text-zinc-400 mt-1">{e.notes}</p>}
+            {e.status !== "pending" && <p className="text-xs text-zinc-500 mt-1.5">{e.status === "approved" ? "Approved" : "Rejected"} by {d ? d.name : "?"}{e.decisionNote ? " — " + e.decisionNote : ""}</p>}
+          </div>
+          <div className="text-right flex-none">
+            <p className="font-mono tabular-nums text-lg text-zinc-900">{fmtINR(e.estimate)}</p>
+            <div className="mt-1"><StatusChip s={e.status} /></div>
+          </div>
+        </div>
+        {actions && (
+          <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-zinc-100">
+            <Input placeholder="Note (optional): budget line, conditions…" value={notes[e.id] || ""} onChange={(ev) => setNotes({ ...notes, [e.id]: ev.target.value })} className="flex-1 min-w-40" />
+            <Btn kind="success" size="sm" onClick={() => decide(e, "approved")}><Check size={13} /> Approve</Btn>
+            <Btn kind="danger" size="sm" onClick={() => decide(e, "rejected")}><X size={13} /> Reject</Btn>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 mb-4">
+        <h1 className="text-lg font-semibold mr-auto">Expenses</h1>
+        <Btn kind="primary" onClick={() => setCreating(true)}><Plus size={15} /> New travel request</Btn>
+      </div>
+
+      {isApprover && (
+        <div className="mb-6">
+          <SectionTitle>Approval queue</SectionTitle>
+          {pendingQueue.length === 0 ? <p className="text-sm text-zinc-400 bg-white border border-zinc-200 rounded-lg p-4">Queue is clear.</p>
+            : <div className="space-y-2">{pendingQueue.map((e) => <ExpCard key={e.id} e={e} actions />)}</div>}
         </div>
       )}
 
-      <main className="main">
-        {!loading && salesHealth && ["dashboard", "pipeline", "companies", "performance"].includes(view) && (
-          <HealthBanner health={salesHealth} onGoto={setView} />
-        )}
-        {loading ? (
-          <div className="empty-state">
-            <Loader2 size={22} className="spin" />
-            <div className="empty-title">Loading pipeline…</div>
-          </div>
-        ) : view === "dashboard" ? (
-          <Dashboard
-            clients={clients}
-            projects={projects}
-            users={users}
-            department={department}
-            tier={tier}
-            userName={userName}
-            onOpen={(id) => {
-              setSelectedId(id);
-              setView("detail");
-            }}
-            onNew={() => setView("new")}
-          />
-        ) : view === "companies" ? (
-          <Companies
-            companies={companies}
-            deals={deals}
-            users={users}
-            userName={userName}
-            department={department}
-            tier={tier}
-            onCreate={handleCreateCompany}
-            onSave={handleSaveCompany}
-            onDelete={handleDeleteCompany}
-          />
-        ) : view === "pipeline" ? (
-          <Pipeline
-            deals={deals}
-            companies={companies}
-            users={users}
-            userName={userName}
-            department={department}
-            tier={tier}
-            stageForms={salesConfig.stageForms}
-            onCreate={handleCreateDeal}
-            onUpdate={handleUpdateDeal}
-          />
-        ) : view === "performance" ? (
-          <Performance
-            kpis={kpis}
-            companies={companies}
-            deals={deals}
-            users={users}
-            userName={userName}
-            userId={userId}
-            department={department}
-            tier={tier}
-          />
-        ) : view === "kpis" ? (
-          <KPIManager
-            kpis={kpis}
-            users={users}
-            userName={userName}
-            userId={userId}
-            department={department}
-            tier={tier}
-            config={salesConfig}
-            onSaveKpi={handleSaveKpi}
-            onSaveConfig={saveSalesConfig}
-          />
-        ) : view === "knowledge" ? (
-          <Knowledge
-            docs={knowledgeDocs}
-            templates={templates}
-            userName={userName}
-            tier={tier}
-            department={department}
-            onSaveDoc={handleSaveDoc}
-            onDeleteDoc={handleDeleteDoc}
-            onSaveTemplate={handleSaveTemplate}
-            onDeleteTemplate={handleDeleteTemplate}
-          />
-        ) : view === "expenses" ? (
-          <Expenses
-            expenses={expenses}
-            deals={deals}
-            companies={companies}
-            userName={userName}
-            userId={userId}
-            department={department}
-            tier={tier}
-            onCreate={handleCreateExpense}
-            onUpdate={handleUpdateExpense}
-          />
-        ) : view === "leads" ? (
-          <Leads
-            leads={leads}
-            clients={clients}
-            userName={userName}
-            tier={tier}
-            onSubmitLead={handleSubmitLead}
-            onApproveLead={handleApproveLead}
-            onRejectLead={handleRejectLead}
-          />
-        ) : view === "new" ? (
-          <NewRFQ
-            clients={clients}
-            projects={projects}
-            userName={userName}
-            onCreateProject={handleCreateProject}
-            onCancel={() => setView("dashboard")}
-            onDone={(projectId) => {
-              if (projectId) {
-                setSelectedId(projectId);
-                setView("detail");
-              } else {
-                setView("dashboard");
-              }
-            }}
-          />
-        ) : view === "reports" ? (
-          <Reports clients={clients} projects={projects} users={users} />
-        ) : view === "users" ? (
-          <UserManagement
-            users={users}
-            currentUserId={userId}
-            onCreate={handleCreateUser}
-            onSave={handleSaveUser}
-            onDelete={handleDeleteUser}
-          />
-        ) : view === "finance" ? (
-          <FinancePlaceholder />
-        ) : view === "tasks" ? (
-          <TaskManager
-            tasks={tasks}
-            projects={projects}
-            clients={clients}
-            users={users}
-            workUpdates={workUpdates}
-            userId={userId}
-            userName={userName}
-            department={department}
-            tier={tier}
-            onCreate={handleCreateTask}
-            onUpdate={handleUpdateTask}
-          />
-        ) : view === "workupdates" ? (
-          <WorkUpdates
-            updates={workUpdates}
-            userId={userId}
-            userName={userName}
-            department={department}
-            tier={tier}
-            onCreate={handleCreateWorkUpdate}
-          />
-        ) : view === "profile" ? (
-          <Profile users={users} userId={userId} userName={userName} department={department} tier={tier} />
-        ) : selectedProject ? (
-          <ProjectDetail
-            project={selectedProject}
-            client={selectedClient}
-            users={users}
-            projects={projects}
-            department={department}
-            tier={tier}
-            userName={userName}
-            onUpdate={handleUpdateProject}
-            onBack={() => setView("dashboard")}
-          />
-        ) : (
-          <EmptyState icon={FileText} title="Project not found" body="It may have been removed." />
-        )}
-      </main>
+      <SectionTitle>My requests</SectionTitle>
+      {mine.length === 0 ? (
+        <Empty icon={Receipt} title="No requests yet" sub="Travelling to meet a client? Raise it here — admin or finance approves before you book." action={<Btn kind="primary" onClick={() => setCreating(true)}><Plus size={14} /> New travel request</Btn>} />
+      ) : <div className="space-y-2">{mine.map((e) => <ExpCard key={e.id} e={e} />)}</div>}
+
+      {isApprover && decided.length > 0 && (
+        <div className="mt-6">
+          <SectionTitle>Decision history</SectionTitle>
+          <div className="space-y-2">{decided.slice(0, 20).map((e) => <ExpCard key={e.id} e={e} />)}</div>
+        </div>
+      )}
+
+      {creating && <ExpenseModal me={me} data={data} onClose={() => setCreating(false)}
+        onSave={(f) => { saveExpenses([{ ...f, id: uid(), userId: me.id, status: "pending", createdAt: nowTS(), decidedBy: null, decisionNote: "" }, ...expenses]); setCreating(false); }} />}
     </div>
+  );
+}
+
+function ExpenseModal({ me, data, onClose, onSave }) {
+  const { companies } = data;
+  const [f, setF] = useState({ purpose: "", companyId: "", city: "", from: todayStr(), to: todayStr(), mode: "Cab", estimate: "", notes: "" });
+  const ok = f.purpose.trim() && f.city.trim() && Number(f.estimate) > 0;
+  return (
+    <Modal title="New travel request" onClose={onClose}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={!ok} onClick={() => onSave({ ...f, estimate: Number(f.estimate) })}><Check size={15} /> Submit for approval</Btn></>}>
+      <div className="space-y-3">
+        <Field label="Purpose" req><Input value={f.purpose} onChange={(e) => setF({ ...f, purpose: e.target.value })} placeholder="e.g. ESL demo at client HQ" /></Field>
+        <Field label="Linked company">
+          <Sel value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}>
+            <option value="">— none —</option>
+            {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Sel>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="City" req><Input value={f.city} onChange={(e) => setF({ ...f, city: e.target.value })} /></Field>
+          <Field label="Mode">
+            <Sel value={f.mode} onChange={(e) => setF({ ...f, mode: e.target.value })}>
+              {["Cab", "Train", "Flight", "Bus", "Own vehicle", "Other"].map((m) => <option key={m}>{m}</option>)}
+            </Sel>
+          </Field>
+          <Field label="From"><Input type="date" value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} /></Field>
+          <Field label="To"><Input type="date" value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} /></Field>
+        </div>
+        <Field label="Estimated cost (₹)" req><Input type="number" value={f.estimate} onChange={(e) => setF({ ...f, estimate: e.target.value })} /></Field>
+        <Field label="Notes"><TA value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} placeholder="What you're carrying, who you're meeting…" /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   ADMIN
+   ============================================================ */
+
+function AdminView({ me, data, saveUsers, saveGates, resetDemo }) {
+  const { users, gates } = data;
+  const [editUser, setEditUser] = useState(null); // user | "new"
+  const [gateStage, setGateStage] = useState("rfq");
+  const [gateText, setGateText] = useState(() => ((gates["rfq"] && gates["rfq"].length ? gates["rfq"] : DEFAULT_GATES["rfq"]) || []).join("\n"));
+  const [gateSaved, setGateSaved] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const pickStage = (k) => {
+    setGateStage(k);
+    setGateText(((gates[k] && gates[k].length ? gates[k] : DEFAULT_GATES[k]) || []).join("\n"));
+  };
+  const saveGate = () => {
+    const lines = gateText.split("\n").map((l) => l.trim()).filter(Boolean);
+    saveGates({ ...gates, [gateStage]: lines });
+    setGateSaved(true); setTimeout(() => setGateSaved(false), 1500);
+  };
+  const resetGate = () => {
+    const next = { ...gates }; delete next[gateStage];
+    saveGates(next); setGateText((DEFAULT_GATES[gateStage] || []).join("\n"));
+  };
+  const upsertUser = (u) => {
+    const exists = users.some((x) => x.id === u.id);
+    saveUsers(exists ? users.map((x) => (x.id === u.id ? u : x)) : [...users, u]);
+    setEditUser(null);
+  };
+  const backup = async () => {
+    try { await navigator.clipboard.writeText(JSON.stringify(data, null, 2)); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) {}
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6">
+      <div className="bg-white border border-zinc-200 rounded-lg p-5">
+        <SectionTitle right={<Btn size="sm" kind="primary" onClick={() => setEditUser("new")}><Plus size={13} /> Add user</Btn>}>Users & roles</SectionTitle>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-xs text-zinc-400 border-b border-zinc-100">
+              <th className="py-2 pr-4 font-medium">Name</th><th className="py-2 pr-4 font-medium">Role</th><th className="py-2 pr-4 font-medium">Department</th><th className="py-2 pr-4 font-medium">Status</th><th className="py-2" />
+            </tr></thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id} className="border-b border-zinc-50">
+                  <td className="py-2 pr-4"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" />{u.name}{u.id === me.id && <span className="text-xs text-zinc-400">(you)</span>}</span></td>
+                  <td className="py-2 pr-4">{roleLabel(u.role)}</td>
+                  <td className="py-2 pr-4">{u.dept}</td>
+                  <td className="py-2 pr-4">{u.active !== false ? <Chip color="emerald">Active</Chip> : <Chip color="zinc">Inactive</Chip>}</td>
+                  <td className="py-2 text-right"><Btn size="sm" onClick={() => setEditUser(u)}><Pencil size={12} /></Btn></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-zinc-400 mt-3">KPI chain: you set targets for dept heads; dept heads set targets for their agents — in Performance → Set targets.</p>
+      </div>
+
+      <div className="bg-white border border-zinc-200 rounded-lg p-5">
+        <SectionTitle>Stage gate questions — what the AI must extract</SectionTitle>
+        <p className="text-xs text-zinc-500 mb-3">One requirement per line. The gate interviews the agent until every line is covered with specifics. Edit per stage to match how Elecbits sells.</p>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {STAGES.filter((s) => s.key !== "lead").map((s) => (
+            <button key={s.key} onClick={() => pickStage(s.key)}
+              className={cls("px-2.5 py-1 rounded-md text-xs border", gateStage === s.key ? "bg-zinc-900 text-white border-zinc-900" : "bg-white text-zinc-600 border-zinc-300 hover:bg-zinc-100")}>
+              {s.name}{gates[s.key] && gates[s.key].length ? " •" : ""}
+            </button>
+          ))}
+        </div>
+        <TA value={gateText} onChange={(e) => setGateText(e.target.value)} className="min-h-40 font-mono text-xs" />
+        <div className="flex items-center gap-2 mt-2 flex-wrap">
+          <Btn kind="primary" size="sm" onClick={saveGate}><Check size={13} /> Save for {stageName(gateStage)}</Btn>
+          <Btn size="sm" onClick={resetGate}>Reset to default</Btn>
+          {gateSaved && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 size={12} /> Saved</span>}
+          <span className="ml-auto text-xs text-zinc-400 font-mono">• = customised</span>
+        </div>
+      </div>
+
+      <div className="bg-white border border-zinc-200 rounded-lg p-5">
+        <SectionTitle>Workspace data</SectionTitle>
+        <p className="text-xs text-zinc-500 mb-3 flex items-start gap-1.5"><FileText size={13} className="mt-0.5 flex-none" /> This is a shared workspace — everyone who opens the app sees and edits the same data. Copy a backup before big changes.</p>
+        <div className="flex flex-wrap gap-2">
+          <Btn onClick={backup}><Copy size={14} /> {copied ? "Copied" : "Copy backup JSON"}</Btn>
+          {!confirmReset ? (
+            <Btn kind="danger" onClick={() => setConfirmReset(true)}><Trash2 size={14} /> Reset to demo data</Btn>
+          ) : (
+            <>
+              <Btn kind="danger" onClick={() => { resetDemo(); setConfirmReset(false); }}><AlertTriangle size={14} /> Yes, wipe everything</Btn>
+              <Btn onClick={() => setConfirmReset(false)}>Cancel</Btn>
+            </>
+          )}
+        </div>
+      </div>
+
+      {editUser && <UserModal user={editUser === "new" ? null : editUser} me={me} onClose={() => setEditUser(null)} onSave={upsertUser} />}
+    </div>
+  );
+}
+
+function UserModal({ user, me, onClose, onSave }) {
+  const [f, setF] = useState(() => user || { id: uid(), name: "", role: "agent", dept: "Sales", active: true });
+  const isSelf = user && user.id === me.id;
+  return (
+    <Modal title={user ? "Edit " + user.name : "Add user"} onClose={onClose}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={!f.name.trim()} onClick={() => onSave(f)}><Check size={15} /> Save user</Btn></>}>
+      <div className="space-y-3">
+        <Field label="Name" req><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+        <Field label="Role">
+          <Sel value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })} disabled={!!isSelf}>
+            {ROLES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+          </Sel>
+        </Field>
+        <Field label="Department"><Input value={f.dept} onChange={(e) => setF({ ...f, dept: e.target.value })} /></Field>
+        <label className="flex items-center gap-2 text-sm text-zinc-700">
+          <input type="checkbox" checked={f.active !== false} disabled={!!isSelf} onChange={(e) => setF({ ...f, active: e.target.checked })} className="rounded border-zinc-300" />
+          Active (inactive users can't log in)
+        </label>
+        {isSelf && <p className="text-xs text-zinc-400">You can't change your own role or deactivate yourself.</p>}
+      </div>
+    </Modal>
   );
 }
