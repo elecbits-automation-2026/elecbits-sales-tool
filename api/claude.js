@@ -57,8 +57,19 @@ export default async function handler(req, res) {
     const data = await anthropicRes.json();
 
     if (!anthropicRes.ok) {
-      console.error("Anthropic API error:", data);
-      res.status(502).json({ error: "AI request failed." });
+      // Surface the upstream reason (status + Anthropic error type/message) so
+      // failures are diagnosable from the browser Network tab. This never
+      // includes the API key. Common cases: 401 authentication_error (bad or
+      // revoked key), 400 invalid_request_error / credit balance too low
+      // (no credits on the account), 404 not_found_error (bad model id).
+      console.error("Anthropic API error:", anthropicRes.status, JSON.stringify(data));
+      const upstream = (data && data.error) || {};
+      res.status(502).json({
+        error: "AI request failed.",
+        upstreamStatus: anthropicRes.status,
+        type: upstream.type || null,
+        detail: upstream.message || null,
+      });
       return;
     }
 
