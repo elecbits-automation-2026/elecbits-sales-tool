@@ -29,8 +29,13 @@ export default async function handler(req, res) {
     return;
   }
 
-  const model = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
-  const max_tokens = Math.min(Math.max(parseInt(maxTokens, 10) || 700, 1), 4096);
+  // Cheapest-capable default: Haiku 4.5 ($1/$5 per Mtok) — plenty for the short
+  // stage-intake Q&A and knowledge lookups this app makes, ~5x cheaper than Opus.
+  // Override with ANTHROPIC_MODEL (e.g. claude-sonnet-5 for sharper gates).
+  const model = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5";
+  // Cap output tokens hard so a single call can never run away. 1200 covers a
+  // gate question + compiled summary comfortably.
+  const max_tokens = Math.min(Math.max(parseInt(maxTokens, 10) || 700, 1), 1200);
 
   // The client may not send a model (or an outdated one) — the server always
   // decides the model, so client input is ignored here on purpose.
