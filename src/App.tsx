@@ -3,7 +3,8 @@ import {
   Building2, Columns, TrendingUp, BookOpen, Receipt, Settings, Plus, X, Search,
   Mic, MicOff, Send, Check, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
-  ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText, Zap
+  ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText, Zap,
+  Bot, Database, CalendarCheck2, Lightbulb
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -517,7 +518,11 @@ function seedData() {
   const expenses = [
     { id: "e1", userId: "u_akash", companyId: "c3", purpose: "Store visit + ESL demo at Sunrise Retail HQ", city: "Bengaluru", from: dateDaysAgo(-3), to: dateDaysAgo(-2), mode: "Flight", estimate: 14500, notes: "Carrying 5 demo tags + gateway.", status: "pending", createdAt: tsDaysAgo(1), decidedBy: null, decisionNote: "" },
   ];
-  return { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates: {} };
+  const memory = [
+    { id: "m1", title: "Company positioning", text: "Elecbits is an electronics ODM/EMS partner: design → firmware → prototyping → certification → manufacturing. Pitch the full journey, not just PCBs.", updatedAt: tsDaysAgo(5), by: "u_admin" },
+    { id: "m2", title: "Commercial default", text: "Standard terms: 50% advance with PO, 50% before dispatch. Design phase billed separately from production. Quotes valid 30 days.", updatedAt: tsDaysAgo(5), by: "u_admin" },
+  ];
+  return { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates: {}, scrums: [], memory };
 }
 
 /* ---------- tiny UI atoms ---------- */
@@ -636,6 +641,8 @@ export default function App() {
   const [knowledge, setKnowledge] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [gates, setGates] = useState({});
+  const [scrums, setScrums] = useState([]);
+  const [memory, setMemory] = useState([]);
 
   // Auth state: authReady flips true once we know whether a session exists;
   // authEmail is the signed-in user's email (lowercased) or null.
@@ -681,21 +688,26 @@ export default function App() {
             store.set("sales:knowledge", seed.knowledge),
             store.set("sales:expenses", seed.expenses),
             store.set("sales:gates", seed.gates),
+            store.set("sales:scrums", seed.scrums),
+            store.set("sales:memory", seed.memory),
           ]);
           if (!alive) return;
           setUsers(seed.users); setCompanies(seed.companies); setDeals(seed.deals); setKpis(seed.kpis);
           setTrainings(seed.trainings); setWorklogs(seed.worklogs); setKnowledge(seed.knowledge); setExpenses(seed.expenses); setGates(seed.gates);
+          setScrums(seed.scrums); setMemory(seed.memory);
         } else {
-          const [c, d, k, t, w, kn, e, g] = await Promise.all([
+          const [c, d, k, t, w, kn, e, g, sc, mem] = await Promise.all([
             store.get("sales:companies"), store.get("sales:deals"), store.get("sales:kpis"),
             store.get("sales:trainings"), store.get("sales:worklogs"), store.get("sales:knowledge"),
             store.get("sales:expenses"), store.get("sales:gates"),
+            store.get("sales:scrums"), store.get("sales:memory"),
           ]);
           if (!alive) return;
           setUsers(u || []);
           setCompanies(c || []); setDeals(d || []); setKpis(k || {});
           setTrainings(t || []); setWorklogs(w || []); setKnowledge(kn || []);
           setExpenses(e || []); setGates(g || {});
+          setScrums(sc || []); setMemory(mem || []);
         }
       } catch (e) { console.error(e); }
       if (alive) setLoading(false);
@@ -713,9 +725,11 @@ export default function App() {
   const saveKnowledge = (v) => { setKnowledge(v); persist("sales:knowledge", v); };
   const saveExpenses = (v) => { setExpenses(v); persist("sales:expenses", v); };
   const saveGates = (v) => { setGates(v); persist("sales:gates", v); };
+  const saveScrums = (v) => { setScrums(v); persist("sales:scrums", v); };
+  const saveMemory = (v) => { setMemory(v); persist("sales:memory", v); };
 
   const me = authEmail ? (users.find((u) => String(u.email || "").toLowerCase() === authEmail) || null) : null;
-  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates };
+  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
@@ -725,6 +739,7 @@ export default function App() {
     const seed = seedData();
     saveUsers(seed.users); saveCompanies(seed.companies); saveDeals(seed.deals); saveKpis(seed.kpis);
     saveTrainings(seed.trainings); saveWorklogs(seed.worklogs); saveKnowledge(seed.knowledge); saveExpenses(seed.expenses); saveGates(seed.gates);
+    saveScrums(seed.scrums); saveMemory(seed.memory);
   };
 
   // Not signed in yet → the login screen. (authReady guards a flash of login
@@ -769,6 +784,9 @@ export default function App() {
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
           {tab === "knowledge" && <KnowledgeView me={me} data={data} saveKnowledge={saveKnowledge} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
+          {tab === "scrum" && <DailyScrumView me={me} data={data} saveScrums={saveScrums} />}
+          {tab === "assistant" && me.role === "admin" && <AssistantView me={me} data={data} />}
+          {tab === "memory" && me.role === "admin" && <SystemMemoryView me={me} data={data} saveMemory={saveMemory} />}
           {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} resetDemo={resetDemo} />}
         </main>
         {saveErr && (
@@ -872,15 +890,39 @@ function Login() {
 
 /* ---------- shell ---------- */
 
-function Sidebar({ me, tab, setTab, onLogout }) {
-  const items = [
-    { key: "pipeline", label: "Pipeline", icon: Columns },
-    { key: "companies", label: "Companies", icon: Building2 },
-    { key: "performance", label: "Performance", icon: TrendingUp },
-    { key: "knowledge", label: "Product / Service", icon: BookOpen },
-    { key: "expenses", label: "Expenses", icon: Receipt },
+// Grouped navigation, mirroring the PMS design's labelled sections. Groups and
+// items are filtered by role so each person only sees what applies to them.
+function navGroups(me) {
+  const isAdmin = me.role === "admin";
+  const groups = [
+    { label: "Workspace", items: [
+      { key: "pipeline", label: "Pipeline", icon: Columns },
+      { key: "companies", label: "Companies", icon: Building2 },
+    ] },
+    { label: "Personal", items: [
+      { key: "scrum", label: "Daily Scrum", icon: CalendarCheck2 },
+      { key: "performance", label: "Performance", icon: TrendingUp },
+    ] },
+    { label: "Resources", items: [
+      { key: "knowledge", label: "Product / Service", icon: BookOpen },
+      { key: "expenses", label: "Expenses", icon: Receipt },
+    ] },
   ];
-  if (me.role === "admin") items.push({ key: "admin", label: "Admin", icon: Settings });
+  if (isAdmin) {
+    groups.push({ label: "AI", items: [
+      { key: "assistant", label: "Assistant", icon: Bot },
+      { key: "memory", label: "System Memory", icon: Database },
+    ] });
+    groups.push({ label: "Admin", items: [
+      { key: "admin", label: "Admin", icon: Settings },
+    ] });
+  }
+  return groups;
+}
+
+function Sidebar({ me, tab, setTab, onLogout }) {
+  const groups = navGroups(me);
+  const flat = groups.flatMap((g) => g.items); // mobile rail is a single scroll row
   return (
     <>
       {/* desktop rail */}
@@ -894,13 +936,20 @@ function Sidebar({ me, tab, setTab, onLogout }) {
             </div>
           </div>
         </div>
-        <nav className="flex-1 px-2 space-y-0.5">
-          {items.map((it) => (
-            <button key={it.key} onClick={() => setTab(it.key)}
-              className={cls("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium border border-transparent transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
-                tab === it.key ? "bg-blue-50 text-blue-700 border-blue-100" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800")}>
-              <it.icon size={16} /> {it.label}
-            </button>
+        <nav className="flex-1 px-2 pb-3 space-y-4 overflow-y-auto">
+          {groups.map((g) => (
+            <div key={g.label}>
+              <p className="px-3 mb-1 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">{g.label}</p>
+              <div className="space-y-0.5">
+                {g.items.map((it) => (
+                  <button key={it.key} onClick={() => setTab(it.key)}
+                    className={cls("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium border border-transparent transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
+                      tab === it.key ? "bg-blue-50 text-blue-700 border-blue-100" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800")}>
+                    <it.icon size={16} /> {it.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
         <div className="p-3 border-t border-slate-200">
@@ -919,7 +968,7 @@ function Sidebar({ me, tab, setTab, onLogout }) {
         <span className="flex items-center gap-1.5 pr-2 mr-1 border-r border-slate-200 flex-none">
           <Logo size={22} />
         </span>
-        {items.map((it) => (
+        {flat.map((it) => (
           <button key={it.key} onClick={() => setTab(it.key)}
             className={cls("flex-none flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium",
               tab === it.key ? "bg-blue-50 text-blue-700" : "text-slate-500")}>
@@ -1843,18 +1892,22 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
   const days = last7Days();
   const today = todayStr();
   const existing = worklogs.find((w) => w.userId === me.id && w.date === today);
-  const [f, setF] = useState(() => existing || { companiesWorked: "", calls: "", meetings: "", progress: "", blockers: "", next: "" });
+  // The work update is now a single open-ended doc, stored in `progress`
+  // (older logs with structured fields still read fine).
+  const [doc, setDoc] = useState(() => (existing ? existing.progress || "" : ""));
   const [saved, setSaved] = useState(false);
   const [viewLog, setViewLog] = useState(null);
   const isSelf = viewUser.id === me.id && (me.role === "agent" || me.role === "dept_head");
   const team = teamOf(me, users);
 
   const submit = () => {
-    if (!String(f.progress || "").trim()) return;
-    const entry = { id: existing ? existing.id : uid(), userId: me.id, date: today, companiesWorked: f.companiesWorked || "", calls: Number(f.calls || 0), meetings: Number(f.meetings || 0), progress: f.progress || "", blockers: f.blockers || "", next: f.next || "" };
+    if (!String(doc || "").trim()) return;
+    const entry = { id: existing ? existing.id : uid(), userId: me.id, date: today, progress: doc.trim() };
     const next = worklogs.some((w) => w.id === entry.id) ? worklogs.map((w) => (w.id === entry.id ? entry : w)) : [entry, ...worklogs];
     saveWorklogs(next); setSaved(true); setTimeout(() => setSaved(false), 2000);
   };
+
+  const DOC_PROMPTS = "Open-ended — write the day like a doc.\n\n· What moved forward today…\n· What I learned…\n· Which decisions went wrong, and why…\n· Blockers and what's next…\n\nThis is the mistake & learning vault — the more honest it is, the more it teaches.";
 
   const cellFor = (userId, d) => {
     const log = worklogs.find((w) => w.userId === userId && w.date === d.date);
@@ -1889,24 +1942,18 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
       </div>
 
       {isSelf && (
-        <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-slate-800">Today's update — {fmtDate(today)}</p>
+            <p className="text-sm font-semibold text-slate-800 flex items-center gap-2"><FileText size={15} className="text-slate-400" /> Work update — {fmtDate(today)}</p>
             {existing ? <Chip color="green"><Check size={11} /> Logged, editable</Chip> : <Chip color="amber"><Clock size={11} /> Not logged yet</Chip>}
           </div>
-          <div className="grid sm:grid-cols-3 gap-3 mb-3">
-            <Field label="Companies worked"><Input value={f.companiesWorked} onChange={(e) => setF({ ...f, companiesWorked: e.target.value })} placeholder="Nevon, Sunrise…" /></Field>
-            <Field label="Calls made"><Input type="number" value={f.calls} onChange={(e) => setF({ ...f, calls: e.target.value })} /></Field>
-            <Field label="Meetings held"><Input type="number" value={f.meetings} onChange={(e) => setF({ ...f, meetings: e.target.value })} /></Field>
-          </div>
-          <div className="grid sm:grid-cols-3 gap-3">
-            <Field label="What moved forward today" req><TA value={f.progress} onChange={(e) => setF({ ...f, progress: e.target.value })} /></Field>
-            <Field label="Blockers"><TA value={f.blockers} onChange={(e) => setF({ ...f, blockers: e.target.value })} /></Field>
-            <Field label="Next actions"><TA value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} /></Field>
-          </div>
-          <div className="flex items-center justify-end gap-2 mt-3">
-            {saved && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={13} /> Logged</span>}
-            <Btn kind="primary" disabled={!String(f.progress || "").trim()} onClick={submit}><Check size={15} /> {existing ? "Update log" : "Log update"}</Btn>
+          <TA value={doc} onChange={(e) => setDoc(e.target.value)} placeholder={DOC_PROMPTS} className="min-h-64 leading-relaxed" />
+          <div className="flex items-center justify-between gap-2 mt-3">
+            <p className="text-xs text-slate-400">The mistake &amp; learning vault — honest notes today save the deal tomorrow.</p>
+            <span className="flex items-center gap-2">
+              {saved && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={13} /> Logged</span>}
+              <Btn kind="primary" disabled={!String(doc || "").trim()} onClick={submit}><Check size={15} /> {existing ? "Update log" : "Log update"}</Btn>
+            </span>
           </div>
         </div>
       )}
@@ -1948,14 +1995,17 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
       )}
 
       {viewLog && (
-        <Modal title={"Work update — " + ((users.find((u) => u.id === viewLog.userId) || {}).name || "") + " · " + fmtDate(viewLog.date)} onClose={() => setViewLog(null)}>
-          <div className="space-y-2 text-sm">
-            <p><span className="text-slate-400">Companies:</span> {viewLog.companiesWorked || "—"}</p>
-            <p><span className="text-slate-400">Calls:</span> <span className="font-mono">{viewLog.calls}</span> · <span className="text-slate-400">Meetings:</span> <span className="font-mono">{viewLog.meetings}</span></p>
-            <p><span className="text-slate-400">Progress:</span> {viewLog.progress}</p>
-            {viewLog.blockers && <p><span className="text-slate-400">Blockers:</span> {viewLog.blockers}</p>}
-            {viewLog.next && <p><span className="text-slate-400">Next:</span> {viewLog.next}</p>}
-          </div>
+        <Modal wide title={"Work update — " + ((users.find((u) => u.id === viewLog.userId) || {}).name || "") + " · " + fmtDate(viewLog.date)} onClose={() => setViewLog(null)}>
+          <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">{viewLog.progress || "—"}</p>
+          {/* Legacy structured fields, shown only if an older log has them. */}
+          {(viewLog.companiesWorked || viewLog.calls || viewLog.meetings || viewLog.blockers || viewLog.next) && (
+            <div className="mt-4 pt-3 border-t border-slate-100 space-y-1.5 text-sm">
+              {viewLog.companiesWorked && <p><span className="text-slate-400">Companies:</span> {viewLog.companiesWorked}</p>}
+              {(viewLog.calls || viewLog.meetings) ? <p><span className="text-slate-400">Calls:</span> <span className="font-mono">{viewLog.calls || 0}</span> · <span className="text-slate-400">Meetings:</span> <span className="font-mono">{viewLog.meetings || 0}</span></p> : null}
+              {viewLog.blockers && <p><span className="text-slate-400">Blockers:</span> {viewLog.blockers}</p>}
+              {viewLog.next && <p><span className="text-slate-400">Next:</span> {viewLog.next}</p>}
+            </div>
+          )}
         </Modal>
       )}
     </div>
@@ -2260,6 +2310,299 @@ function ExpenseModal({ me, data, onClose, onSave }) {
         </div>
         <Field label="Estimated cost (₹)" req><Input type="number" value={f.estimate} onChange={(e) => setF({ ...f, estimate: e.target.value })} /></Field>
         <Field label="Notes"><TA value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} placeholder="What you're carrying, who you're meeting…" /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   DAILY SCRUM — write it as it comes → AI-organised tasks
+   ============================================================ */
+
+function DailyScrumView({ me, data, saveScrums }) {
+  const { users, scrums } = data;
+  const [date, setDate] = useState(todayStr());
+  const [raw, setRaw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const speech = useSpeech((t) => setRaw((p) => (p ? p + " " : "") + t));
+
+  const scopeIds = me.role === "admin" ? users.map((u) => u.id)
+    : me.role === "dept_head" ? [me.id, ...teamOf(me, users).map((u) => u.id)]
+    : [me.id];
+  const dayNotes = scrums
+    .filter((s) => s.date === date && scopeIds.includes(s.userId))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
+  const organise = async () => {
+    const text = raw.trim();
+    if (!text || busy) return;
+    setBusy(true); setErr("");
+    const system = [
+      "You organise a typed/spoken daily scrum for the Elecbits sales + ODM team into clear, assigned, time-boxed tasks.",
+      "Read the note and extract each task with its owner, time window (if given) and any if/else condition.",
+      "Keep task text short and action-first. Preserve project IDs verbatim.",
+      "When done, reply with ONLY this on one line and nothing else: SCRUM_JSON {\"tasks\":[{\"owner\":\"name or empty\",\"task\":\"...\",\"window\":\"e.g. 12pm–1pm or empty\",\"condition\":\"if/else note or empty\"}],\"summary\":\"one-line summary\"}",
+      "The JSON must be valid. No markdown.",
+    ].join("\n");
+    try {
+      const reply = await askClaude(system, [{ role: "user", content: text }]);
+      const parsed = extractMarkedJSON(reply, "SCRUM_JSON") || {};
+      const note = {
+        id: uid(), userId: me.id, date, raw: text,
+        tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+        summary: parsed.summary || "", createdAt: nowTS(),
+      };
+      saveScrums([note, ...scrums]);
+      setRaw("");
+    } catch (e) { setErr("Could not organise this — saved nothing. Check connection and try again."); }
+    setBusy(false);
+  };
+
+  const saveRawOnly = () => {
+    const text = raw.trim();
+    if (!text) return;
+    saveScrums([{ id: uid(), userId: me.id, date, raw: text, tasks: [], summary: "", createdAt: nowTS() }, ...scrums]);
+    setRaw("");
+  };
+  const remove = (id) => saveScrums(scrums.filter((s) => s.id !== id));
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="flex flex-wrap items-center gap-2 mb-1">
+        <h1 className="text-lg font-semibold mr-auto">Daily Scrum</h1>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls + " w-auto"} />
+      </div>
+      <p className="text-sm text-slate-500 mb-4">Write it as it comes — the AI turns it into assigned, time-boxed, if/else-aware tasks.</p>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <CalendarCheck2 size={16} className="text-blue-600" />
+          <p className="text-sm font-semibold text-slate-800">Daily scrum — write it as it comes</p>
+        </div>
+        <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-32"
+          placeholder={speech.on ? "Listening… speak the scrum" : "e.g. — project ID esp-32-123: check the gerber file, Rahul 12pm to 1pm. If the gerber is fine, great; if not, verify the schematic and submit a report in an hour. Gargi checks the BoM 12 to 1pm. Ask Akshay to have the client communicated by 2pm."} />
+        <div className="flex flex-wrap items-center gap-2 mt-3">
+          <Btn kind="primary" disabled={busy || !raw.trim()} onClick={organise}>
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Organise with AI
+          </Btn>
+          {speech.supported && <Btn kind={speech.on ? "danger" : "ghost"} onClick={speech.toggle}>{speech.on ? <MicOff size={14} /> : <Mic size={14} />}</Btn>}
+          <Btn kind="ghost" disabled={busy || !raw.trim()} onClick={saveRawOnly}>Save raw note</Btn>
+          <span className="text-xs text-slate-400 ml-auto">Mention project ID, people, time windows and any if/else.</span>
+        </div>
+        {err && <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
+      </div>
+
+      <div className="flex items-center gap-2 mt-6 mb-3">
+        <ClipboardList size={15} className="text-slate-400" />
+        <h2 className="text-sm font-semibold text-slate-700">Notes — {fmtDate(date)}</h2>
+        <Chip color="slate">{dayNotes.length}</Chip>
+      </div>
+      {dayNotes.length === 0 ? (
+        <Empty icon={CalendarCheck2} title="No scrum notes for this day" sub="Type the day's plan above and let the AI break it into assigned, time-boxed tasks." />
+      ) : (
+        <div className="space-y-3">
+          {dayNotes.map((s) => {
+            const by = users.find((u) => u.id === s.userId);
+            return (
+              <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-4 border-l-4 border-l-blue-500">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="font-semibold text-sm text-slate-900">{by ? by.name : "?"}</span>
+                  <span className="font-mono text-xs text-slate-400">{new Date(s.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  {s.tasks && s.tasks.length > 0 ? <Chip color="blue">{s.tasks.length} task{s.tasks.length === 1 ? "" : "s"}</Chip> : <Chip color="slate">raw note</Chip>}
+                  {(me.role === "admin" || s.userId === me.id) && (
+                    <button onClick={() => remove(s.id)} className="ml-auto text-slate-400 hover:text-red-600" title="Delete"><Trash2 size={13} /></button>
+                  )}
+                </div>
+                {s.tasks && s.tasks.length > 0 ? (
+                  <div className="space-y-2">
+                    {s.summary && <p className="text-xs text-slate-500 italic">{s.summary}</p>}
+                    {s.tasks.map((t, i) => (
+                      <div key={i} className="flex items-start gap-2 text-sm">
+                        <Check size={14} className="text-green-600 mt-0.5 flex-none" />
+                        <div className="min-w-0">
+                          <span className="text-slate-800">{t.task}</span>
+                          <span className="ml-2 inline-flex flex-wrap gap-1.5 align-middle">
+                            {t.owner && <Chip color="blue">{t.owner}</Chip>}
+                            {t.window && <Chip color="slate"><Clock size={10} /> {t.window}</Chip>}
+                            {t.condition && <Chip color="amber">{t.condition}</Chip>}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                    <details className="mt-1">
+                      <summary className="text-xs text-slate-400 cursor-pointer hover:text-slate-600">Original note</summary>
+                      <p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{s.raw}</p>
+                    </details>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-700 whitespace-pre-wrap">{s.raw}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   ASSISTANT (admin) — chat over the workspace + system memory
+   ============================================================ */
+
+function AssistantView({ me, data }) {
+  const { users, companies, deals, kpis, memory } = data;
+  const [msgs, setMsgs] = useState([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const bodyRef = useRef(null);
+  const speech = useSpeech((t) => setInput((p) => (p ? p + " " : "") + t));
+
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
+
+  const buildSystem = () => {
+    const compSnap = companies.slice(0, 60).map((c) => ({
+      name: c.name, city: c.city, industry: c.industry, potential: c.potential,
+      owner: (users.find((u) => u.id === c.accountOwner) || {}).name, complete: completeness(c) + "%",
+    }));
+    const dealSnap = deals.slice(0, 80).map((d) => ({
+      company: (companies.find((c) => c.id === d.companyId) || {}).name,
+      stage: d.lost ? "lost" : stageName(d.stage), value: d.value,
+      owner: (users.find((u) => u.id === d.ownerId) || {}).name, staleDays: dealStaleDays(d),
+    }));
+    const mem = (memory || []).map((m) => "• " + m.title + ": " + m.text).join("\n");
+    return [
+      "You are the Elecbits Sales OS assistant for the admin/leadership team.",
+      "Answer using the workspace snapshot and system memory below. Be concise and practical — short paragraphs or bullet lists. If something isn't in the data, say so plainly rather than inventing it.",
+      "SYSTEM MEMORY (durable facts & rules):\n" + (mem || "(none)"),
+      "COMPANIES: " + JSON.stringify(compSnap),
+      "DEALS: " + JSON.stringify(dealSnap),
+      "TEAM: " + JSON.stringify(users.map((u) => ({ name: u.name, role: roleLabel(u.role), dept: u.dept }))),
+    ].join("\n\n");
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput(""); setErr("");
+    const next = [...msgs, { role: "user", content: text }];
+    setMsgs(next); setBusy(true);
+    try {
+      const reply = await askClaude(buildSystem(), next.map((m) => ({ role: m.role, content: m.content })));
+      setMsgs([...next, { role: "assistant", content: reply }]);
+    } catch (e) { setErr("AI call failed — try again."); setInput(text); setMsgs(msgs); }
+    setBusy(false);
+  };
+
+  const suggestions = [
+    "Which deals are stuck the longest?",
+    "Summarise the pipeline by stage and value.",
+    "Which companies have the weakest data?",
+    "Who on the team is behind and why?",
+  ];
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 mb-1">
+        <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Bot size={18} className="text-blue-600" /> Assistant</h1>
+        <Chip color="green"><Database size={11} /> Reads the workspace</Chip>
+      </div>
+      <p className="text-sm text-slate-500 mb-4">Ask about the pipeline, companies, team and KPIs — it answers from live workspace data and your system memory.</p>
+
+      <div className="bg-white border border-slate-200 rounded-xl flex flex-col">
+        <div ref={bodyRef} className="h-[28rem] overflow-y-auto p-4 space-y-3">
+          {msgs.length === 0 && (
+            <div className="text-sm text-slate-400">
+              <p className="font-medium text-slate-500 mb-2">Try:</p>
+              <div className="flex flex-wrap gap-1.5">
+                {suggestions.map((s) => (
+                  <button key={s} onClick={() => setInput(s)} className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 text-xs hover:bg-blue-50 hover:text-blue-700 transition-colors">{s}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {msgs.map((m, i) => (
+            <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cls("max-w-lg rounded-lg px-3 py-2 text-sm whitespace-pre-wrap", m.role === "user" ? "bg-blue-600 text-white" : "bg-slate-50 border border-slate-200 text-slate-800")}>{m.content}</div>
+            </div>
+          ))}
+          {busy && <div className="flex items-center gap-2 text-xs text-slate-400 font-mono"><Loader2 size={13} className="animate-spin" /> thinking…</div>}
+          {err && <p className="text-xs text-red-600 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
+        </div>
+        <div className="border-t border-slate-200 p-3 flex gap-2 items-end">
+          <TA value={input} onChange={(e) => setInput(e.target.value)} placeholder={speech.on ? "Listening…" : "Ask the assistant…"}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} className="flex-1 min-h-10" />
+          {speech.supported && <Btn kind={speech.on ? "danger" : "ghost"} onClick={speech.toggle}>{speech.on ? <MicOff size={15} /> : <Mic size={15} />}</Btn>}
+          <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={15} /></Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   SYSTEM MEMORY (admin) — durable facts the Assistant remembers
+   ============================================================ */
+
+function SystemMemoryView({ me, data, saveMemory }) {
+  const { users, memory } = data;
+  const [editing, setEditing] = useState(null); // entry | "new"
+
+  const upsert = (m) => {
+    const exists = memory.some((x) => x.id === m.id);
+    saveMemory(exists ? memory.map((x) => (x.id === m.id ? m : x)) : [{ ...m }, ...memory]);
+    setEditing(null);
+  };
+  const remove = (id) => saveMemory(memory.filter((x) => x.id !== id));
+
+  return (
+    <div className="max-w-3xl mx-auto">
+      <div className="flex items-center gap-2 mb-1">
+        <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Database size={18} className="text-blue-600" /> System Memory</h1>
+        <Btn kind="primary" size="sm" onClick={() => setEditing("new")}><Plus size={14} /> Add memory</Btn>
+      </div>
+      <p className="text-sm text-slate-500 mb-4">Durable facts, positioning and rules the Assistant always keeps in mind. Keep each entry short and true.</p>
+
+      {(!memory || memory.length === 0) ? (
+        <Empty icon={Database} title="No system memory yet" sub="Add the things the Assistant should never forget — positioning, pricing rules, do's and don'ts." action={<Btn kind="primary" onClick={() => setEditing("new")}><Plus size={14} /> Add memory</Btn>} />
+      ) : (
+        <div className="space-y-2">
+          {memory.map((m) => {
+            const by = users.find((u) => u.id === m.by);
+            return (
+              <div key={m.id} className="bg-white border border-slate-200 rounded-xl p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-sm text-slate-900">{m.title}</p>
+                  <div className="flex items-center gap-1.5 flex-none">
+                    <button onClick={() => setEditing(m)} className="text-slate-400 hover:text-slate-700"><Pencil size={13} /></button>
+                    <button onClick={() => remove(m.id)} className="text-slate-400 hover:text-red-600"><Trash2 size={13} /></button>
+                  </div>
+                </div>
+                <p className="text-sm text-slate-600 mt-1 whitespace-pre-wrap">{m.text}</p>
+                <p className="font-mono text-xs text-slate-300 mt-1.5">updated {fmtDate(m.updatedAt)}{by ? " · " + by.name : ""}</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editing && <MemoryModal entry={editing === "new" ? null : editing} me={me} onClose={() => setEditing(null)} onSave={upsert} />}
+    </div>
+  );
+}
+
+function MemoryModal({ entry, me, onClose, onSave }) {
+  const [f, setF] = useState(() => entry || { id: uid(), title: "", text: "", by: me.id });
+  return (
+    <Modal wide title={entry ? "Edit memory" : "Add memory"} onClose={onClose}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={!f.title.trim() || !f.text.trim()} onClick={() => onSave({ ...f, updatedAt: nowTS(), by: me.id })}><Check size={15} /> Save</Btn></>}>
+      <div className="space-y-3">
+        <Field label="Title" req><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="e.g. Discount approval limits" /></Field>
+        <Field label="Memory" req hint="The Assistant treats this as always-true context.">
+          <TA value={f.text} onChange={(e) => setF({ ...f, text: e.target.value })} className="min-h-32" />
+        </Field>
       </div>
     </Modal>
   );
