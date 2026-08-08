@@ -65,11 +65,11 @@ export default async function handler(req, res) {
   }
   const callerEmail = (callerData.user.email || "").toLowerCase();
 
-  // --- Authorize: caller must be a Main Admin in the crm-users collection ---
+  // --- Authorize: caller must be an admin in the sales:users collection ---
   const { data: coll, error: collErr } = await admin
     .from("collections")
     .select("data")
-    .eq("key", "crm-users")
+    .eq("key", "sales:users")
     .maybeSingle();
   if (collErr) {
     res.status(500).json({ error: "Could not verify permissions." });
@@ -77,8 +77,8 @@ export default async function handler(req, res) {
   }
   const users = coll && Array.isArray(coll.data) ? coll.data : [];
   const callerProfile = users.find((u) => (u.email || "").toLowerCase() === callerEmail);
-  if (!callerProfile || callerProfile.tier !== "Main Admin") {
-    res.status(403).json({ error: "Only a Main Admin can manage logins." });
+  if (!callerProfile || callerProfile.role !== "admin") {
+    res.status(403).json({ error: "Only an admin can manage logins." });
     return;
   }
 

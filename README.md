@@ -43,14 +43,13 @@ Roles: **Admin**, **Dept Head**, **Sales Agent**, **Finance**.
   `sales:knowledge`, `sales:expenses`, `sales:gates`) is one JSON row in the
   `collections` table (`supabase/schema.sql`). See the `store` object in
   `App.tsx`.
-- **Session/auth** — the login is a **role selector**. To satisfy the
-  `collections` RLS ("authenticated only"), the app opens an **anonymous Supabase
-  auth session** on load (`ensureSession`). This requires *Allow anonymous
-  sign-ins* to be enabled in Supabase — see `SETUP.md`. The selected user is
-  remembered per-browser in `localStorage`.
-  > ⚠️ Selecting a user is not password-protected. Anyone with the URL can pick
-  > any role. Keep the deployment URL private, or add a real password/SSO gate
-  > before exposing it publicly.
+- **Session/auth** — real **Supabase email/password** login. Users sign in with
+  `signInWithPassword`; the Supabase client persists the session across reloads.
+  The signed-in email is matched to a profile in `sales:users` to resolve the
+  current user (`me`) and their role. The `collections` RLS requires an
+  authenticated session, so all data reads/writes happen after sign-in. Demo
+  accounts are created by `scripts/seed-auth.mjs`; admins add more from
+  **Admin → Add user** (via `/api/admin`).
 - **AI** — `askClaude(system, messages)` posts to `/api/claude`
   (`api/claude.js`), which holds `ANTHROPIC_API_KEY` and forwards to the
   Anthropic Messages API. The model is chosen server-side (`ANTHROPIC_MODEL`,
@@ -69,7 +68,7 @@ features need the app deployed to Vercel (or `vercel dev`) so `/api/claude` runs
 with `ANTHROPIC_API_KEY` set.
 
 See **[`SETUP.md`](./SETUP.md)** for the full Supabase + Vercel deploy guide,
-including the one new step: **enable anonymous sign-ins**.
+including creating the login accounts with `npm run seed`.
 
 ### Reference
 

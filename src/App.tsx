@@ -95,14 +95,14 @@ const STALE_RED = 8;
 
 /* ---------- storage ---------- */
 
-// Persistence — Supabase for shared data, localStorage for the per-browser
-// session pointer. Each `sales:*` key is one JSON row in the `collections`
-// table (value may be an array or an object — kpis/gates are maps). Reads/writes
-// require an authenticated Supabase session (see ensureSession); the app signs in
-// anonymously so the existing RLS ("authenticated only") policy keeps holding.
+// Persistence — Supabase for all shared data. Each `sales:*` key is one JSON row
+// in the `collections` table (value may be an array or an object — kpis/gates
+// are maps). Reads/writes require an authenticated Supabase session: the user
+// signs in with a real email + password (see auth helpers below), which
+// satisfies the "authenticated" RLS policy on the table.
 const store = {
   async get(key, shared = true) {
-    if (!shared || key === "sales:session") {
+    if (!shared) {
       try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; }
     }
     try {
@@ -112,7 +112,7 @@ const store = {
     } catch (e) { console.error("store.get threw", key, e); return null; }
   },
   async set(key, val, shared = true) {
-    if (!shared || key === "sales:session") {
+    if (!shared) {
       try { localStorage.setItem(key, JSON.stringify(val)); return true; } catch (e) { return false; }
     }
     try {
@@ -125,29 +125,57 @@ const store = {
   },
 };
 
-// The collections table is RLS-gated to authenticated users. This app's login is
-// a role selector (not Supabase Auth), so we establish an anonymous auth session
-// up front to satisfy RLS. Requires "Allow anonymous sign-ins" enabled in
-// Supabase (Authentication → Providers). Safe to call repeatedly.
-function withTimeout(promise, ms, label) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => setTimeout(() => resolve({ __timeout: true, label }), ms)),
-  ]);
+/* ---------- auth ---------- */
+
+// Real Supabase email/password auth. Each employee has a Supabase Auth account
+// (created by scripts/seed-auth.mjs for the demo team, or by an admin via
+// /api/admin) whose email matches their profile's `email` in `sales:users`.
+// The Supabase client persists the session (see lib/supabase.ts), so a logged-in
+// user stays signed in across reloads until they sign out.
+async function signInWithPassword(email, password) {
+  try {
+    const { error } = await supabase.auth.signInWithPassword({
+      email: String(email || "").trim().toLowerCase(),
+      password,
+    });
+    return { ok: !error, error: error ? error.message : "" };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || "Sign in failed." };
+  }
 }
 
-async function ensureSession() {
+async function signOut() {
+  try { await supabase.auth.signOut(); } catch (e) { /* ignore */ }
+}
+
+// Calls the server-side admin function (/api/admin) to create/update/delete the
+// Supabase Auth login for a user. Requires the caller's access token; the server
+// verifies the caller is an admin before doing anything. Throws with a readable
+// message on failure (including when the function isn't configured/deployed).
+async function callAdminApi(action, payload) {
+  const { data } = await supabase.auth.getSession();
+  const token = data && data.session ? data.session.access_token : "";
+  const res = await fetch("/api/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  let json = {} as any;
+  try { json = await res.json(); } catch (e) { /* non-JSON */ }
+  if (!res.ok) throw new Error((json && json.error) || "Login request failed (" + res.status + ").");
+  return json;
+}
+
+// The currently authenticated email (lowercased), or null. Used to resolve the
+// app profile and to gate the whole UI behind a real session.
+async function currentAuthEmail() {
   try {
-    const got = await withTimeout(supabase.auth.getSession(), 5000, "getSession");
-    if (got && got.__timeout) { console.error("ensureSession: getSession timed out"); return false; }
-    if (got && got.data && got.data.session) return true;
-    const res = await withTimeout(supabase.auth.signInAnonymously(), 6000, "signInAnonymously");
-    if (res && res.__timeout) { console.error("ensureSession: anonymous sign-in timed out (is it enabled in Supabase?)"); return false; }
-    if (res && res.error) { console.error("anonymous sign-in failed:", res.error.message); return false; }
-    return true;
+    const { data } = await supabase.auth.getSession();
+    return data && data.session && data.session.user
+      ? String(data.session.user.email || "").toLowerCase()
+      : null;
   } catch (e) {
-    console.error("ensureSession threw", e);
-    return false;
+    return null;
   }
 }
 
@@ -410,11 +438,11 @@ function fixNowItems(user, data) {
 
 function seedData() {
   const users = [
-    { id: "u_admin", name: "Admin", role: "admin", dept: "Management", active: true },
-    { id: "u_saurav", name: "Saurav", role: "dept_head", dept: "Sales", active: true },
-    { id: "u_ankit", name: "Ankit", role: "agent", dept: "Sales", active: true },
-    { id: "u_akash", name: "Akash", role: "agent", dept: "Sales", active: true },
-    { id: "u_fin", name: "Finance", role: "finance", dept: "Finance", active: true },
+    { id: "u_admin", name: "Admin", email: "admin@elecbits.in", role: "admin", dept: "Management", active: true },
+    { id: "u_saurav", name: "Saurav", email: "saurav@elecbits.in", role: "dept_head", dept: "Sales", active: true },
+    { id: "u_ankit", name: "Ankit", email: "ankit@elecbits.in", role: "agent", dept: "Sales", active: true },
+    { id: "u_akash", name: "Akash", email: "akash@elecbits.in", role: "agent", dept: "Sales", active: true },
+    { id: "u_fin", name: "Finance", email: "finance@elecbits.in", role: "finance", dept: "Finance", active: true },
   ];
   const companies = [
     {
@@ -608,16 +636,40 @@ export default function App() {
   const [knowledge, setKnowledge] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [gates, setGates] = useState({});
-  const [sessionId, setSessionId] = useState(null);
+
+  // Auth state: authReady flips true once we know whether a session exists;
+  // authEmail is the signed-in user's email (lowercased) or null.
+  const [authReady, setAuthReady] = useState(false);
+  const [authEmail, setAuthEmail] = useState(null);
 
   const [focusCompanyId, setFocusCompanyId] = useState(null);
 
+  // Track the current Supabase session and react to sign-in / sign-out.
   useEffect(() => {
+    let alive = true;
+    currentAuthEmail().then((email) => {
+      if (!alive) return;
+      setAuthEmail(email);
+      setAuthReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!alive) return;
+      setAuthEmail(session && session.user ? String(session.user.email || "").toLowerCase() : null);
+      setAuthReady(true);
+    });
+    return () => { alive = false; sub && sub.subscription && sub.subscription.unsubscribe(); };
+  }, []);
+
+  // Load (and, on an empty workspace, seed) the shared data once authenticated.
+  useEffect(() => {
+    if (!authReady) return;
+    if (!authEmail) { setLoading(false); return; }
+    let alive = true;
     (async () => {
+      setLoading(true);
       try {
-        await ensureSession();
         let u = await store.get("sales:users");
-        if (!u) {
+        if (!u || u.length === 0) {
           const seed = seedData();
           await Promise.all([
             store.set("sales:users", seed.users),
@@ -630,25 +682,26 @@ export default function App() {
             store.set("sales:expenses", seed.expenses),
             store.set("sales:gates", seed.gates),
           ]);
+          if (!alive) return;
           setUsers(seed.users); setCompanies(seed.companies); setDeals(seed.deals); setKpis(seed.kpis);
           setTrainings(seed.trainings); setWorklogs(seed.worklogs); setKnowledge(seed.knowledge); setExpenses(seed.expenses); setGates(seed.gates);
         } else {
+          const [c, d, k, t, w, kn, e, g] = await Promise.all([
+            store.get("sales:companies"), store.get("sales:deals"), store.get("sales:kpis"),
+            store.get("sales:trainings"), store.get("sales:worklogs"), store.get("sales:knowledge"),
+            store.get("sales:expenses"), store.get("sales:gates"),
+          ]);
+          if (!alive) return;
           setUsers(u || []);
-          setCompanies((await store.get("sales:companies")) || []);
-          setDeals((await store.get("sales:deals")) || []);
-          setKpis((await store.get("sales:kpis")) || {});
-          setTrainings((await store.get("sales:trainings")) || []);
-          setWorklogs((await store.get("sales:worklogs")) || []);
-          setKnowledge((await store.get("sales:knowledge")) || []);
-          setExpenses((await store.get("sales:expenses")) || []);
-          setGates((await store.get("sales:gates")) || {});
+          setCompanies(c || []); setDeals(d || []); setKpis(k || {});
+          setTrainings(t || []); setWorklogs(w || []); setKnowledge(kn || []);
+          setExpenses(e || []); setGates(g || {});
         }
-        const sess = await store.get("sales:session", false);
-        if (sess && sess.userId) setSessionId(sess.userId);
       } catch (e) { console.error(e); }
-      setLoading(false);
+      if (alive) setLoading(false);
     })();
-  }, []);
+    return () => { alive = false; };
+  }, [authReady, authEmail]);
 
   const persist = (key, val) => { store.set(key, val).then((ok) => { if (!ok) setSaveErr(true); }); };
   const saveUsers = (v) => { setUsers(v); persist("sales:users", v); };
@@ -661,13 +714,12 @@ export default function App() {
   const saveExpenses = (v) => { setExpenses(v); persist("sales:expenses", v); };
   const saveGates = (v) => { setGates(v); persist("sales:gates", v); };
 
-  const me = users.find((u) => u.id === sessionId) || null;
+  const me = authEmail ? (users.find((u) => String(u.email || "").toLowerCase() === authEmail) || null) : null;
   const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
-  const login = (userId) => { setSessionId(userId); store.set("sales:session", { userId }, false); };
-  const logout = () => { setSessionId(null); store.set("sales:session", {}, false); };
+  const logout = () => { signOut(); };
 
   const resetDemo = async () => {
     const seed = seedData();
@@ -675,15 +727,14 @@ export default function App() {
     saveTrainings(seed.trainings); saveWorklogs(seed.worklogs); saveKnowledge(seed.knowledge); saveExpenses(seed.expenses); saveGates(seed.gates);
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="flex items-center gap-3 text-slate-500 font-mono text-sm"><Loader2 className="animate-spin text-blue-600" size={18} /> loading sales os…</div>
-      </div>
-    );
-  }
+  // Not signed in yet → the login screen. (authReady guards a flash of login
+  // before we know whether a persisted session exists.)
+  if (!authReady) return <Splash />;
+  if (!authEmail) return <Login />;
+  if (loading) return <Splash />;
 
-  if (!me) return <Login users={users} onLogin={login} />;
+  // Signed in, but this email has no active profile in the workspace.
+  if (!me || me.active === false) return <NoProfile email={authEmail} onLogout={logout} />;
 
   const goFix = (item) => { setTab(item.tab); if (item.type === "company") setFocusCompanyId(item.id); };
 
@@ -733,30 +784,86 @@ export default function App() {
 
 /* ---------- login ---------- */
 
-function Login({ users, onLogin }) {
+/* Full-screen loading state, shown while auth/data resolve. */
+function Splash() {
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="flex items-center gap-3 text-slate-500 font-mono text-sm"><Loader2 className="animate-spin text-blue-600" size={18} /> loading sales os…</div>
+    </div>
+  );
+}
+
+/* Authenticated, but no matching (active) profile in the workspace. */
+function NoProfile({ email, onLogout }) {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
-      <div className="w-full max-w-md fade">
+      <div className="w-full max-w-md fade text-center">
+        <div className="flex items-center gap-2.5 justify-center mb-4"><Logo size={34} /><span className="text-slate-900 font-bold tracking-tight text-2xl">Elecbits</span></div>
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+          <AlertTriangle size={26} className="text-amber-500 mx-auto mb-3" />
+          <p className="font-semibold text-slate-900">No workspace access</p>
+          <p className="text-sm text-slate-500 mt-1.5">
+            You're signed in as <span className="font-mono text-slate-700">{email}</span>, but this account isn't set up as an active user in the Sales OS. Ask an admin to add you.
+          </p>
+          <div className="mt-5"><Btn kind="ghost" onClick={onLogout}><LogOut size={14} /> Sign out</Btn></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Login() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async (e) => {
+    if (e) e.preventDefault();
+    if (busy || !email.trim() || !password) return;
+    setBusy(true); setErr("");
+    const { ok, error } = await signInWithPassword(email, password);
+    // On success, onAuthStateChange drives the app into the workspace; on
+    // failure we surface the reason and let them retry.
+    if (!ok) { setErr(error || "Sign in failed. Check your email and password."); setBusy(false); }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
+      <div className="w-full max-w-sm fade">
         <div className="flex items-center gap-2.5 justify-center mb-1.5">
           <Logo size={34} />
           <span className="text-slate-900 font-bold tracking-tight text-2xl">Elecbits</span>
         </div>
         <p className="text-center font-mono text-xs text-slate-500 mb-8">sales os · lead → po, nothing missed</p>
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 space-y-2">
-          {users.filter((u) => u.active !== false).map((u) => (
-            <button key={u.id} onClick={() => onLogin(u.id)}
-              className="w-full flex items-center gap-3 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-400 rounded-xl px-4 py-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-              <Avatar name={u.name} />
-              <span className="flex-1 min-w-0">
-                <span className="block text-slate-900 font-medium">{u.name}</span>
-                <span className="block text-xs text-slate-500">{roleLabel(u.role)} · {u.dept}</span>
-              </span>
-              <ChevronRight size={16} className="text-slate-400" />
-            </button>
-          ))}
-        </div>
+        <form onSubmit={submit} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
+          <div>
+            <p className="text-lg font-semibold text-slate-900">Sign in</p>
+            <p className="text-xs text-slate-500 mt-0.5">Use your Elecbits work email and password.</p>
+          </div>
+          <Field label="Email">
+            <Input type="email" autoFocus autoComplete="username" value={email}
+              onChange={(e) => setEmail(e.target.value)} placeholder="you@elecbits.in" />
+          </Field>
+          <Field label="Password">
+            <div className="relative">
+              <Input type={show ? "text" : "password"} autoComplete="current-password" value={password}
+                onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="pr-16" />
+              <button type="button" onClick={() => setShow((s) => !s)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400 hover:text-slate-600 px-1">
+                {show ? "Hide" : "Show"}
+              </button>
+            </div>
+          </Field>
+          {err && <p className="text-xs text-red-600 flex items-center gap-1.5"><AlertCircle size={13} className="flex-none" /> {err}</p>}
+          <button type="submit" disabled={busy || !email.trim() || !password}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 text-white font-semibold text-sm px-4 py-2.5 transition-colors hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">
+            {busy ? <Loader2 size={15} className="animate-spin" /> : <ArrowRight size={15} />} {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
         <p className="text-center text-xs text-slate-400 mt-8 leading-relaxed">
-          Shared workspace — everyone opening this app sees the same data.<br />Voice input works best in Chrome or Edge.
+          Shared workspace — everyone signs in with their own account.<br />Voice input works best in Chrome or Edge.
         </p>
       </div>
     </div>
@@ -2200,12 +2307,13 @@ function AdminView({ me, data, saveUsers, saveGates, resetDemo }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs text-slate-400 border-b border-slate-100">
-              <th className="py-2 pr-4 font-medium">Name</th><th className="py-2 pr-4 font-medium">Role</th><th className="py-2 pr-4 font-medium">Department</th><th className="py-2 pr-4 font-medium">Status</th><th className="py-2" />
+              <th className="py-2 pr-4 font-medium">Name</th><th className="py-2 pr-4 font-medium">Email</th><th className="py-2 pr-4 font-medium">Role</th><th className="py-2 pr-4 font-medium">Department</th><th className="py-2 pr-4 font-medium">Status</th><th className="py-2" />
             </tr></thead>
             <tbody>
               {users.map((u) => (
                 <tr key={u.id} className="border-b border-slate-50">
                   <td className="py-2 pr-4"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" />{u.name}{u.id === me.id && <span className="text-xs text-slate-400">(you)</span>}</span></td>
+                  <td className="py-2 pr-4 font-mono text-xs text-slate-500">{u.email || "—"}</td>
                   <td className="py-2 pr-4">{roleLabel(u.role)}</td>
                   <td className="py-2 pr-4">{u.dept}</td>
                   <td className="py-2 pr-4">{u.active !== false ? <Chip color="green">Active</Chip> : <Chip color="slate">Inactive</Chip>}</td>
@@ -2260,13 +2368,64 @@ function AdminView({ me, data, saveUsers, saveGates, resetDemo }) {
 }
 
 function UserModal({ user, me, onClose, onSave }) {
-  const [f, setF] = useState(() => user || { id: uid(), name: "", role: "agent", dept: "Sales", active: true });
+  const [f, setF] = useState(() => user || { id: uid(), name: "", email: "", role: "agent", dept: "Sales", active: true });
+  const [password, setPassword] = useState("");
+  const [resetPw, setResetPw] = useState(""); // optional new password for an existing user
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [warn, setWarn] = useState("");
   const isSelf = user && user.id === me.id;
+  const isNew = !user;
+
+  const save = async () => {
+    setErr(""); setWarn("");
+    const email = String(f.email || "").trim().toLowerCase();
+    if (!f.name.trim()) { setErr("Name is required."); return; }
+    if (!email) { setErr("Email is required — it's how they sign in."); return; }
+    if (isNew && password.length < 6) { setErr("Set a password of at least 6 characters for the new login."); return; }
+    setBusy(true);
+    try {
+      if (isNew) {
+        // Create the Supabase Auth login first; only save the profile if it works,
+        // so we never have a profile that can't sign in.
+        await callAdminApi("create", { email, password });
+      } else if (resetPw) {
+        if (resetPw.length < 6) { setErr("New password must be at least 6 characters."); setBusy(false); return; }
+        await callAdminApi("setPassword", { email, password: resetPw });
+      }
+      onSave({ ...f, email });
+    } catch (e) {
+      // The profile still saves so the workspace isn't blocked, but flag that the
+      // login itself wasn't created/updated (e.g. /api/admin not deployed).
+      setWarn((e && e.message ? e.message : "Login update failed.") + " Profile saved; create the login separately (see scripts/seed-auth.mjs).");
+      onSave({ ...f, email });
+    }
+    setBusy(false);
+  };
+
   return (
     <Modal title={user ? "Edit " + user.name : "Add user"} onClose={onClose}
-      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={!f.name.trim()} onClick={() => onSave(f)}><Check size={15} /> Save user</Btn></>}>
+      footer={<>
+        {warn && <span className="mr-auto text-xs text-amber-600">{warn}</span>}
+        {err && <span className="mr-auto text-xs text-red-600">{err}</span>}
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" disabled={busy || !f.name.trim()} onClick={save}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save user</Btn>
+      </>}>
       <div className="space-y-3">
         <Field label="Name" req><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+        <Field label="Email" req hint={isNew ? "used to sign in" : "sign-in email"}>
+          <Input type="email" value={f.email || ""} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="name@elecbits.in" disabled={!isNew} />
+        </Field>
+        {isNew && (
+          <Field label="Password" req hint="min 6 characters">
+            <Input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Temporary password to share with them" />
+          </Field>
+        )}
+        {!isNew && (
+          <Field label="Reset password" hint="optional — leave blank to keep current">
+            <Input type="text" value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="New password (min 6 characters)" />
+          </Field>
+        )}
         <Field label="Role">
           <Sel value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })} disabled={!!isSelf}>
             {ROLES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
@@ -2275,7 +2434,7 @@ function UserModal({ user, me, onClose, onSave }) {
         <Field label="Department"><Input value={f.dept} onChange={(e) => setF({ ...f, dept: e.target.value })} /></Field>
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input type="checkbox" checked={f.active !== false} disabled={!!isSelf} onChange={(e) => setF({ ...f, active: e.target.checked })} className="rounded border-slate-300" />
-          Active (inactive users can't log in)
+          Active (inactive users can't sign in)
         </label>
         {isSelf && <p className="text-xs text-slate-400">You can't change your own role or deactivate yourself.</p>}
       </div>

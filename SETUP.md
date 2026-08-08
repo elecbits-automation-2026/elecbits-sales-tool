@@ -15,12 +15,9 @@ Follow the steps in order. You only do steps 1–4 once.
 1. Go to <https://supabase.com> → sign in → **New project**.
 2. Name it (e.g. `elecbits-sales`), pick a strong database password, choose a
    region near you, and create it. Wait ~2 minutes for it to finish.
-3. **Enable anonymous sign-ins** (required — the app opens an anonymous auth
-   session so it can read/write the RLS-protected `collections` table):
-   **Authentication → Sign In / Providers → Anonymous Sign-Ins** → turn it
-   **on** → Save. Without this, the app hangs on "loading" / can't read data.
-   (Email confirmation settings don't matter for this app — the login is a role
-   selector, not email/password. See the auth note in `README.md`.)
+3. Leave the **Email** provider enabled (the default). Everyone signs in with a
+   real email + password, so no anonymous sign-in is needed. You'll create the
+   actual login accounts in step 4.
 
 ## 2. Create the database table
 
@@ -46,7 +43,7 @@ In Supabase: **Project Settings → API**. You need three values:
 ## 4. Create the login accounts (seed script)
 
 The app fills in everyone's profile automatically on first login, but each
-person needs a Supabase Auth account to sign in. Create the 15 demo accounts:
+person needs a Supabase Auth account to sign in. Create the 5 demo accounts:
 
 1. Copy `.env.example` to `.env.local` and fill in at least `SUPABASE_URL` and
    `SUPABASE_SERVICE_ROLE_KEY` (from step 3).
@@ -60,8 +57,16 @@ person needs a Supabase Auth account to sign in. Create the 15 demo accounts:
    You should see `✓ create` lines for each user. Re-running is safe (it skips
    existing accounts).
 
-The seeded logins are the ones listed in `README.md` (e.g.
-`sam.okafor@elecbits.in` / `admin123`).
+The seeded demo logins (change these before real use — Admin → Edit user →
+Reset password):
+
+| Email | Password | Role |
+|---|---|---|
+| `admin@elecbits.in` | `admin123` | Admin |
+| `saurav@elecbits.in` | `saurav123` | Dept Head |
+| `ankit@elecbits.in` | `ankit123` | Sales Agent |
+| `akash@elecbits.in` | `akash123` | Sales Agent |
+| `finance@elecbits.in` | `finance123` | Finance |
 
 ---
 
