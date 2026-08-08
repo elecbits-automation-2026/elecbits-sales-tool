@@ -1,3 +1,78 @@
+/* IBM Plex Mono powers every mono readout (IDs, numbers, avatars) — the same
+   monospace the Elecbits ODM PMS design uses. Loaded first so Tailwind's
+   font-mono utility (see tailwind.config.js) resolves to it. */
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ─── design base ──────────────────────────────────────────────────────────
+   Slate-on-white canvas, blue (#2563eb) accent — the PMS look-and-feel. */
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f8fafc; /* slate-50 — app canvas */
+  color: #1e293b; /* slate-800 — primary text */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Thin, unobtrusive scrollbars to match the design. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1; /* slate-300 */
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8; /* slate-400 */
+}
+
+/* Entrance animation used by cards/panels via the `.fade` utility. */
+@keyframes eb-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade {
+  animation: eb-fade-up 0.25s ease both;
+}
+
+/* Smooth, consistent interaction feedback across controls. */
+button {
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s,
+    box-shadow 0.15s;
+}
+input,
+select,
+textarea {
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input[type="checkbox"] {
+  accent-color: #2563eb; /* blue-600 */
+}
+input[type="date"],
+input[type="time"] {
+  color-scheme: light;
+}

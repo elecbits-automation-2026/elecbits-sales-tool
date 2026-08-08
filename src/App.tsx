@@ -3,15 +3,28 @@ import {
   Building2, Columns, TrendingUp, BookOpen, Receipt, Settings, Plus, X, Search,
   Mic, MicOff, Send, Check, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
-  ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText
+  ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText, Zap
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
 /* ============================================================
    ELECBITS SALES OS
-   Test-bench aesthetic: ink instrument rail, paper canvas,
-   mono readouts, LED status language. Red = alarm = fix now.
+   Elecbits ODM PMS look-and-feel: clean slate-on-white canvas,
+   blue accent, IBM Plex Mono readouts, light nav rail.
+   LED status language kept — red = alarm = fix now.
    ============================================================ */
+
+/* Brand mark — the blue lightning bolt from the Elecbits ODM PMS design. */
+function Logo({ size = 28 }) {
+  return (
+    <span
+      className="inline-flex items-center justify-center rounded-lg bg-blue-600 text-white flex-none"
+      style={{ width: size, height: size }}
+    >
+      <Zap size={Math.round(size * 0.58)} fill="currentColor" strokeWidth={0} />
+    </span>
+  );
+}
 
 /* ---------- constants ---------- */
 
@@ -244,15 +257,15 @@ function dealStaleDays(deal) {
   return daysBetween(last, nowTS());
 }
 
-function healthColor(h) { return h == null ? "zinc" : h >= 85 ? "emerald" : h >= 60 ? "amber" : "red"; }
+function healthColor(h) { return h == null ? "slate" : h >= 85 ? "green" : h >= 60 ? "amber" : "red"; }
 function ledClass(color) {
   return {
-    emerald: "bg-emerald-500",
+    green: "bg-green-500",
     amber: "bg-amber-500",
     red: "bg-red-600",
-    zinc: "bg-zinc-400",
-    cyan: "bg-cyan-500",
-  }[color] || "bg-zinc-400";
+    slate: "bg-slate-400",
+    blue: "bg-blue-500",
+  }[color] || "bg-slate-400";
 }
 
 /* actuals for one user id (own activity only) */
@@ -488,34 +501,34 @@ function Dot({ color, pulse }) {
 }
 
 function Btn({ children, onClick, kind = "ghost", size = "md", disabled, className, title }) {
-  const base = "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed";
+  const base = "inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed";
   const sizes = { sm: "text-xs px-2 py-1", md: "text-sm px-3 py-1.5", lg: "text-sm px-4 py-2" };
   const kinds = {
-    primary: "bg-cyan-600 text-white hover:bg-cyan-700",
-    dark: "bg-zinc-900 text-white hover:bg-zinc-700",
+    primary: "bg-blue-600 text-white hover:bg-blue-700",
+    dark: "bg-slate-900 text-white hover:bg-slate-700",
     danger: "bg-red-600 text-white hover:bg-red-700",
-    ghost: "bg-white border border-zinc-300 text-zinc-700 hover:bg-zinc-100",
-    subtle: "bg-zinc-100 text-zinc-700 hover:bg-zinc-200",
-    success: "bg-emerald-600 text-white hover:bg-emerald-700",
+    ghost: "bg-white border border-slate-300 text-slate-700 hover:bg-slate-100",
+    subtle: "bg-slate-100 text-slate-700 hover:bg-slate-200",
+    success: "bg-green-600 text-white hover:bg-green-700",
   };
   return <button title={title} disabled={disabled} onClick={onClick} className={cls(base, sizes[size], kinds[kind], className)}>{children}</button>;
 }
 
-function Chip({ children, color = "zinc", className }) {
+function Chip({ children, color = "slate", className }) {
   const map = {
-    zinc: "bg-zinc-100 text-zinc-700 border-zinc-200",
-    red: "bg-red-50 text-red-700 border-red-200",
-    amber: "bg-amber-50 text-amber-700 border-amber-200",
-    emerald: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    cyan: "bg-cyan-50 text-cyan-700 border-cyan-200",
+    slate: "bg-slate-100 text-slate-600",
+    red: "bg-red-50 text-red-700",
+    amber: "bg-amber-50 text-amber-700",
+    green: "bg-green-50 text-green-700",
+    blue: "bg-blue-50 text-blue-700",
   };
-  return <span className={cls("inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-medium", map[color], className)}>{children}</span>;
+  return <span className={cls("inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap", map[color], className)}>{children}</span>;
 }
 
-function Bar({ pct, color = "cyan", className }) {
-  const c = { cyan: "bg-cyan-500", emerald: "bg-emerald-500", amber: "bg-amber-500", red: "bg-red-600", zinc: "bg-zinc-400" }[color];
+function Bar({ pct, color = "blue", className }) {
+  const c = { blue: "bg-blue-500", green: "bg-green-500", amber: "bg-amber-500", red: "bg-red-600", slate: "bg-slate-400" }[color];
   return (
-    <div className={cls("h-1.5 w-full rounded-full bg-zinc-200 overflow-hidden", className)}>
+    <div className={cls("h-1.5 w-full rounded-full bg-slate-200 overflow-hidden", className)}>
       <div className={cls("h-full rounded-full transition-all", c)} style={{ width: Math.max(2, Math.min(100, pct)) + "%" }} />
     </div>
   );
@@ -523,14 +536,14 @@ function Bar({ pct, color = "cyan", className }) {
 
 function Modal({ title, onClose, children, wide, footer }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-zinc-950/60 p-4 overflow-y-auto" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className={cls("bg-white rounded-xl border border-zinc-200 shadow-xl w-full my-8", wide ? "max-w-3xl" : "max-w-lg")}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-200">
-          <h3 className="font-semibold text-zinc-900">{title}</h3>
-          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-700 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"><X size={18} /></button>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/60 p-4 overflow-y-auto" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className={cls("bg-white rounded-xl border border-slate-200 shadow-xl w-full my-8", wide ? "max-w-3xl" : "max-w-lg")}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
+          <h3 className="font-semibold text-slate-900">{title}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X size={18} /></button>
         </div>
         <div className="px-5 py-4">{children}</div>
-        {footer && <div className="px-5 py-3 border-t border-zinc-200 flex justify-end gap-2">{footer}</div>}
+        {footer && <div className="px-5 py-3 border-t border-slate-200 flex justify-end gap-2">{footer}</div>}
       </div>
     </div>
   );
@@ -539,14 +552,14 @@ function Modal({ title, onClose, children, wide, footer }) {
 function Field({ label, children, hint, req }) {
   return (
     <label className="block">
-      <span className="block text-xs font-medium text-zinc-600 mb-1">{label}{req && <span className="text-red-600"> *</span>}</span>
+      <span className="block text-xs font-medium text-slate-600 mb-1">{label}{req && <span className="text-red-600"> *</span>}</span>
       {children}
-      {hint && <span className="block text-xs text-zinc-400 mt-1">{hint}</span>}
+      {hint && <span className="block text-xs text-slate-400 mt-1">{hint}</span>}
     </label>
   );
 }
 
-const inputCls = "w-full rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500";
+const inputCls = "w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500";
 function Input(props) { return <input {...props} className={cls(inputCls, props.className)} />; }
 function TA(props) { return <textarea {...props} className={cls(inputCls, "min-h-16", props.className)} />; }
 function Sel(props) { return <select {...props} className={cls(inputCls, props.className)} />; }
@@ -554,15 +567,15 @@ function Sel(props) { return <select {...props} className={cls(inputCls, props.c
 function Avatar({ name, size = "md" }) {
   const initials = (name || "?").split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
   const s = size === "sm" ? "w-6 h-6 text-xs" : "w-8 h-8 text-xs";
-  return <span className={cls("inline-flex items-center justify-center rounded-full bg-zinc-900 text-zinc-100 font-mono flex-none", s)}>{initials}</span>;
+  return <span className={cls("inline-flex items-center justify-center rounded-full bg-slate-900 text-slate-100 font-mono flex-none", s)}>{initials}</span>;
 }
 
 function Empty({ icon: Icon, title, sub, action }) {
   return (
-    <div className="flex flex-col items-center justify-center text-center py-14 px-6 border border-dashed border-zinc-300 rounded-lg bg-white">
-      <Icon size={28} className="text-zinc-300 mb-3" />
-      <p className="font-medium text-zinc-700">{title}</p>
-      {sub && <p className="text-sm text-zinc-500 mt-1 max-w-sm">{sub}</p>}
+    <div className="flex flex-col items-center justify-center text-center py-14 px-6 border border-dashed border-slate-300 rounded-lg bg-white">
+      <Icon size={28} className="text-slate-300 mb-3" />
+      <p className="font-medium text-slate-700">{title}</p>
+      {sub && <p className="text-sm text-slate-500 mt-1 max-w-sm">{sub}</p>}
       {action && <div className="mt-4">{action}</div>}
     </div>
   );
@@ -571,7 +584,7 @@ function Empty({ icon: Icon, title, sub, action }) {
 function SectionTitle({ children, right }) {
   return (
     <div className="flex items-center justify-between mb-3">
-      <h2 className="text-sm font-semibold tracking-wide text-zinc-500 uppercase">{children}</h2>
+      <h2 className="text-sm font-semibold tracking-wide text-slate-500 uppercase">{children}</h2>
       {right}
     </div>
   );
@@ -664,8 +677,8 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
-        <div className="flex items-center gap-3 text-zinc-400 font-mono text-sm"><Loader2 className="animate-spin" size={18} /> loading sales os…</div>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex items-center gap-3 text-slate-500 font-mono text-sm"><Loader2 className="animate-spin text-blue-600" size={18} /> loading sales os…</div>
       </div>
     );
   }
@@ -675,7 +688,7 @@ export default function App() {
   const goFix = (item) => { setTab(item.tab); if (item.type === "company") setFocusCompanyId(item.id); };
 
   return (
-    <div className="min-h-screen bg-zinc-100 text-zinc-900 flex flex-col md:flex-row">
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row">
       <Sidebar me={me} tab={tab} setTab={setTab} onLogout={logout} />
       <div className="flex-1 min-w-0 flex flex-col">
         <Topbar me={me} health={myHealth} onAlarmClick={() => setTab("performance")} />
@@ -699,7 +712,7 @@ export default function App() {
             </div>
           </div>
         )}
-        <main className="flex-1 min-w-0 p-4 md:p-6 overflow-x-hidden">
+        <main key={tab} className="flex-1 min-w-0 p-4 md:p-6 overflow-x-hidden fade">
           {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
           {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
@@ -722,27 +735,27 @@ export default function App() {
 
 function Login({ users, onLogin }) {
   return (
-    <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6">
-      <div className="w-full max-w-md">
-        <div className="flex items-center gap-2 justify-center mb-1">
-          <Dot color="cyan" pulse />
-          <span className="text-zinc-100 font-semibold tracking-widest text-lg">ELECBITS</span>
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
+      <div className="w-full max-w-md fade">
+        <div className="flex items-center gap-2.5 justify-center mb-1.5">
+          <Logo size={34} />
+          <span className="text-slate-900 font-bold tracking-tight text-2xl">Elecbits</span>
         </div>
-        <p className="text-center font-mono text-xs text-zinc-500 mb-8">sales os · lead → po, nothing missed</p>
-        <div className="space-y-2">
+        <p className="text-center font-mono text-xs text-slate-500 mb-8">sales os · lead → po, nothing missed</p>
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 space-y-2">
           {users.filter((u) => u.active !== false).map((u) => (
             <button key={u.id} onClick={() => onLogin(u.id)}
-              className="w-full flex items-center gap-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-cyan-600 rounded-lg px-4 py-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500">
+              className="w-full flex items-center gap-3 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-400 rounded-xl px-4 py-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
               <Avatar name={u.name} />
               <span className="flex-1 min-w-0">
-                <span className="block text-zinc-100 font-medium">{u.name}</span>
-                <span className="block text-xs text-zinc-500">{roleLabel(u.role)} · {u.dept}</span>
+                <span className="block text-slate-900 font-medium">{u.name}</span>
+                <span className="block text-xs text-slate-500">{roleLabel(u.role)} · {u.dept}</span>
               </span>
-              <ChevronRight size={16} className="text-zinc-600" />
+              <ChevronRight size={16} className="text-slate-400" />
             </button>
           ))}
         </div>
-        <p className="text-center text-xs text-zinc-600 mt-8 leading-relaxed">
+        <p className="text-center text-xs text-slate-400 mt-8 leading-relaxed">
           Shared workspace — everyone opening this app sees the same data.<br />Voice input works best in Chrome or Edge.
         </p>
       </div>
@@ -764,47 +777,49 @@ function Sidebar({ me, tab, setTab, onLogout }) {
   return (
     <>
       {/* desktop rail */}
-      <aside className="hidden md:flex w-56 flex-none bg-zinc-950 text-zinc-400 flex-col">
+      <aside className="hidden md:flex w-56 flex-none bg-white border-r border-slate-200 text-slate-500 flex-col">
         <div className="px-4 py-5">
-          <div className="flex items-center gap-2">
-            <Dot color="cyan" pulse />
-            <span className="text-zinc-100 font-semibold tracking-widest">ELECBITS</span>
+          <div className="flex items-center gap-2.5">
+            <Logo size={30} />
+            <div className="min-w-0">
+              <span className="block text-slate-900 font-bold tracking-tight leading-none">Elecbits</span>
+              <span className="block font-mono text-[10px] text-slate-400 mt-1">sales os v1</span>
+            </div>
           </div>
-          <p className="font-mono text-xs text-zinc-600 mt-0.5">sales os v1</p>
         </div>
         <nav className="flex-1 px-2 space-y-0.5">
           {items.map((it) => (
             <button key={it.key} onClick={() => setTab(it.key)}
-              className={cls("w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500",
-                tab === it.key ? "bg-zinc-900 text-cyan-400" : "hover:bg-zinc-900 hover:text-zinc-200")}>
+              className={cls("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium border border-transparent transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
+                tab === it.key ? "bg-blue-50 text-blue-700 border-blue-100" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800")}>
               <it.icon size={16} /> {it.label}
             </button>
           ))}
         </nav>
-        <div className="p-3 border-t border-zinc-900">
+        <div className="p-3 border-t border-slate-200">
           <div className="flex items-center gap-2.5">
             <Avatar name={me.name} size="sm" />
             <span className="flex-1 min-w-0">
-              <span className="block text-sm text-zinc-200 truncate">{me.name}</span>
-              <span className="block text-xs text-zinc-600">{roleLabel(me.role)}</span>
+              <span className="block text-sm text-slate-800 truncate">{me.name}</span>
+              <span className="block text-xs text-slate-400">{roleLabel(me.role)}</span>
             </span>
-            <button onClick={onLogout} title="Log out" className="text-zinc-600 hover:text-zinc-300 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"><LogOut size={15} /></button>
+            <button onClick={onLogout} title="Log out" className="text-slate-400 hover:text-red-600 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><LogOut size={15} /></button>
           </div>
         </div>
       </aside>
       {/* mobile rail */}
-      <div className="md:hidden bg-zinc-950 px-3 py-2 flex items-center gap-1 overflow-x-auto">
-        <span className="flex items-center gap-1.5 pr-2 mr-1 border-r border-zinc-800">
-          <Dot color="cyan" pulse /><span className="text-zinc-100 font-semibold tracking-wider text-sm">EB</span>
+      <div className="md:hidden bg-white border-b border-slate-200 px-3 py-2 flex items-center gap-1 overflow-x-auto">
+        <span className="flex items-center gap-1.5 pr-2 mr-1 border-r border-slate-200 flex-none">
+          <Logo size={22} />
         </span>
         {items.map((it) => (
           <button key={it.key} onClick={() => setTab(it.key)}
-            className={cls("flex-none flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs",
-              tab === it.key ? "bg-zinc-900 text-cyan-400" : "text-zinc-400")}>
+            className={cls("flex-none flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium",
+              tab === it.key ? "bg-blue-50 text-blue-700" : "text-slate-500")}>
             <it.icon size={14} /> {it.label}
           </button>
         ))}
-        <button onClick={onLogout} className="flex-none ml-auto text-zinc-500 px-2"><LogOut size={14} /></button>
+        <button onClick={onLogout} className="flex-none ml-auto text-slate-400 hover:text-red-600 px-2"><LogOut size={14} /></button>
       </div>
     </>
   );
@@ -815,20 +830,20 @@ function Topbar({ me, health, onAlarmClick }) {
   const alarm = health != null && health < 60;
   return (
     <header className={cls("h-12 flex-none flex items-center justify-between px-4 md:px-6 border-b transition-colors",
-      alarm ? "bg-red-700 border-red-800" : "bg-white border-zinc-200")}>
-      <div className={cls("text-sm font-medium", alarm ? "text-red-100" : "text-zinc-500")}>
+      alarm ? "bg-red-700 border-red-800" : "bg-white border-slate-200")}>
+      <div className={cls("text-sm font-medium", alarm ? "text-red-100" : "text-slate-500")}>
         {alarm ? "Performance alarm active" : "Workspace: Sales"}
       </div>
       {health == null ? (
-        <span className="flex items-center gap-2 text-xs font-mono text-zinc-400"><Dot color="zinc" /> OVERSIGHT MODE</span>
+        <span className="flex items-center gap-2 text-xs font-mono text-slate-400"><Dot color="slate" /> OVERSIGHT MODE</span>
       ) : (
         <button onClick={onAlarmClick}
           className={cls("flex items-center gap-2 rounded-md px-2.5 py-1.5 focus:outline-none focus-visible:ring-2",
-            alarm ? "bg-red-800 hover:bg-red-900 focus-visible:ring-white" : "bg-zinc-100 hover:bg-zinc-200 focus-visible:ring-cyan-500")}>
+            alarm ? "bg-red-800 hover:bg-red-900 focus-visible:ring-white" : "bg-slate-100 hover:bg-slate-200 focus-visible:ring-blue-500")}>
           {alarm && <Flame size={14} className="text-amber-300" />}
           <Dot color={hc} pulse={alarm} />
-          <span className={cls("font-mono text-sm tabular-nums", alarm ? "text-white" : "text-zinc-800")}>{health}%</span>
-          <span className={cls("text-xs font-semibold tracking-wide", alarm ? "text-red-100" : hc === "amber" ? "text-amber-600" : "text-emerald-600")}>
+          <span className={cls("font-mono text-sm tabular-nums", alarm ? "text-white" : "text-slate-800")}>{health}%</span>
+          <span className={cls("text-xs font-semibold tracking-wide", alarm ? "text-red-100" : hc === "amber" ? "text-amber-600" : "text-green-600")}>
             {alarm ? "BEHIND — FIX NOW" : hc === "amber" ? "AT RISK" : "ON TRACK"}
           </span>
         </button>
@@ -869,9 +884,9 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, focusCompanyId, set
   return (
     <div className="max-w-6xl mx-auto">
       <div className="flex flex-wrap items-center gap-2 mb-4">
-        <h1 className="text-lg font-semibold mr-auto">Companies <span className="font-mono text-sm text-zinc-400">({companies.length})</span></h1>
+        <h1 className="text-lg font-semibold mr-auto">Companies <span className="font-mono text-sm text-slate-400">({companies.length})</span></h1>
         <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <Input placeholder="Search name, ID, city…" value={q} onChange={(e) => setQ(e.target.value)} className="pl-8 w-56" />
         </div>
         <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={15} /> Add company</Btn>
@@ -883,30 +898,30 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, focusCompanyId, set
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {visible.map((c) => {
             const comp = completeness(c);
-            const cc = comp >= 90 ? "emerald" : comp >= 70 ? "amber" : "red";
+            const cc = comp >= 90 ? "green" : comp >= 70 ? "amber" : "red";
             const owner = users.find((u) => u.id === c.accountOwner);
             const activeDeals = deals.filter((d) => d.companyId === c.id && !d.lost).length;
             return (
               <button key={c.id} onClick={() => setFocusCompanyId(c.id)}
-                className="text-left bg-white border border-zinc-200 rounded-lg p-4 hover:border-cyan-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500">
+                className="text-left bg-white border border-slate-200 rounded-xl p-4 hover:border-blue-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="font-semibold text-zinc-900 truncate">{c.name}</p>
-                    <p className="font-mono text-xs text-zinc-400">{c.cid}</p>
+                    <p className="font-semibold text-slate-900 truncate">{c.name}</p>
+                    <p className="font-mono text-xs text-slate-400">{c.cid}</p>
                   </div>
                   <Dot color={cc} />
                 </div>
-                <p className="text-xs text-zinc-500 mt-2 truncate">{[c.city, c.industry].filter(Boolean).join(" · ") || "—"}</p>
+                <p className="text-xs text-slate-500 mt-2 truncate">{[c.city, c.industry].filter(Boolean).join(" · ") || "—"}</p>
                 <div className="mt-3">
                   <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-zinc-500">Data</span>
-                    <span className={cls("font-mono tabular-nums", cc === "red" ? "text-red-600 font-semibold" : "text-zinc-600")}>{comp}%</span>
+                    <span className="text-slate-500">Data</span>
+                    <span className={cls("font-mono tabular-nums", cc === "red" ? "text-red-600 font-semibold" : "text-slate-600")}>{comp}%</span>
                   </div>
                   <Bar pct={comp} color={cc} />
                 </div>
                 <div className="flex items-center justify-between mt-3">
-                  <span className="flex items-center gap-1.5 text-xs text-zinc-500">{owner && <Avatar name={owner.name} size="sm" />} {owner ? owner.name : "Unassigned"}</span>
-                  <span className="font-mono text-xs text-zinc-400">{activeDeals} deal{activeDeals === 1 ? "" : "s"}</span>
+                  <span className="flex items-center gap-1.5 text-xs text-slate-500">{owner && <Avatar name={owner.name} size="sm" />} {owner ? owner.name : "Unassigned"}</span>
+                  <span className="font-mono text-xs text-slate-400">{activeDeals} deal{activeDeals === 1 ? "" : "s"}</span>
                 </div>
               </button>
             );
@@ -941,7 +956,7 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
         <Btn onClick={onClose}>Cancel</Btn>
         <Btn kind="primary" onClick={save}><Check size={15} /> Save company</Btn>
       </>}>
-      <p className="text-xs text-zinc-500 mb-3">Fields marked <span className="text-red-600">*</span> count towards data completeness. Missing data turns this account red.</p>
+      <p className="text-xs text-slate-500 mb-3">Fields marked <span className="text-red-600">*</span> count towards data completeness. Missing data turns this account red.</p>
       <div className="grid sm:grid-cols-2 gap-3">
         {COMPANY_FIELDS.map((fd) => (
           <div key={fd.k} className={fd.long ? "sm:col-span-2" : ""}>
@@ -962,7 +977,7 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
         <SectionTitle right={<Btn size="sm" onClick={() => setF((p) => ({ ...p, custom: [...p.custom, { k: "", v: "" }] }))}><Plus size={13} /> Add field</Btn>}>
           Custom fields — every minute detail
         </SectionTitle>
-        {f.custom.length === 0 && <p className="text-xs text-zinc-400">Anything that doesn't fit above: GST no., plant locations, buying cycle, birthdays — add it here so it is never lost.</p>}
+        {f.custom.length === 0 && <p className="text-xs text-slate-400">Anything that doesn't fit above: GST no., plant locations, buying cycle, birthdays — add it here so it is never lost.</p>}
         <div className="space-y-2">
           {f.custom.map((c, i) => (
             <div key={i} className="flex gap-2">
@@ -980,7 +995,7 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
 function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack, onEdit, editing, setEditing, upsert, setTab }) {
   const { users, deals, companies } = data;
   const comp = completeness(c);
-  const cc = comp >= 90 ? "emerald" : comp >= 70 ? "amber" : "red";
+  const cc = comp >= 90 ? "green" : comp >= 70 ? "amber" : "red";
   const owner = users.find((u) => u.id === c.accountOwner);
   const myDeals = deals.filter((d) => d.companyId === c.id);
   const [note, setNote] = useState("");
@@ -1002,19 +1017,19 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack,
 
   return (
     <div className="max-w-5xl mx-auto">
-      <button onClick={onBack} className="text-sm text-zinc-500 hover:text-zinc-800 mb-3 inline-flex items-center gap-1">← All companies</button>
-      <div className="bg-white border border-zinc-200 rounded-lg p-5">
+      <button onClick={onBack} className="text-sm text-slate-500 hover:text-slate-800 mb-3 inline-flex items-center gap-1">← All companies</button>
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 mr-auto">
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-semibold">{c.name}</h1>
               <Dot color={cc} />
             </div>
-            <p className="font-mono text-xs text-zinc-400 mt-0.5">{c.cid} · created {fmtDate(c.createdAt)}</p>
+            <p className="font-mono text-xs text-slate-400 mt-0.5">{c.cid} · created {fmtDate(c.createdAt)}</p>
           </div>
           <div className="text-right">
-            <p className={cls("font-mono text-2xl tabular-nums", cc === "red" ? "text-red-600" : cc === "amber" ? "text-amber-600" : "text-emerald-600")}>{comp}%</p>
-            <p className="text-xs text-zinc-400">data complete</p>
+            <p className={cls("font-mono text-2xl tabular-nums", cc === "red" ? "text-red-600" : cc === "amber" ? "text-amber-600" : "text-green-600")}>{comp}%</p>
+            <p className="text-xs text-slate-400">data complete</p>
           </div>
           <Btn onClick={onEdit}><Pencil size={14} /> Edit</Btn>
         </div>
@@ -1027,23 +1042,23 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack,
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3 mt-5">
           {COMPANY_FIELDS.map((fd) => (
             <div key={fd.k} className={fd.long ? "sm:col-span-2 lg:col-span-3" : ""}>
-              <p className="text-xs text-zinc-400">{fd.label}</p>
-              <p className={cls("text-sm mt-0.5", String(c[fd.k] || "").trim() ? "text-zinc-800" : "text-red-500 italic")}>
+              <p className="text-xs text-slate-400">{fd.label}</p>
+              <p className={cls("text-sm mt-0.5", String(c[fd.k] || "").trim() ? "text-slate-800" : "text-red-500 italic")}>
                 {fd.num && c[fd.k] ? fmtINR(c[fd.k]) : (String(c[fd.k] || "").trim() || "missing")}
               </p>
             </div>
           ))}
           <div>
-            <p className="text-xs text-zinc-400">Account owner</p>
+            <p className="text-xs text-slate-400">Account owner</p>
             <p className="text-sm mt-0.5 flex items-center gap-1.5">{owner && <Avatar name={owner.name} size="sm" />}{owner ? owner.name : "—"}</p>
           </div>
         </div>
         {(c.custom || []).length > 0 && (
-          <div className="mt-5 border-t border-zinc-100 pt-4">
-            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">Custom fields</p>
+          <div className="mt-5 border-t border-slate-100 pt-4">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Custom fields</p>
             <div className="grid sm:grid-cols-2 gap-x-6 gap-y-2">
               {c.custom.map((cf, i) => (
-                <div key={i} className="flex gap-2 text-sm"><span className="text-zinc-400 flex-none">{cf.k}:</span><span className="text-zinc-800">{cf.v}</span></div>
+                <div key={i} className="flex gap-2 text-sm"><span className="text-slate-400 flex-none">{cf.k}:</span><span className="text-slate-800">{cf.v}</span></div>
               ))}
             </div>
           </div>
@@ -1051,21 +1066,21 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack,
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4 mt-4">
-        <div className="bg-white border border-zinc-200 rounded-lg p-5">
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
           <SectionTitle right={<Btn size="sm" kind="primary" onClick={() => setNewDeal(true)}><Plus size={13} /> New deal</Btn>}>Deals</SectionTitle>
-          {myDeals.length === 0 ? <p className="text-sm text-zinc-400">No deals yet. Start one to put this company on the board.</p> : (
+          {myDeals.length === 0 ? <p className="text-sm text-slate-400">No deals yet. Start one to put this company on the board.</p> : (
             <div className="space-y-2">
               {myDeals.map((d) => {
                 const o = users.find((u) => u.id === d.ownerId);
                 return (
-                  <button key={d.id} onClick={() => setTab("pipeline")} className="w-full text-left border border-zinc-200 rounded-md px-3 py-2 hover:border-cyan-500 transition-colors">
+                  <button key={d.id} onClick={() => setTab("pipeline")} className="w-full text-left border border-slate-200 rounded-md px-3 py-2 hover:border-blue-500 transition-colors">
                     <div className="flex items-center justify-between">
-                      <span className="font-mono text-xs text-zinc-400">{d.did}</span>
-                      {d.lost ? <Chip color="red">Lost</Chip> : <Chip color="cyan">{stageName(d.stage)}</Chip>}
+                      <span className="font-mono text-xs text-slate-400">{d.did}</span>
+                      {d.lost ? <Chip color="red">Lost</Chip> : <Chip color="blue">{stageName(d.stage)}</Chip>}
                     </div>
                     <div className="flex items-center justify-between mt-1">
                       <span className="font-mono text-sm tabular-nums">{fmtINRc(d.value)}</span>
-                      <span className="text-xs text-zinc-500">{o ? o.name : ""}</span>
+                      <span className="text-xs text-slate-500">{o ? o.name : ""}</span>
                     </div>
                   </button>
                 );
@@ -1073,7 +1088,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack,
             </div>
           )}
         </div>
-        <div className="bg-white border border-zinc-200 rounded-lg p-5">
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
           <SectionTitle>Activity & history</SectionTitle>
           <div className="flex gap-2 mb-3">
             <Input placeholder="Add a note — call outcome, gossip, anything useful" value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addNote()} />
@@ -1083,13 +1098,13 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack,
             {[...(c.activity || [])].reverse().map((a, i) => {
               const by = users.find((u) => u.id === a.by);
               return (
-                <div key={i} className="text-sm border-l-2 border-zinc-200 pl-3">
-                  <p className="text-zinc-800 whitespace-pre-wrap">{a.text}</p>
-                  <p className="text-xs text-zinc-400 mt-0.5">{by ? by.name : "?"} · {fmtDate(a.at)}</p>
+                <div key={i} className="text-sm border-l-2 border-slate-200 pl-3">
+                  <p className="text-slate-800 whitespace-pre-wrap">{a.text}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{by ? by.name : "?"} · {fmtDate(a.at)}</p>
                 </div>
               );
             })}
-            {(c.activity || []).length === 0 && <p className="text-sm text-zinc-400">Nothing logged yet.</p>}
+            {(c.activity || []).length === 0 && <p className="text-sm text-slate-400">Nothing logged yet.</p>}
           </div>
         </div>
       </div>
@@ -1125,7 +1140,7 @@ function NewDealModal({ me, data, fixedCompany, onClose, onCreate }) {
             {users.filter((u) => u.role === "agent" || u.role === "dept_head").map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </Sel>
         </Field>
-        <p className="text-xs text-zinc-500">New deals always start at <span className="font-medium">Lead</span>. Every stage move after this goes through the AI gate — no silent drags.</p>
+        <p className="text-xs text-slate-500">New deals always start at <span className="font-medium">Lead</span>. Every stage move after this goes through the AI gate — no silent drags.</p>
       </div>
     </Modal>
   );
@@ -1188,61 +1203,61 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
     <div>
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <h1 className="text-lg font-semibold mr-1">Pipeline</h1>
-        <span className="font-mono text-xs text-zinc-400 mr-auto">{visible.length} deals · {fmtINRc(totalOpen)}</span>
+        <span className="font-mono text-xs text-slate-400 mr-auto">{visible.length} deals · {fmtINRc(totalOpen)}</span>
         {me.role !== "agent" && (
-          <div className="flex rounded-md border border-zinc-300 overflow-hidden">
+          <div className="flex rounded-md border border-slate-300 overflow-hidden">
             {[["mine", "Mine"], ["team", me.role === "admin" ? "Everyone" : "My team"]].map(([k, l]) => (
-              <button key={k} onClick={() => setScope(k)} className={cls("px-2.5 py-1 text-xs", scope === k ? "bg-zinc-900 text-white" : "bg-white text-zinc-600 hover:bg-zinc-100")}>{l}</button>
+              <button key={k} onClick={() => setScope(k)} className={cls("px-2.5 py-1 text-xs font-medium", scope === k ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-100")}>{l}</button>
             ))}
           </div>
         )}
-        <button onClick={() => setShowLost(!showLost)} className={cls("px-2.5 py-1 text-xs rounded-md border", showLost ? "bg-red-600 text-white border-red-600" : "bg-white text-zinc-600 border-zinc-300 hover:bg-zinc-100")}>
+        <button onClick={() => setShowLost(!showLost)} className={cls("px-2.5 py-1 text-xs rounded-md border", showLost ? "bg-red-600 text-white border-red-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-100")}>
           {showLost ? "Showing lost" : "Show lost"}
         </button>
         <Btn kind="primary" onClick={() => setNewDeal(true)}><Plus size={15} /> New deal</Btn>
       </div>
 
-      <p className="text-xs text-zinc-500 mb-3 flex items-center gap-1.5"><Sparkles size={13} className="text-cyan-600" /> Drag a card to the next stage — the AI gate will interview you before it moves. No data, no move.</p>
+      <p className="text-xs text-slate-500 mb-3 flex items-center gap-1.5"><Sparkles size={13} className="text-blue-600" /> Drag a card to the next stage — the AI gate will interview you before it moves. No data, no move.</p>
 
       <div className="flex gap-3 overflow-x-auto pb-4 items-start">
         {STAGES.map((s) => {
           const col = visible.filter((d) => d.stage === s.key);
           const colVal = col.reduce((sum, d) => sum + Number(d.value || 0), 0);
           return (
-            <div key={s.key} className="w-64 flex-none bg-zinc-50 border border-zinc-200 rounded-lg"
+            <div key={s.key} className="w-64 flex-none bg-slate-50 border border-slate-200 rounded-xl"
               onDragOver={(e) => e.preventDefault()} onDrop={() => onDrop(s.key)}>
-              <div className="px-3 py-2 border-b border-zinc-200 flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-700">{s.name}</span>
-                <span className="font-mono text-xs text-zinc-400 tabular-nums">{col.length}{colVal > 0 ? " · " + fmtINRc(colVal) : ""}</span>
+              <div className="px-3 py-2 border-b border-slate-200 flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700">{s.name}</span>
+                <span className="font-mono text-xs text-slate-400 tabular-nums">{col.length}{colVal > 0 ? " · " + fmtINRc(colVal) : ""}</span>
               </div>
               <div className="p-2 space-y-2 min-h-16">
                 {col.map((d) => {
                   const c = companies.find((x) => x.id === d.companyId);
                   const o = users.find((u) => u.id === d.ownerId);
                   const stale = dealStaleDays(d);
-                  const sc = d.lost ? "red" : stale >= STALE_RED ? "red" : stale >= STALE_AMBER ? "amber" : "emerald";
+                  const sc = d.lost ? "red" : stale >= STALE_RED ? "red" : stale >= STALE_AMBER ? "amber" : "green";
                   const compPct = c ? completeness(c) : 0;
                   return (
                     <div key={d.id} draggable={!d.lost} onDragStart={() => (dragId.current = d.id)}
                       className={cls("bg-white border rounded-md p-2.5 cursor-grab active:cursor-grabbing border-l-4",
-                        sc === "red" ? "border-zinc-200 border-l-red-600" : sc === "amber" ? "border-zinc-200 border-l-amber-500" : "border-zinc-200 border-l-emerald-500")}>
+                        sc === "red" ? "border-slate-200 border-l-red-600" : sc === "amber" ? "border-slate-200 border-l-amber-500" : "border-slate-200 border-l-green-500")}>
                       <div className="flex items-start justify-between gap-2">
-                        <button onClick={() => c && openCompany(c.id)} className="font-medium text-sm text-zinc-900 hover:text-cyan-700 text-left truncate">{c ? c.name : "?"}</button>
-                        <span className="font-mono text-xs text-zinc-400 flex-none">{d.did}</span>
+                        <button onClick={() => c && openCompany(c.id)} className="font-medium text-sm text-slate-900 hover:text-blue-700 text-left truncate">{c ? c.name : "?"}</button>
+                        <span className="font-mono text-xs text-slate-400 flex-none">{d.did}</span>
                       </div>
                       <div className="flex items-center justify-between mt-1.5">
-                        <span className="font-mono text-sm tabular-nums text-zinc-800">{fmtINRc(d.value)}</span>
-                        <span className={cls("flex items-center gap-1 font-mono text-xs tabular-nums", sc === "red" ? "text-red-600 font-semibold" : sc === "amber" ? "text-amber-600" : "text-zinc-400")}>
+                        <span className="font-mono text-sm tabular-nums text-slate-800">{fmtINRc(d.value)}</span>
+                        <span className={cls("flex items-center gap-1 font-mono text-xs tabular-nums", sc === "red" ? "text-red-600 font-semibold" : sc === "amber" ? "text-amber-600" : "text-slate-400")}>
                           <Clock size={11} /> {stale}d
                         </span>
                       </div>
                       <div className="flex items-center justify-between mt-2">
-                        <span className="flex items-center gap-1 text-xs text-zinc-500">{o && <Avatar name={o.name} size="sm" />}</span>
+                        <span className="flex items-center gap-1 text-xs text-slate-500">{o && <Avatar name={o.name} size="sm" />}</span>
                         <div className="flex items-center gap-2">
                           {c && compPct < 70 && <span title="Company data incomplete"><AlertTriangle size={13} className="text-red-500" /></span>}
                           {!d.lost && d.stage !== "po" && (
                             <button onClick={() => setGate({ deal: d, from: d.stage, to: "lost", mode: "lost" })}
-                              className="text-xs text-zinc-400 hover:text-red-600" title="Mark lost">lost?</button>
+                              className="text-xs text-slate-400 hover:text-red-600" title="Mark lost">lost?</button>
                           )}
                         </div>
                       </div>
@@ -1250,7 +1265,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
                     </div>
                   );
                 })}
-                {col.length === 0 && <p className="text-xs text-zinc-300 text-center py-3">—</p>}
+                {col.length === 0 && <p className="text-xs text-slate-300 text-center py-3">—</p>}
               </div>
             </div>
           );
@@ -1276,7 +1291,7 @@ function BackMoveModal({ gate, onClose, onConfirm }) {
         <Btn onClick={onClose}>Cancel</Btn>
         <Btn kind="danger" disabled={reason.trim().length < 10} onClick={() => onConfirm(reason.trim())}>Confirm downgrade</Btn>
       </>}>
-      <p className="text-sm text-zinc-600 mb-2">Moving a deal backwards is a downgrade. Say exactly why (min 10 characters) — this goes on permanent record.</p>
+      <p className="text-sm text-slate-600 mb-2">Moving a deal backwards is a downgrade. Say exactly why (min 10 characters) — this goes on permanent record.</p>
       <TA value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Client paused budget till next quarter; RFQ withdrawn." />
     </Modal>
   );
@@ -1375,39 +1390,39 @@ function StageGateModal({ me, data, gate, onClose, onComplete }) {
     <Modal wide onClose={onClose}
       title={
         <span className="flex items-center gap-2">
-          <Sparkles size={16} className="text-cyan-600" />
+          <Sparkles size={16} className="text-blue-600" />
           {isLost ? "Lost post-mortem — " + (company.name || deal.did) : (company.name || deal.did) + ": " + stageName(from) + " → " + stageName(to)}
         </span>
       }>
       <div className="flex flex-wrap gap-1.5 mb-3">
-        {reqs.map((r, i) => <Chip key={i} color="zinc">{r}</Chip>)}
+        {reqs.map((r, i) => <Chip key={i} color="slate">{r}</Chip>)}
       </div>
-      <div ref={bodyRef} className="h-80 overflow-y-auto border border-zinc-200 rounded-lg bg-zinc-50 p-3 space-y-3">
+      <div ref={bodyRef} className="h-80 overflow-y-auto border border-slate-200 rounded-xl bg-slate-50 p-3 space-y-3">
         {msgs.map((m, i) => (
           <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
             <div className={cls("max-w-md rounded-lg px-3 py-2 text-sm whitespace-pre-wrap",
-              m.role === "user" ? "bg-zinc-900 text-zinc-100" : "bg-white border border-zinc-200 text-zinc-800")}>
+              m.role === "user" ? "bg-blue-600 text-white" : "bg-white border border-slate-200 text-slate-800")}>
               {m.content}
             </div>
           </div>
         ))}
-        {busy && <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono"><Loader2 size={13} className="animate-spin" /> gate is thinking…</div>}
+        {busy && <div className="flex items-center gap-2 text-xs text-slate-400 font-mono"><Loader2 size={13} className="animate-spin" /> gate is thinking…</div>}
         {err && <div className="text-xs text-red-600 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</div>}
         {done && (
-          <div className="bg-white border-2 border-emerald-500 rounded-lg p-3">
-            <p className="flex items-center gap-1.5 text-emerald-700 font-semibold text-sm"><CheckCircle2 size={15} /> Gate cleared</p>
-            <p className="text-sm text-zinc-800 mt-1.5">{done.summary}</p>
+          <div className="bg-white border-2 border-green-500 rounded-lg p-3">
+            <p className="flex items-center gap-1.5 text-green-700 font-semibold text-sm"><CheckCircle2 size={15} /> Gate cleared</p>
+            <p className="text-sm text-slate-800 mt-1.5">{done.summary}</p>
             {done.facts && Object.keys(done.facts).length > 0 && (
               <div className="mt-2 grid sm:grid-cols-2 gap-x-4 gap-y-1">
                 {Object.entries(done.facts).map(([k, v]) => (
-                  <p key={k} className="text-xs"><span className="text-zinc-400">{k}:</span> <span className="text-zinc-700">{String(v)}</span></p>
+                  <p key={k} className="text-xs"><span className="text-slate-400">{k}:</span> <span className="text-slate-700">{String(v)}</span></p>
                 ))}
               </div>
             )}
             {done.risks && done.risks.length > 0 && (
               <p className="text-xs text-amber-700 mt-2 flex items-start gap-1"><AlertTriangle size={12} className="mt-0.5 flex-none" /> {done.risks.join(" · ")}</p>
             )}
-            {done.next_action && <p className="text-xs text-zinc-600 mt-1.5"><span className="font-semibold">Next:</span> {done.next_action}</p>}
+            {done.next_action && <p className="text-xs text-slate-600 mt-1.5"><span className="font-semibold">Next:</span> {done.next_action}</p>}
           </div>
         )}
       </div>
@@ -1425,8 +1440,8 @@ function StageGateModal({ me, data, gate, onClose, onComplete }) {
             <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={15} /></Btn>
           </div>
           <div className="flex items-center justify-between mt-2">
-            <p className="text-xs text-zinc-400">Enter to send · Shift+Enter for a new line{speech.supported ? " · mic transcribes as you speak" : ""}</p>
-            {me.role === "admin" && !showForce && <button onClick={() => setShowForce(true)} className="text-xs text-zinc-400 hover:text-red-600">Force move (admin)</button>}
+            <p className="text-xs text-slate-400">Enter to send · Shift+Enter for a new line{speech.supported ? " · mic transcribes as you speak" : ""}</p>
+            {me.role === "admin" && !showForce && <button onClick={() => setShowForce(true)} className="text-xs text-slate-400 hover:text-red-600">Force move (admin)</button>}
           </div>
           {showForce && (
             <div className="mt-2 flex gap-2">
@@ -1470,7 +1485,7 @@ function PerformanceView({ me, data, saveKpis, saveTrainings, saveWorklogs, fixN
           <div className="flex flex-wrap gap-1.5">
             {[me, ...team].map((u) => (
               <button key={u.id} onClick={() => setViewId(u.id)}
-                className={cls("px-2.5 py-1 rounded-md text-xs border", viewId === u.id ? "bg-zinc-900 text-white border-zinc-900" : "bg-white text-zinc-600 border-zinc-300 hover:bg-zinc-100")}>
+                className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border", viewId === u.id ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-100")}>
                 {u.id === me.id ? "Me" : u.name}
               </button>
             ))}
@@ -1480,10 +1495,10 @@ function PerformanceView({ me, data, saveKpis, saveTrainings, saveWorklogs, fixN
 
       {team.length > 0 && <TeamTable me={me} data={data} team={team} onPick={setViewId} />}
 
-      <div className="flex gap-1 border-b border-zinc-200 mb-4 mt-2">
+      <div className="flex gap-1 border-b border-slate-200 mb-4 mt-2">
         {[["kpi", "KPI", TrendingUp], ["training", "Training", GraduationCap], ["worklog", "Work update sheet", ClipboardList]].map(([k, l, I]) => (
           <button key={k} onClick={() => setPtab(k)}
-            className={cls("flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px", ptab === k ? "border-cyan-600 text-cyan-700 font-medium" : "border-transparent text-zinc-500 hover:text-zinc-800")}>
+            className={cls("flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px", ptab === k ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-slate-500 hover:text-slate-800")}>
             <I size={14} /> {l}
           </button>
         ))}
@@ -1499,15 +1514,15 @@ function PerformanceView({ me, data, saveKpis, saveTrainings, saveWorklogs, fixN
 function TeamTable({ me, data, team, onPick }) {
   const { users, companies, deals, kpis, trainings, worklogs } = data;
   return (
-    <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden mb-4">
-      <div className="px-4 py-2 border-b border-zinc-200 flex items-center gap-2">
-        <Users size={14} className="text-zinc-400" />
-        <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">Team status — red rows need action today</span>
+    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-4">
+      <div className="px-4 py-2 border-b border-slate-200 flex items-center gap-2">
+        <Users size={14} className="text-slate-400" />
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Team status — red rows need action today</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-xs text-zinc-400 border-b border-zinc-100">
+            <tr className="text-left text-xs text-slate-400 border-b border-slate-100">
               <th className="px-4 py-2 font-medium">Person</th>
               <th className="px-4 py-2 font-medium">Health</th>
               <th className="px-4 py-2 font-medium">KPI pace</th>
@@ -1524,12 +1539,12 @@ function TeamTable({ me, data, team, onPick }) {
               const missed = disciplineScore(u.id, worklogs).missed.length;
               const od = trainingScore(u.id, trainings).overdue.length;
               return (
-                <tr key={u.id} className={cls("border-b border-zinc-50", hc === "red" && "bg-red-50")}>
-                  <td className="px-4 py-2"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" /> {u.name}<span className="text-xs text-zinc-400">· {roleLabel(u.role)}</span></span></td>
+                <tr key={u.id} className={cls("border-b border-slate-50", hc === "red" && "bg-red-50")}>
+                  <td className="px-4 py-2"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" /> {u.name}<span className="text-xs text-slate-400">· {roleLabel(u.role)}</span></span></td>
                   <td className="px-4 py-2"><span className="flex items-center gap-1.5 font-mono tabular-nums"><Dot color={hc} pulse={hc === "red"} />{h == null ? "—" : h + "%"}</span></td>
                   <td className="px-4 py-2 font-mono tabular-nums">{pace == null ? "no targets" : Math.round(pace * 100) + "%"}</td>
-                  <td className={cls("px-4 py-2 font-mono tabular-nums", missed > 0 ? "text-red-600 font-semibold" : "text-zinc-500")}>{missed}</td>
-                  <td className={cls("px-4 py-2 font-mono tabular-nums", od > 0 ? "text-red-600 font-semibold" : "text-zinc-500")}>{od}</td>
+                  <td className={cls("px-4 py-2 font-mono tabular-nums", missed > 0 ? "text-red-600 font-semibold" : "text-slate-500")}>{missed}</td>
+                  <td className={cls("px-4 py-2 font-mono tabular-nums", od > 0 ? "text-red-600 font-semibold" : "text-slate-500")}>{od}</td>
                   <td className="px-4 py-2 text-right"><Btn size="sm" onClick={() => onPick(u.id)}>Open <ArrowRight size={12} /></Btn></td>
                 </tr>
               );
@@ -1578,7 +1593,7 @@ function KpiTab({ me, viewUser, data, saveKpis, goFix }) {
       )}
 
       <div className="flex items-center justify-between mb-3">
-        <p className="text-sm text-zinc-500">{monthLabel} · day {now.getDate()} of {dim} · pace expectation <span className="font-mono tabular-nums">{Math.round(frac * 100)}%</span> of monthly target{viewUser.role === "dept_head" ? " · team roll-up" : ""}</p>
+        <p className="text-sm text-slate-500">{monthLabel} · day {now.getDate()} of {dim} · pace expectation <span className="font-mono tabular-nums">{Math.round(frac * 100)}%</span> of monthly target{viewUser.role === "dept_head" ? " · team roll-up" : ""}</p>
         {setterAllowed && <Btn size="sm" onClick={() => setEditTargets(true)}><Pencil size={13} /> Set targets</Btn>}
       </div>
 
@@ -1594,17 +1609,17 @@ function KpiTab({ me, viewUser, data, saveKpis, goFix }) {
             const actual = a[m.key];
             const expected = m.pace ? target * frac : target;
             const ratio = clamp01(actual / Math.max(0.0001, expected));
-            const color = ratio >= 0.85 ? "emerald" : ratio >= 0.6 ? "amber" : "red";
+            const color = ratio >= 0.85 ? "green" : ratio >= 0.6 ? "amber" : "red";
             const fmt = (v) => m.money ? fmtINRc(v) : Math.round(v) + (m.pct ? "%" : "");
             return (
-              <div key={m.key} className={cls("bg-white border rounded-lg p-4", color === "red" ? "border-red-300 ring-1 ring-red-200" : "border-zinc-200")}>
+              <div key={m.key} className={cls("bg-white border rounded-lg p-4", color === "red" ? "border-red-300 ring-1 ring-red-200" : "border-slate-200")}>
                 <div className="flex items-center justify-between">
-                  <p className="text-xs font-medium text-zinc-500">{m.label}</p>
+                  <p className="text-xs font-medium text-slate-500">{m.label}</p>
                   <Dot color={color} pulse={color === "red"} />
                 </div>
-                <p className="mt-2 font-mono tabular-nums text-2xl text-zinc-900">{fmt(actual)}<span className="text-sm text-zinc-400"> / {fmt(target)}</span></p>
+                <p className="mt-2 font-mono tabular-nums text-2xl text-slate-900">{fmt(actual)}<span className="text-sm text-slate-400"> / {fmt(target)}</span></p>
                 <Bar pct={target > 0 ? (actual / target) * 100 : 0} color={color} className="mt-2" />
-                <p className="text-xs text-zinc-400 mt-1.5">{m.pace ? "Pace by today: " + fmt(expected) : "Fixed standard, no pace"} · <span className={cls("font-mono tabular-nums", color === "red" ? "text-red-600 font-semibold" : color === "amber" ? "text-amber-600" : "text-emerald-600")}>{Math.round(ratio * 100)}%</span></p>
+                <p className="text-xs text-slate-400 mt-1.5">{m.pace ? "Pace by today: " + fmt(expected) : "Fixed standard, no pace"} · <span className={cls("font-mono tabular-nums", color === "red" ? "text-red-600 font-semibold" : color === "amber" ? "text-amber-600" : "text-green-600")}>{Math.round(ratio * 100)}%</span></p>
               </div>
             );
           })}
@@ -1621,7 +1636,7 @@ function KpiModal({ viewUser, kpis, onClose, onSave }) {
   return (
     <Modal title={"Monthly targets — " + viewUser.name} onClose={onClose}
       footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" onClick={() => onSave(v)}><Check size={15} /> Save targets</Btn></>}>
-      <p className="text-xs text-zinc-500 mb-3">Set 0 to skip a metric. Pace is measured daily against these — falling behind turns the dashboard red immediately, not at month end.</p>
+      <p className="text-xs text-slate-500 mb-3">Set 0 to skip a metric. Pace is measured daily against these — falling behind turns the dashboard red immediately, not at month end.</p>
       <div className="grid sm:grid-cols-2 gap-3">
         {KPI_METRICS.map((m) => (
           <Field key={m.key} label={m.label + (m.money ? " (₹)" : m.pct ? " (%)" : "")}>
@@ -1645,7 +1660,7 @@ function TrainingTab({ me, viewUser, data, saveTrainings }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
-        <p className="text-sm text-zinc-500">Assigned learning for <span className="font-medium text-zinc-800">{viewUser.id === me.id ? "you" : viewUser.name}</span>. Overdue items pull the health score down like a missed KPI.</p>
+        <p className="text-sm text-slate-500">Assigned learning for <span className="font-medium text-slate-800">{viewUser.id === me.id ? "you" : viewUser.name}</span>. Overdue items pull the health score down like a missed KPI.</p>
         {canAssign && <Btn size="sm" kind="primary" onClick={() => setAssign(true)}><Plus size={13} /> Assign training</Btn>}
       </div>
       {mine.length === 0 ? (
@@ -1657,20 +1672,20 @@ function TrainingTab({ me, viewUser, data, saveTrainings }) {
             const k = knowledge.find((x) => x.id === t.knowledgeId);
             const by = users.find((u) => u.id === t.assignedBy);
             return (
-              <div key={t.id} className={cls("bg-white border rounded-lg p-3 flex flex-wrap items-center gap-3", overdue ? "border-red-300 ring-1 ring-red-200" : "border-zinc-200")}>
+              <div key={t.id} className={cls("bg-white border rounded-lg p-3 flex flex-wrap items-center gap-3", overdue ? "border-red-300 ring-1 ring-red-200" : "border-slate-200")}>
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-sm text-zinc-900">{t.title}</p>
-                  <p className="text-xs text-zinc-400 mt-0.5">Due {fmtDate(t.due)} · by {by ? by.name : "?"}{k ? " · material: " + k.title : ""}</p>
+                  <p className="font-medium text-sm text-slate-900">{t.title}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">Due {fmtDate(t.due)} · by {by ? by.name : "?"}{k ? " · material: " + k.title : ""}</p>
                 </div>
                 {overdue && <Chip color="red"><AlertTriangle size={11} /> Overdue</Chip>}
-                {t.status === "done" ? <Chip color="emerald"><Check size={11} /> Done</Chip>
+                {t.status === "done" ? <Chip color="green"><Check size={11} /> Done</Chip>
                   : canUpdate(t) ? (
                     <Sel value={t.status} onChange={(e) => setStatus(t, e.target.value)} className="w-36">
                       <option value="assigned">Assigned</option>
                       <option value="in_progress">In progress</option>
                       <option value="done">Done</option>
                     </Sel>
-                  ) : <Chip color={t.status === "in_progress" ? "cyan" : "zinc"}>{t.status === "in_progress" ? "In progress" : "Assigned"}</Chip>}
+                  ) : <Chip color={t.status === "in_progress" ? "blue" : "slate"}>{t.status === "in_progress" ? "In progress" : "Assigned"}</Chip>}
                 {(me.role === "admin" || t.assignedBy === me.id) && <Btn size="sm" onClick={() => remove(t)} title="Remove"><Trash2 size={13} /></Btn>}
               </div>
             );
@@ -1744,21 +1759,21 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
 
   return (
     <div>
-      <div className="bg-white border border-zinc-200 rounded-lg p-4 mb-4">
-        <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">{viewUser.id === me.id ? "Your" : viewUser.name + "'s"} last 7 days — a red X is a missed day, on record</p>
+      <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">{viewUser.id === me.id ? "Your" : viewUser.name + "'s"} last 7 days — a red X is a missed day, on record</p>
         <div className="flex gap-2 flex-wrap">
           {days.map((d) => {
             const c = cellFor(viewUser.id, d);
             return (
               <button key={d.date} onClick={() => c.log && setViewLog(c.log)} disabled={!c.log}
-                className={cls("w-16 rounded-md border px-2 py-1.5 text-center", c.log && "hover:border-cyan-500",
-                  c.state === "ok" ? "bg-emerald-50 border-emerald-200" : c.state === "miss" ? "bg-red-50 border-red-300" : c.state === "due" ? "bg-amber-50 border-amber-300" : "bg-zinc-50 border-zinc-200")}>
-                <span className="block text-xs text-zinc-500">{d.label}</span>
+                className={cls("w-16 rounded-md border px-2 py-1.5 text-center", c.log && "hover:border-blue-500",
+                  c.state === "ok" ? "bg-green-50 border-green-200" : c.state === "miss" ? "bg-red-50 border-red-300" : c.state === "due" ? "bg-amber-50 border-amber-300" : "bg-slate-50 border-slate-200")}>
+                <span className="block text-xs text-slate-500">{d.label}</span>
                 <span className="mt-0.5 flex justify-center">
-                  {c.state === "ok" && <Check size={14} className="text-emerald-600" />}
+                  {c.state === "ok" && <Check size={14} className="text-green-600" />}
                   {c.state === "miss" && <X size={14} className="text-red-600" />}
                   {c.state === "due" && <Clock size={14} className="text-amber-600" />}
-                  {c.state === "off" && <span className="text-xs text-zinc-300">off</span>}
+                  {c.state === "off" && <span className="text-xs text-slate-300">off</span>}
                 </span>
               </button>
             );
@@ -1767,10 +1782,10 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
       </div>
 
       {isSelf && (
-        <div className="bg-white border border-zinc-200 rounded-lg p-4 mb-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-zinc-800">Today's update — {fmtDate(today)}</p>
-            {existing ? <Chip color="emerald"><Check size={11} /> Logged, editable</Chip> : <Chip color="amber"><Clock size={11} /> Not logged yet</Chip>}
+            <p className="text-sm font-semibold text-slate-800">Today's update — {fmtDate(today)}</p>
+            {existing ? <Chip color="green"><Check size={11} /> Logged, editable</Chip> : <Chip color="amber"><Clock size={11} /> Not logged yet</Chip>}
           </div>
           <div className="grid sm:grid-cols-3 gap-3 mb-3">
             <Field label="Companies worked"><Input value={f.companiesWorked} onChange={(e) => setF({ ...f, companiesWorked: e.target.value })} placeholder="Nevon, Sunrise…" /></Field>
@@ -1783,36 +1798,36 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
             <Field label="Next actions"><TA value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} /></Field>
           </div>
           <div className="flex items-center justify-end gap-2 mt-3">
-            {saved && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 size={13} /> Logged</span>}
+            {saved && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={13} /> Logged</span>}
             <Btn kind="primary" disabled={!String(f.progress || "").trim()} onClick={submit}><Check size={15} /> {existing ? "Update log" : "Log update"}</Btn>
           </div>
         </div>
       )}
 
       {team.length > 0 && (
-        <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden">
-          <div className="px-4 py-2 border-b border-zinc-200"><span className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">Team sheet — click a green day to read the log</span></div>
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-4 py-2 border-b border-slate-200"><span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Team sheet — click a green day to read the log</span></div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="text-left text-xs text-zinc-400 border-b border-zinc-100">
+              <thead><tr className="text-left text-xs text-slate-400 border-b border-slate-100">
                 <th className="px-4 py-2 font-medium">Agent</th>
                 {days.map((d) => <th key={d.date} className="px-2 py-2 font-mono font-medium text-center">{d.label} {d.dnum}</th>)}
               </tr></thead>
               <tbody>
                 {team.map((u) => (
-                  <tr key={u.id} className="border-b border-zinc-50">
+                  <tr key={u.id} className="border-b border-slate-50">
                     <td className="px-4 py-2"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" />{u.name}</span></td>
                     {days.map((d) => {
                       const c = cellFor(u.id, d);
                       return (
                         <td key={d.date} className="px-2 py-2 text-center">
                           <button onClick={() => c.log && setViewLog(c.log)} disabled={!c.log}
-                            className={cls("inline-flex items-center justify-center w-7 h-7 rounded", c.log && "hover:ring-2 hover:ring-cyan-400",
-                              c.state === "ok" ? "bg-emerald-100" : c.state === "miss" ? "bg-red-100" : c.state === "due" ? "bg-amber-100" : "bg-zinc-100")}>
-                            {c.state === "ok" && <Check size={13} className="text-emerald-700" />}
+                            className={cls("inline-flex items-center justify-center w-7 h-7 rounded", c.log && "hover:ring-2 hover:ring-blue-400",
+                              c.state === "ok" ? "bg-green-100" : c.state === "miss" ? "bg-red-100" : c.state === "due" ? "bg-amber-100" : "bg-slate-100")}>
+                            {c.state === "ok" && <Check size={13} className="text-green-700" />}
                             {c.state === "miss" && <X size={13} className="text-red-600" />}
                             {c.state === "due" && <Clock size={13} className="text-amber-600" />}
-                            {c.state === "off" && <span className="text-zinc-300 text-xs">·</span>}
+                            {c.state === "off" && <span className="text-slate-300 text-xs">·</span>}
                           </button>
                         </td>
                       );
@@ -1828,11 +1843,11 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
       {viewLog && (
         <Modal title={"Work update — " + ((users.find((u) => u.id === viewLog.userId) || {}).name || "") + " · " + fmtDate(viewLog.date)} onClose={() => setViewLog(null)}>
           <div className="space-y-2 text-sm">
-            <p><span className="text-zinc-400">Companies:</span> {viewLog.companiesWorked || "—"}</p>
-            <p><span className="text-zinc-400">Calls:</span> <span className="font-mono">{viewLog.calls}</span> · <span className="text-zinc-400">Meetings:</span> <span className="font-mono">{viewLog.meetings}</span></p>
-            <p><span className="text-zinc-400">Progress:</span> {viewLog.progress}</p>
-            {viewLog.blockers && <p><span className="text-zinc-400">Blockers:</span> {viewLog.blockers}</p>}
-            {viewLog.next && <p><span className="text-zinc-400">Next:</span> {viewLog.next}</p>}
+            <p><span className="text-slate-400">Companies:</span> {viewLog.companiesWorked || "—"}</p>
+            <p><span className="text-slate-400">Calls:</span> <span className="font-mono">{viewLog.calls}</span> · <span className="text-slate-400">Meetings:</span> <span className="font-mono">{viewLog.meetings}</span></p>
+            <p><span className="text-slate-400">Progress:</span> {viewLog.progress}</p>
+            {viewLog.blockers && <p><span className="text-slate-400">Blockers:</span> {viewLog.blockers}</p>}
+            {viewLog.next && <p><span className="text-slate-400">Next:</span> {viewLog.next}</p>}
           </div>
         </Modal>
       )}
@@ -1922,19 +1937,19 @@ function KnowledgeView({ me, data, saveKnowledge }) {
         ) : (
           <div className="space-y-2">
             {accessible.map((k) => (
-              <div key={k.id} className="bg-white border border-zinc-200 rounded-lg p-3">
+              <div key={k.id} className="bg-white border border-slate-200 rounded-xl p-3">
                 <div className="flex items-start justify-between gap-2">
-                  <p className="font-medium text-sm text-zinc-900">{k.title}</p>
+                  <p className="font-medium text-sm text-slate-900">{k.title}</p>
                   <div className="flex items-center gap-1.5 flex-none">
-                    <Chip color={k.access === "all" ? "emerald" : k.access === "leadership" ? "cyan" : "zinc"}>{k.access === "all" ? "Everyone" : k.access === "leadership" ? "Leadership" : "Admin only"}</Chip>
+                    <Chip color={k.access === "all" ? "green" : k.access === "leadership" ? "blue" : "slate"}>{k.access === "all" ? "Everyone" : k.access === "leadership" ? "Leadership" : "Admin only"}</Chip>
                     {canManage && <>
-                      <button onClick={() => setEditing(k)} className="text-zinc-400 hover:text-zinc-700"><Pencil size={13} /></button>
-                      <button onClick={() => saveKnowledge(knowledge.filter((x) => x.id !== k.id))} className="text-zinc-400 hover:text-red-600"><Trash2 size={13} /></button>
+                      <button onClick={() => setEditing(k)} className="text-slate-400 hover:text-slate-700"><Pencil size={13} /></button>
+                      <button onClick={() => saveKnowledge(knowledge.filter((x) => x.id !== k.id))} className="text-slate-400 hover:text-red-600"><Trash2 size={13} /></button>
                     </>}
                   </div>
                 </div>
-                <p className="text-xs text-zinc-500 mt-1 line-clamp-3">{k.content}</p>
-                <p className="font-mono text-xs text-zinc-300 mt-1.5">updated {fmtDate(k.updatedAt)}</p>
+                <p className="text-xs text-slate-500 mt-1 line-clamp-3">{k.content}</p>
+                <p className="font-mono text-xs text-slate-300 mt-1.5">updated {fmtDate(k.updatedAt)}</p>
               </div>
             ))}
           </div>
@@ -1948,11 +1963,11 @@ function KnowledgeView({ me, data, saveKnowledge }) {
             {companies.map((c) => <option key={c.id} value={c.id}>For: {c.name}</option>)}
           </Sel>
         }>Ask the company brain</SectionTitle>
-        <div className="bg-white border border-zinc-200 rounded-lg flex flex-col">
+        <div className="bg-white border border-slate-200 rounded-xl flex flex-col">
           <div ref={bodyRef} className="h-96 overflow-y-auto p-3 space-y-3">
             {msgs.length === 0 && (
-              <div className="text-sm text-zinc-400 p-4">
-                <p className="font-medium text-zinc-500 mb-2">Ask anything the company should know:</p>
+              <div className="text-sm text-slate-400 p-4">
+                <p className="font-medium text-slate-500 mb-2">Ask anything the company should know:</p>
                 <ul className="space-y-1 list-disc pl-4">
                   <li>"What's our MOQ for consumer devices?"</li>
                   <li>"How do I pitch ESL to a 40-store retail chain?"</li>
@@ -1962,14 +1977,14 @@ function KnowledgeView({ me, data, saveKnowledge }) {
             )}
             {msgs.map((m, i) => (
               <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-                <div className={cls("max-w-lg rounded-lg px-3 py-2 text-sm whitespace-pre-wrap", m.role === "user" ? "bg-zinc-900 text-zinc-100" : "bg-zinc-50 border border-zinc-200 text-zinc-800")}>{m.content}</div>
+                <div className={cls("max-w-lg rounded-lg px-3 py-2 text-sm whitespace-pre-wrap", m.role === "user" ? "bg-blue-600 text-white" : "bg-slate-50 border border-slate-200 text-slate-800")}>{m.content}</div>
               </div>
             ))}
-            {busy && <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono"><Loader2 size={13} className="animate-spin" /> searching the knowledge base…</div>}
+            {busy && <div className="flex items-center gap-2 text-xs text-slate-400 font-mono"><Loader2 size={13} className="animate-spin" /> searching the knowledge base…</div>}
             {err && <p className="text-xs text-red-600 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
             {msgs.some((m) => m.role === "assistant") && !busy && (
               <div className="flex flex-wrap gap-1.5 pt-1 items-center">
-                <span className="text-xs text-zinc-400 flex items-center gap-1"><Sparkles size={12} className="text-cyan-600" /> Templatise last answer:</span>
+                <span className="text-xs text-slate-400 flex items-center gap-1"><Sparkles size={12} className="text-blue-600" /> Templatise last answer:</span>
                 {TEMPLATE_TYPES.map((t) => (
                   <Btn key={t} size="sm" kind="subtle" disabled={!!tplBusy} onClick={() => templatise(t)}>
                     {tplBusy === t ? <Loader2 size={12} className="animate-spin" /> : null} {t}
@@ -1978,7 +1993,7 @@ function KnowledgeView({ me, data, saveKnowledge }) {
               </div>
             )}
           </div>
-          <div className="border-t border-zinc-200 p-3 flex gap-2 items-end">
+          <div className="border-t border-slate-200 p-3 flex gap-2 items-end">
             <TA value={input} onChange={(e) => setInput(e.target.value)} placeholder={speech.on ? "Listening…" : "Ask about products, pricing rules, capabilities…"}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} className="flex-1 min-h-10" />
             {speech.supported && <Btn kind={speech.on ? "danger" : "ghost"} onClick={speech.toggle}>{speech.on ? <MicOff size={15} /> : <Mic size={15} />}</Btn>}
@@ -2045,7 +2060,7 @@ function ExpensesView({ me, data, saveExpenses }) {
     saveExpenses(expenses.map((x) => x.id === e.id ? { ...x, status, decidedBy: me.id, decidedAt: nowTS(), decisionNote: (notes[e.id] || "").trim() } : x));
   };
 
-  const StatusChip = ({ s }) => s === "approved" ? <Chip color="emerald"><CheckCircle2 size={11} /> Approved</Chip>
+  const StatusChip = ({ s }) => s === "approved" ? <Chip color="green"><CheckCircle2 size={11} /> Approved</Chip>
     : s === "rejected" ? <Chip color="red"><XCircle size={11} /> Rejected</Chip>
     : <Chip color="amber"><Clock size={11} /> Pending</Chip>;
 
@@ -2054,21 +2069,21 @@ function ExpensesView({ me, data, saveExpenses }) {
     const c = companies.find((x) => x.id === e.companyId);
     const d = users.find((x) => x.id === e.decidedBy);
     return (
-      <div className="bg-white border border-zinc-200 rounded-lg p-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1">
-            <p className="font-medium text-sm text-zinc-900">{e.purpose}</p>
-            <p className="text-xs text-zinc-500 mt-0.5">{u ? u.name : "?"}{c ? " · " + c.name : ""} · {e.city} · {fmtDate(e.from)} → {fmtDate(e.to)} · {e.mode}</p>
-            {e.notes && <p className="text-xs text-zinc-400 mt-1">{e.notes}</p>}
-            {e.status !== "pending" && <p className="text-xs text-zinc-500 mt-1.5">{e.status === "approved" ? "Approved" : "Rejected"} by {d ? d.name : "?"}{e.decisionNote ? " — " + e.decisionNote : ""}</p>}
+            <p className="font-medium text-sm text-slate-900">{e.purpose}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{u ? u.name : "?"}{c ? " · " + c.name : ""} · {e.city} · {fmtDate(e.from)} → {fmtDate(e.to)} · {e.mode}</p>
+            {e.notes && <p className="text-xs text-slate-400 mt-1">{e.notes}</p>}
+            {e.status !== "pending" && <p className="text-xs text-slate-500 mt-1.5">{e.status === "approved" ? "Approved" : "Rejected"} by {d ? d.name : "?"}{e.decisionNote ? " — " + e.decisionNote : ""}</p>}
           </div>
           <div className="text-right flex-none">
-            <p className="font-mono tabular-nums text-lg text-zinc-900">{fmtINR(e.estimate)}</p>
+            <p className="font-mono tabular-nums text-lg text-slate-900">{fmtINR(e.estimate)}</p>
             <div className="mt-1"><StatusChip s={e.status} /></div>
           </div>
         </div>
         {actions && (
-          <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-zinc-100">
+          <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-slate-100">
             <Input placeholder="Note (optional): budget line, conditions…" value={notes[e.id] || ""} onChange={(ev) => setNotes({ ...notes, [e.id]: ev.target.value })} className="flex-1 min-w-40" />
             <Btn kind="success" size="sm" onClick={() => decide(e, "approved")}><Check size={13} /> Approve</Btn>
             <Btn kind="danger" size="sm" onClick={() => decide(e, "rejected")}><X size={13} /> Reject</Btn>
@@ -2088,7 +2103,7 @@ function ExpensesView({ me, data, saveExpenses }) {
       {isApprover && (
         <div className="mb-6">
           <SectionTitle>Approval queue</SectionTitle>
-          {pendingQueue.length === 0 ? <p className="text-sm text-zinc-400 bg-white border border-zinc-200 rounded-lg p-4">Queue is clear.</p>
+          {pendingQueue.length === 0 ? <p className="text-sm text-slate-400 bg-white border border-slate-200 rounded-xl p-4">Queue is clear.</p>
             : <div className="space-y-2">{pendingQueue.map((e) => <ExpCard key={e.id} e={e} actions />)}</div>}
         </div>
       )}
@@ -2180,36 +2195,36 @@ function AdminView({ me, data, saveUsers, saveGates, resetDemo }) {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      <div className="bg-white border border-zinc-200 rounded-lg p-5">
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
         <SectionTitle right={<Btn size="sm" kind="primary" onClick={() => setEditUser("new")}><Plus size={13} /> Add user</Btn>}>Users & roles</SectionTitle>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="text-left text-xs text-zinc-400 border-b border-zinc-100">
+            <thead><tr className="text-left text-xs text-slate-400 border-b border-slate-100">
               <th className="py-2 pr-4 font-medium">Name</th><th className="py-2 pr-4 font-medium">Role</th><th className="py-2 pr-4 font-medium">Department</th><th className="py-2 pr-4 font-medium">Status</th><th className="py-2" />
             </tr></thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id} className="border-b border-zinc-50">
-                  <td className="py-2 pr-4"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" />{u.name}{u.id === me.id && <span className="text-xs text-zinc-400">(you)</span>}</span></td>
+                <tr key={u.id} className="border-b border-slate-50">
+                  <td className="py-2 pr-4"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" />{u.name}{u.id === me.id && <span className="text-xs text-slate-400">(you)</span>}</span></td>
                   <td className="py-2 pr-4">{roleLabel(u.role)}</td>
                   <td className="py-2 pr-4">{u.dept}</td>
-                  <td className="py-2 pr-4">{u.active !== false ? <Chip color="emerald">Active</Chip> : <Chip color="zinc">Inactive</Chip>}</td>
+                  <td className="py-2 pr-4">{u.active !== false ? <Chip color="green">Active</Chip> : <Chip color="slate">Inactive</Chip>}</td>
                   <td className="py-2 text-right"><Btn size="sm" onClick={() => setEditUser(u)}><Pencil size={12} /></Btn></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <p className="text-xs text-zinc-400 mt-3">KPI chain: you set targets for dept heads; dept heads set targets for their agents — in Performance → Set targets.</p>
+        <p className="text-xs text-slate-400 mt-3">KPI chain: you set targets for dept heads; dept heads set targets for their agents — in Performance → Set targets.</p>
       </div>
 
-      <div className="bg-white border border-zinc-200 rounded-lg p-5">
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
         <SectionTitle>Stage gate questions — what the AI must extract</SectionTitle>
-        <p className="text-xs text-zinc-500 mb-3">One requirement per line. The gate interviews the agent until every line is covered with specifics. Edit per stage to match how Elecbits sells.</p>
+        <p className="text-xs text-slate-500 mb-3">One requirement per line. The gate interviews the agent until every line is covered with specifics. Edit per stage to match how Elecbits sells.</p>
         <div className="flex flex-wrap gap-1.5 mb-3">
           {STAGES.filter((s) => s.key !== "lead").map((s) => (
             <button key={s.key} onClick={() => pickStage(s.key)}
-              className={cls("px-2.5 py-1 rounded-md text-xs border", gateStage === s.key ? "bg-zinc-900 text-white border-zinc-900" : "bg-white text-zinc-600 border-zinc-300 hover:bg-zinc-100")}>
+              className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border", gateStage === s.key ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-100")}>
               {s.name}{gates[s.key] && gates[s.key].length ? " •" : ""}
             </button>
           ))}
@@ -2218,14 +2233,14 @@ function AdminView({ me, data, saveUsers, saveGates, resetDemo }) {
         <div className="flex items-center gap-2 mt-2 flex-wrap">
           <Btn kind="primary" size="sm" onClick={saveGate}><Check size={13} /> Save for {stageName(gateStage)}</Btn>
           <Btn size="sm" onClick={resetGate}>Reset to default</Btn>
-          {gateSaved && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 size={12} /> Saved</span>}
-          <span className="ml-auto text-xs text-zinc-400 font-mono">• = customised</span>
+          {gateSaved && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> Saved</span>}
+          <span className="ml-auto text-xs text-slate-400 font-mono">• = customised</span>
         </div>
       </div>
 
-      <div className="bg-white border border-zinc-200 rounded-lg p-5">
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
         <SectionTitle>Workspace data</SectionTitle>
-        <p className="text-xs text-zinc-500 mb-3 flex items-start gap-1.5"><FileText size={13} className="mt-0.5 flex-none" /> This is a shared workspace — everyone who opens the app sees and edits the same data. Copy a backup before big changes.</p>
+        <p className="text-xs text-slate-500 mb-3 flex items-start gap-1.5"><FileText size={13} className="mt-0.5 flex-none" /> This is a shared workspace — everyone who opens the app sees and edits the same data. Copy a backup before big changes.</p>
         <div className="flex flex-wrap gap-2">
           <Btn onClick={backup}><Copy size={14} /> {copied ? "Copied" : "Copy backup JSON"}</Btn>
           {!confirmReset ? (
@@ -2258,11 +2273,11 @@ function UserModal({ user, me, onClose, onSave }) {
           </Sel>
         </Field>
         <Field label="Department"><Input value={f.dept} onChange={(e) => setF({ ...f, dept: e.target.value })} /></Field>
-        <label className="flex items-center gap-2 text-sm text-zinc-700">
-          <input type="checkbox" checked={f.active !== false} disabled={!!isSelf} onChange={(e) => setF({ ...f, active: e.target.checked })} className="rounded border-zinc-300" />
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" checked={f.active !== false} disabled={!!isSelf} onChange={(e) => setF({ ...f, active: e.target.checked })} className="rounded border-slate-300" />
           Active (inactive users can't log in)
         </label>
-        {isSelf && <p className="text-xs text-zinc-400">You can't change your own role or deactivate yourself.</p>}
+        {isSelf && <p className="text-xs text-slate-400">You can't change your own role or deactivate yourself.</p>}
       </div>
     </Modal>
   );
