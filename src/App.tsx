@@ -4,7 +4,7 @@ import {
   Mic, MicOff, Send, Check, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText, Zap,
-  Bot, Database, CalendarCheck2, Lightbulb
+  Bot, Database, CalendarCheck2, Sun, Moon
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -644,6 +644,18 @@ export default function App() {
   const [scrums, setScrums] = useState([]);
   const [memory, setMemory] = useState([]);
 
+  // Theme: default light; persisted per browser and applied to <html>.
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem("sales:theme") === "dark" ? "dark" : "light"; } catch (e) { return "light"; }
+  });
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "dark") root.setAttribute("data-theme", "dark");
+    else root.removeAttribute("data-theme");
+    try { localStorage.setItem("sales:theme", theme); } catch (e) { /* ignore */ }
+  }, [theme]);
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+
   // Auth state: authReady flips true once we know whether a session exists;
   // authEmail is the signed-in user's email (lowercased) or null.
   const [authReady, setAuthReady] = useState(false);
@@ -757,7 +769,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row">
       <Sidebar me={me} tab={tab} setTab={setTab} onLogout={logout} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <Topbar me={me} health={myHealth} onAlarmClick={() => setTab("performance")} />
+        <Topbar me={me} health={myHealth} onAlarmClick={() => setTab("performance")} theme={theme} onToggleTheme={toggleTheme} />
         {fixNow.length > 0 && (
           <div className="bg-red-50 border-b border-red-200 px-4 md:px-6 py-2">
             <div className="flex items-start gap-2">
@@ -981,29 +993,39 @@ function Sidebar({ me, tab, setTab, onLogout }) {
   );
 }
 
-function Topbar({ me, health, onAlarmClick }) {
+function Topbar({ me, health, onAlarmClick, theme, onToggleTheme }) {
   const hc = healthColor(health);
   const alarm = health != null && health < 60;
+  const themeBtn = (
+    <button onClick={onToggleTheme} title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+      className={cls("flex items-center justify-center w-8 h-8 rounded-lg focus:outline-none focus-visible:ring-2",
+        alarm ? "text-red-100 hover:bg-red-800 focus-visible:ring-white" : "text-slate-500 hover:bg-slate-100 focus-visible:ring-blue-500")}>
+      {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+    </button>
+  );
   return (
     <header className={cls("h-12 flex-none flex items-center justify-between px-4 md:px-6 border-b transition-colors",
       alarm ? "bg-red-700 border-red-800" : "bg-white border-slate-200")}>
       <div className={cls("text-sm font-medium", alarm ? "text-red-100" : "text-slate-500")}>
         {alarm ? "Performance alarm active" : "Workspace: Sales"}
       </div>
-      {health == null ? (
-        <span className="flex items-center gap-2 text-xs font-mono text-slate-400"><Dot color="slate" /> OVERSIGHT MODE</span>
-      ) : (
-        <button onClick={onAlarmClick}
-          className={cls("flex items-center gap-2 rounded-md px-2.5 py-1.5 focus:outline-none focus-visible:ring-2",
-            alarm ? "bg-red-800 hover:bg-red-900 focus-visible:ring-white" : "bg-slate-100 hover:bg-slate-200 focus-visible:ring-blue-500")}>
-          {alarm && <Flame size={14} className="text-amber-300" />}
-          <Dot color={hc} pulse={alarm} />
-          <span className={cls("font-mono text-sm tabular-nums", alarm ? "text-white" : "text-slate-800")}>{health}%</span>
-          <span className={cls("text-xs font-semibold tracking-wide", alarm ? "text-red-100" : hc === "amber" ? "text-amber-600" : "text-green-600")}>
-            {alarm ? "BEHIND — FIX NOW" : hc === "amber" ? "AT RISK" : "ON TRACK"}
-          </span>
-        </button>
-      )}
+      <div className="flex items-center gap-2">
+        {themeBtn}
+        {health == null ? (
+          <span className="flex items-center gap-2 text-xs font-mono text-slate-400"><Dot color="slate" /> OVERSIGHT MODE</span>
+        ) : (
+          <button onClick={onAlarmClick}
+            className={cls("flex items-center gap-2 rounded-md px-2.5 py-1.5 focus:outline-none focus-visible:ring-2",
+              alarm ? "bg-red-800 hover:bg-red-900 focus-visible:ring-white" : "bg-slate-100 hover:bg-slate-200 focus-visible:ring-blue-500")}>
+            {alarm && <Flame size={14} className="text-amber-300" />}
+            <Dot color={hc} pulse={alarm} />
+            <span className={cls("font-mono text-sm tabular-nums", alarm ? "text-white" : "text-slate-800")}>{health}%</span>
+            <span className={cls("text-xs font-semibold tracking-wide", alarm ? "text-red-100" : hc === "amber" ? "text-amber-600" : "text-green-600")}>
+              {alarm ? "BEHIND — FIX NOW" : hc === "amber" ? "AT RISK" : "ON TRACK"}
+            </span>
+          </button>
+        )}
+      </div>
     </header>
   );
 }

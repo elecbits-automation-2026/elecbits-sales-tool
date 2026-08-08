@@ -76,3 +76,91 @@ input[type="date"],
 input[type="time"] {
   color-scheme: light;
 }
+
+/* ─── DARK THEME ─────────────────────────────────────────────────────────────
+   The app is styled with concrete light Tailwind classes; rather than adding a
+   `dark:` variant to every element, we remap the exact utilities the app uses
+   under `:root[data-theme="dark"]`. Default (no attribute) stays light. Values
+   follow the Elecbits ODM PMS dark palette. Selectors are scoped under the
+   attribute so they always out-specify the base utility — no !important needed. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+:root[data-theme="dark"] body {
+  background: #0c0e13;
+  color: #e6ecf7;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: #2a3d60;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: #3d5080;
+}
+:root[data-theme="dark"] input[type="date"],
+:root[data-theme="dark"] input[type="time"] {
+  color-scheme: dark;
+}
+
+/* backgrounds */
+:root[data-theme="dark"] .bg-white { background-color: #111520; }
+:root[data-theme="dark"] .bg-slate-50 { background-color: #0c0e13; }
+:root[data-theme="dark"] .bg-slate-100 { background-color: #1b2130; }
+:root[data-theme="dark"] .bg-slate-200 { background-color: #232c40; }
+:root[data-theme="dark"] .bg-slate-400 { background-color: #64789f; }
+:root[data-theme="dark"] .bg-slate-700 { background-color: #33405f; }
+:root[data-theme="dark"] .bg-slate-900 { background-color: #2a3650; }
+:root[data-theme="dark"] .bg-blue-50 { background-color: #16213a; }
+:root[data-theme="dark"] .bg-red-50 { background-color: rgba(220, 38, 38, 0.14); }
+:root[data-theme="dark"] .bg-red-100 { background-color: rgba(220, 38, 38, 0.20); }
+:root[data-theme="dark"] .bg-green-50 { background-color: rgba(22, 163, 74, 0.14); }
+:root[data-theme="dark"] .bg-green-100 { background-color: rgba(22, 163, 74, 0.20); }
+:root[data-theme="dark"] .bg-amber-50 { background-color: rgba(217, 119, 6, 0.14); }
+:root[data-theme="dark"] .bg-amber-100 { background-color: rgba(217, 119, 6, 0.20); }
+
+/* text */
+:root[data-theme="dark"] .text-slate-900 { color: #e6ecf7; }
+:root[data-theme="dark"] .text-slate-800 { color: #e6ecf7; }
+:root[data-theme="dark"] .text-slate-700 { color: #cdd8ee; }
+:root[data-theme="dark"] .text-slate-600 { color: #aebbd6; }
+:root[data-theme="dark"] .text-slate-500 { color: #8598b8; }
+:root[data-theme="dark"] .text-slate-400 { color: #64789f; }
+:root[data-theme="dark"] .text-slate-300 { color: #4a5c86; }
+:root[data-theme="dark"] .text-slate-100 { color: #e6ecf7; }
+:root[data-theme="dark"] .text-blue-600 { color: #60a5fa; }
+:root[data-theme="dark"] .text-blue-700 { color: #93b4ff; }
+:root[data-theme="dark"] .text-red-600 { color: #f87171; }
+:root[data-theme="dark"] .text-red-700 { color: #f87171; }
+:root[data-theme="dark"] .text-red-800 { color: #fca5a5; }
+:root[data-theme="dark"] .text-red-500 { color: #f87171; }
+:root[data-theme="dark"] .text-green-600 { color: #34d399; }
+:root[data-theme="dark"] .text-green-700 { color: #4ade80; }
+:root[data-theme="dark"] .text-amber-600 { color: #fbbf24; }
+:root[data-theme="dark"] .text-amber-700 { color: #fbbf24; }
+:root[data-theme="dark"] .text-amber-800 { color: #fcd34d; }
+:root[data-theme="dark"] .text-amber-500 { color: #f59e0b; }
+:root[data-theme="dark"] .placeholder-slate-400::placeholder { color: #5f76a0; }
+
+/* borders */
+:root[data-theme="dark"] .border-slate-200 { border-color: #26324f; }
+:root[data-theme="dark"] .border-slate-100 { border-color: #1c2438; }
+:root[data-theme="dark"] .border-slate-300 { border-color: #33405f; }
+:root[data-theme="dark"] .border-slate-50 { border-color: #172032; }
+:root[data-theme="dark"] .border-blue-100 { border-color: #1e3a6b; }
+:root[data-theme="dark"] .border-blue-200 { border-color: #24467f; }
+:root[data-theme="dark"] .border-red-200 { border-color: rgba(220, 38, 38, 0.4); }
+:root[data-theme="dark"] .border-red-300 { border-color: rgba(220, 38, 38, 0.5); }
+:root[data-theme="dark"] .border-green-200 { border-color: rgba(22, 163, 74, 0.4); }
+:root[data-theme="dark"] .border-amber-200 { border-color: rgba(217, 119, 6, 0.4); }
+:root[data-theme="dark"] .border-amber-300 { border-color: rgba(217, 119, 6, 0.5); }
+:root[data-theme="dark"] .ring-red-200 { --tw-ring-color: rgba(220, 38, 38, 0.4); }
+
+/* hover / focus states */
+:root[data-theme="dark"] .hover\:bg-slate-100:hover { background-color: #1b2130; }
+:root[data-theme="dark"] .hover\:bg-slate-200:hover { background-color: #232c40; }
+:root[data-theme="dark"] .hover\:bg-slate-700:hover { background-color: #3a4867; }
+:root[data-theme="dark"] .hover\:bg-blue-50:hover { background-color: #16213a; }
+:root[data-theme="dark"] .hover\:text-slate-800:hover { color: #e6ecf7; }
+:root[data-theme="dark"] .hover\:text-slate-700:hover { color: #cdd8ee; }
+:root[data-theme="dark"] .hover\:text-slate-600:hover { color: #aebbd6; }
+:root[data-theme="dark"] .hover\:text-blue-700:hover { color: #93b4ff; }
+:root[data-theme="dark"] .hover\:text-red-600:hover { color: #f87171; }
