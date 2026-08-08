@@ -2,11 +2,14 @@
 
 This turns the local prototype into a hosted, shared, dynamic app:
 
-- **Supabase** stores all data and handles logins (real auth).
-- **Vercel** hosts the site and runs two small serverless functions
-  (`/api/claude` for the AI note helper, `/api/admin` for creating logins).
+- **Supabase** stores all data (a single `collections` table).
+- **Vercel** hosts the site and runs one small serverless function
+  (`/api/claude` for the AI helpers).
 
-Follow the steps in order. You only do steps 1–4 once.
+Logins are handled **inside the app**, against the `sales:users` table — there
+are no Supabase Auth accounts to create and no seed script to run.
+
+Follow the steps in order. You only do steps 1–3 once.
 
 ---
 
@@ -15,9 +18,7 @@ Follow the steps in order. You only do steps 1–4 once.
 1. Go to <https://supabase.com> → sign in → **New project**.
 2. Name it (e.g. `elecbits-sales`), pick a strong database password, choose a
    region near you, and create it. Wait ~2 minutes for it to finish.
-3. Leave the **Email** provider enabled (the default). Everyone signs in with a
-   real email + password, so no anonymous sign-in is needed. You'll create the
-   actual login accounts in step 4.
+3. No auth settings to change — sign-in is handled by the app itself.
 
 ## 2. Create the database table
 
@@ -28,37 +29,21 @@ Follow the steps in order. You only do steps 1–4 once.
 
 ## 3. Collect your keys
 
-In Supabase: **Project Settings → API**. You need three values:
+In Supabase: **Project Settings → API**. You need two values:
 
 | Value | Where it goes |
 |---|---|
-| **Project URL** (e.g. `https://abcd.supabase.co`) | `VITE_SUPABASE_URL` **and** `SUPABASE_URL` |
+| **Project URL** (e.g. `https://abcd.supabase.co`) | `VITE_SUPABASE_URL` |
 | **anon public** key | `VITE_SUPABASE_ANON_KEY` |
-| **service_role** key (secret — click to reveal) | `SUPABASE_SERVICE_ROLE_KEY` |
 
-> ⚠️ The **service_role** key bypasses all security. Never put it in a `VITE_`
-> variable, never commit it, never paste it in the browser. It goes only in
-> `.env.local` (git-ignored) and in Vercel's server-side env vars.
+That's it — no service-role key needed (sign-in is handled in the app, not by
+Supabase Auth).
 
-## 4. Create the login accounts (seed script)
+## Logins (built in — nothing to create)
 
-The app fills in everyone's profile automatically on first login, but each
-person needs a Supabase Auth account to sign in. Create the 5 demo accounts:
-
-1. Copy `.env.example` to `.env.local` and fill in at least `SUPABASE_URL` and
-   `SUPABASE_SERVICE_ROLE_KEY` (from step 3).
-2. Run:
-
-   ```bash
-   npm install
-   npm run seed
-   ```
-
-   You should see `✓ create` lines for each user. Re-running is safe (it skips
-   existing accounts).
-
-The seeded demo logins (change these before real use — Admin → Edit user →
-Reset password):
+On first load the app seeds the workspace, including these ready-to-use accounts.
+Just open the site and sign in; change passwords anytime via **Admin → Edit user
+→ Reset password**, and add teammates via **Admin → Add user**.
 
 | Email | Password | Role |
 |---|---|---|
@@ -67,6 +52,10 @@ Reset password):
 | `ankit@elecbits.in` | `ankit123` | Sales Agent |
 | `akash@elecbits.in` | `akash123` | Sales Agent |
 | `finance@elecbits.in` | `finance123` | Finance |
+
+> Note: sign-in is a lightweight app-level gate (passwords are stored as salted
+> hashes in the `sales:users` table, which the anon key can read). Keep the
+> deployment URL private. For stronger security, switch to Supabase Auth later.
 
 ---
 

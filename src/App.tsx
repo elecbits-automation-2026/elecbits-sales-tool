@@ -126,58 +126,20 @@ const store = {
   },
 };
 
-/* ---------- auth ---------- */
+/* ---------- auth (table-based) ---------- */
 
-// Real Supabase email/password auth. Each employee has a Supabase Auth account
-// (created by scripts/seed-auth.mjs for the demo team, or by an admin via
-// /api/admin) whose email matches their profile's `email` in `sales:users`.
-// The Supabase client persists the session (see lib/supabase.ts), so a logged-in
-// user stays signed in across reloads until they sign out.
-async function signInWithPassword(email, password) {
-  try {
-    const { error } = await supabase.auth.signInWithPassword({
-      email: String(email || "").trim().toLowerCase(),
-      password,
-    });
-    return { ok: !error, error: error ? error.message : "" };
-  } catch (e) {
-    return { ok: false, error: (e && e.message) || "Sign in failed." };
-  }
-}
-
-async function signOut() {
-  try { await supabase.auth.signOut(); } catch (e) { /* ignore */ }
-}
-
-// Calls the server-side admin function (/api/admin) to create/update/delete the
-// Supabase Auth login for a user. Requires the caller's access token; the server
-// verifies the caller is an admin before doing anything. Throws with a readable
-// message on failure (including when the function isn't configured/deployed).
-async function callAdminApi(action, payload) {
-  const { data } = await supabase.auth.getSession();
-  const token = data && data.session ? data.session.access_token : "";
-  const res = await fetch("/api/admin", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-    body: JSON.stringify({ action, ...payload }),
-  });
-  let json = {} as any;
-  try { json = await res.json(); } catch (e) { /* non-JSON */ }
-  if (!res.ok) throw new Error((json && json.error) || "Login request failed (" + res.status + ").");
-  return json;
-}
-
-// The currently authenticated email (lowercased), or null. Used to resolve the
-// app profile and to gate the whole UI behind a real session.
-async function currentAuthEmail() {
-  try {
-    const { data } = await supabase.auth.getSession();
-    return data && data.session && data.session.user
-      ? String(data.session.user.email || "").toLowerCase()
-      : null;
-  } catch (e) {
-    return null;
-  }
+// Logins live entirely in the `sales:users` collection (one table row) — no
+// Supabase Auth accounts, no dashboard setup. Each user has an `email` and a
+// `pwHash` (salted SHA-256 of their password). Sign-in checks the typed password
+// against that hash; the session is just a per-browser pointer to the user id.
+// The password is never stored in plain text; the salt keeps it off rainbow
+// tables. (This is a lightweight internal gate, not bank-grade auth — the
+// collections table is readable with the anon key.)
+const PW_SALT = "ebsalt:";
+async function hashPw(password) {
+  const bytes = new TextEncoder().encode(PW_SALT + String(password || ""));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /* ---------- Claude ---------- */
@@ -438,12 +400,14 @@ function fixNowItems(user, data) {
 /* ---------- seed data ---------- */
 
 function seedData() {
+  // pwHash = SHA-256("ebsalt:" + password). Demo passwords: <name>123 (admin123,
+  // saurav123, …). Change them in-app via Admin → Edit user → Reset password.
   const users = [
-    { id: "u_admin", name: "Admin", email: "admin@elecbits.in", role: "admin", dept: "Management", active: true },
-    { id: "u_saurav", name: "Saurav", email: "saurav@elecbits.in", role: "dept_head", dept: "Sales", active: true },
-    { id: "u_ankit", name: "Ankit", email: "ankit@elecbits.in", role: "agent", dept: "Sales", active: true },
-    { id: "u_akash", name: "Akash", email: "akash@elecbits.in", role: "agent", dept: "Sales", active: true },
-    { id: "u_fin", name: "Finance", email: "finance@elecbits.in", role: "finance", dept: "Finance", active: true },
+    { id: "u_admin", name: "Admin", email: "admin@elecbits.in", role: "admin", dept: "Management", active: true, pwHash: "0699ec0c714b53c6f526ced93e0b6b86530cbe12637af7ea03d825c40d43787b" },
+    { id: "u_saurav", name: "Saurav", email: "saurav@elecbits.in", role: "dept_head", dept: "Sales", active: true, pwHash: "ea3cbddd4f8a4554192ffb8a45e16524e24c468e4ded3d7c2d5ae66b8d62ae0e" },
+    { id: "u_ankit", name: "Ankit", email: "ankit@elecbits.in", role: "agent", dept: "Sales", active: true, pwHash: "45702f347f6f56f588ef7521668634cd146295fcede531a82442595d910dd169" },
+    { id: "u_akash", name: "Akash", email: "akash@elecbits.in", role: "agent", dept: "Sales", active: true, pwHash: "9b7f00c333f7955ba02d266ad2a2452871dce0a5f2cee4993e6e8892e0f75789" },
+    { id: "u_fin", name: "Finance", email: "finance@elecbits.in", role: "finance", dept: "Finance", active: true, pwHash: "b69d1b4f640477d89a44fa23b8ebd71c7fbf0df7477057bf711cae05a1fa6ecc" },
   ];
   const companies = [
     {
@@ -523,6 +487,24 @@ function seedData() {
     { id: "m2", title: "Commercial default", text: "Standard terms: 50% advance with PO, 50% before dispatch. Design phase billed separately from production. Quotes valid 30 days.", updatedAt: tsDaysAgo(5), by: "u_admin" },
   ];
   return { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates: {}, scrums: [], memory };
+}
+
+// Backfill sign-in credentials (email + pwHash) for the built-in demo users on
+// workspaces created before those fields existed. Matches by id, only fills what
+// is missing, and adds any missing demo user — real/custom users are untouched.
+function ensureCredentials(existing) {
+  const seedUsers = seedData().users;
+  const byId = new Map((existing || []).map((u) => [u.id, u]));
+  let changed = false;
+  seedUsers.forEach((su) => {
+    const cur = byId.get(su.id);
+    if (!cur) { byId.set(su.id, su); changed = true; }
+    else if (!cur.pwHash || !cur.email) {
+      byId.set(su.id, { ...cur, email: cur.email || su.email, pwHash: cur.pwHash || su.pwHash });
+      changed = true;
+    }
+  });
+  return { merged: Array.from(byId.values()), changed };
 }
 
 /* ---------- tiny UI atoms ---------- */
@@ -656,33 +638,17 @@ export default function App() {
   }, [theme]);
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
-  // Auth state: authReady flips true once we know whether a session exists;
-  // authEmail is the signed-in user's email (lowercased) or null.
-  const [authReady, setAuthReady] = useState(false);
-  const [authEmail, setAuthEmail] = useState(null);
+  // Session is a per-browser pointer to the signed-in user id (localStorage).
+  const [sessionId, setSessionId] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem("sales:session") || "null"); return s && s.userId ? s.userId : null; } catch (e) { return null; }
+  });
 
   const [focusCompanyId, setFocusCompanyId] = useState(null);
 
-  // Track the current Supabase session and react to sign-in / sign-out.
+  // Load (and, on an empty workspace, seed) the shared data on mount. Reads use
+  // the anon key directly — the collections table is anon-accessible (see
+  // schema.sql), so no auth session is needed to reach the data.
   useEffect(() => {
-    let alive = true;
-    currentAuthEmail().then((email) => {
-      if (!alive) return;
-      setAuthEmail(email);
-      setAuthReady(true);
-    });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!alive) return;
-      setAuthEmail(session && session.user ? String(session.user.email || "").toLowerCase() : null);
-      setAuthReady(true);
-    });
-    return () => { alive = false; sub && sub.subscription && sub.subscription.unsubscribe(); };
-  }, []);
-
-  // Load (and, on an empty workspace, seed) the shared data once authenticated.
-  useEffect(() => {
-    if (!authReady) return;
-    if (!authEmail) { setLoading(false); return; }
     let alive = true;
     (async () => {
       setLoading(true);
@@ -715,7 +681,12 @@ export default function App() {
             store.get("sales:scrums"), store.get("sales:memory"),
           ]);
           if (!alive) return;
-          setUsers(u || []);
+          // Migration: older workspaces seeded users without email/pwHash (or
+          // pre-date these fields). Backfill the demo users' sign-in credentials
+          // by id so the known logins always work, without touching real data.
+          const { merged, changed } = ensureCredentials(u || []);
+          setUsers(merged);
+          if (changed) store.set("sales:users", merged);
           setCompanies(c || []); setDeals(d || []); setKpis(k || {});
           setTrainings(t || []); setWorklogs(w || []); setKnowledge(kn || []);
           setExpenses(e || []); setGates(g || {});
@@ -725,7 +696,7 @@ export default function App() {
       if (alive) setLoading(false);
     })();
     return () => { alive = false; };
-  }, [authReady, authEmail]);
+  }, []);
 
   const persist = (key, val) => { store.set(key, val).then((ok) => { if (!ok) setSaveErr(true); }); };
   const saveUsers = (v) => { setUsers(v); persist("sales:users", v); };
@@ -740,12 +711,13 @@ export default function App() {
   const saveScrums = (v) => { setScrums(v); persist("sales:scrums", v); };
   const saveMemory = (v) => { setMemory(v); persist("sales:memory", v); };
 
-  const me = authEmail ? (users.find((u) => String(u.email || "").toLowerCase() === authEmail) || null) : null;
+  const me = users.find((u) => u.id === sessionId && u.active !== false) || null;
   const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
-  const logout = () => { signOut(); };
+  const login = (userId) => { setSessionId(userId); try { localStorage.setItem("sales:session", JSON.stringify({ userId })); } catch (e) { /* ignore */ } };
+  const logout = () => { setSessionId(null); try { localStorage.removeItem("sales:session"); } catch (e) { /* ignore */ } };
 
   const resetDemo = async () => {
     const seed = seedData();
@@ -754,14 +726,8 @@ export default function App() {
     saveScrums(seed.scrums); saveMemory(seed.memory);
   };
 
-  // Not signed in yet → the login screen. (authReady guards a flash of login
-  // before we know whether a persisted session exists.)
-  if (!authReady) return <Splash />;
-  if (!authEmail) return <Login />;
   if (loading) return <Splash />;
-
-  // Signed in, but this email has no active profile in the workspace.
-  if (!me || me.active === false) return <NoProfile email={authEmail} onLogout={logout} />;
+  if (!me) return <Login users={users} onLogin={login} />;
 
   const goFix = (item) => { setTab(item.tab); if (item.type === "company") setFocusCompanyId(item.id); };
 
@@ -823,26 +789,7 @@ function Splash() {
   );
 }
 
-/* Authenticated, but no matching (active) profile in the workspace. */
-function NoProfile({ email, onLogout }) {
-  return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
-      <div className="w-full max-w-md fade text-center">
-        <div className="flex items-center gap-2.5 justify-center mb-4"><Logo size={34} /><span className="text-slate-900 font-bold tracking-tight text-2xl">Elecbits</span></div>
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
-          <AlertTriangle size={26} className="text-amber-500 mx-auto mb-3" />
-          <p className="font-semibold text-slate-900">No workspace access</p>
-          <p className="text-sm text-slate-500 mt-1.5">
-            You're signed in as <span className="font-mono text-slate-700">{email}</span>, but this account isn't set up as an active user in the Sales OS. Ask an admin to add you.
-          </p>
-          <div className="mt-5"><Btn kind="ghost" onClick={onLogout}><LogOut size={14} /> Sign out</Btn></div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Login() {
+function Login({ users, onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -853,10 +800,16 @@ function Login() {
     if (e) e.preventDefault();
     if (busy || !email.trim() || !password) return;
     setBusy(true); setErr("");
-    const { ok, error } = await signInWithPassword(email, password);
-    // On success, onAuthStateChange drives the app into the workspace; on
-    // failure we surface the reason and let them retry.
-    if (!ok) { setErr(error || "Sign in failed. Check your email and password."); setBusy(false); }
+    const em = email.trim().toLowerCase();
+    const u = (users || []).find((x) => String(x.email || "").toLowerCase() === em);
+    if (!u || u.active === false) { setErr("No active account for that email."); setBusy(false); return; }
+    const h = await hashPw(password);
+    if (u.pwHash && h === u.pwHash) {
+      onLogin(u.id);
+    } else {
+      setErr("Invalid email or password.");
+      setBusy(false);
+    }
   };
 
   return (
@@ -2748,23 +2701,14 @@ function UserModal({ user, me, onClose, onSave }) {
     if (!f.name.trim()) { setErr("Name is required."); return; }
     if (!email) { setErr("Email is required — it's how they sign in."); return; }
     if (isNew && password.length < 6) { setErr("Set a password of at least 6 characters for the new login."); return; }
+    if (resetPw && resetPw.length < 6) { setErr("New password must be at least 6 characters."); return; }
     setBusy(true);
-    try {
-      if (isNew) {
-        // Create the Supabase Auth login first; only save the profile if it works,
-        // so we never have a profile that can't sign in.
-        await callAdminApi("create", { email, password });
-      } else if (resetPw) {
-        if (resetPw.length < 6) { setErr("New password must be at least 6 characters."); setBusy(false); return; }
-        await callAdminApi("setPassword", { email, password: resetPw });
-      }
-      onSave({ ...f, email });
-    } catch (e) {
-      // The profile still saves so the workspace isn't blocked, but flag that the
-      // login itself wasn't created/updated (e.g. /api/admin not deployed).
-      setWarn((e && e.message ? e.message : "Login update failed.") + " Profile saved; create the login separately (see scripts/seed-auth.mjs).");
-      onSave({ ...f, email });
-    }
+    // The login lives entirely in the users table: store a salted hash of the
+    // password (on create, or when resetting it), never the plain text.
+    const next = { ...f, email };
+    if (isNew) next.pwHash = await hashPw(password);
+    else if (resetPw) next.pwHash = await hashPw(resetPw);
+    onSave(next);
     setBusy(false);
   };
 
@@ -2778,8 +2722,8 @@ function UserModal({ user, me, onClose, onSave }) {
       </>}>
       <div className="space-y-3">
         <Field label="Name" req><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-        <Field label="Email" req hint={isNew ? "used to sign in" : "sign-in email"}>
-          <Input type="email" value={f.email || ""} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="name@elecbits.in" disabled={!isNew} />
+        <Field label="Email" req hint="used to sign in">
+          <Input type="email" value={f.email || ""} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="name@elecbits.in" />
         </Field>
         {isNew && (
           <Field label="Password" req hint="min 6 characters">

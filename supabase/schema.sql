@@ -15,16 +15,19 @@ create table if not exists public.collections (
 -- Table-level privileges. RLS policies (below) decide which *rows* a role can
 -- touch, but the role must also be GRANTed access to the table itself.
 --
--- The app uses real per-user auth: everyone signs in with their own Supabase
--- Auth email + password, so the browser talks to Supabase as the `authenticated`
--- role. We therefore restrict grants + policies to `authenticated` — the anon
--- key alone (without a valid login) can no longer read or write the workspace.
-grant usage on schema public to authenticated, service_role;
-grant select, insert, update, delete on public.collections to authenticated, service_role;
+-- Login is handled inside the app against the sales:users table (email +
+-- password hash) — there is no Supabase Auth session — so the browser talks to
+-- Supabase with the public `anon` role. We therefore grant + allow `anon` (and
+-- `authenticated`, harmless). This makes the whole collections table
+-- readable/writable by anyone with the anon key and the site URL — acceptable
+-- for an internal tool. Keep the deployment URL private; the app's own login
+-- gates the UI, and passwords are stored only as salted hashes.
+grant usage on schema public to anon, authenticated, service_role;
+grant select, insert, update, delete on public.collections to anon, authenticated, service_role;
 
 alter table public.collections enable row level security;
 
--- Drop older policy names (from earlier revisions) so re-running is idempotent.
+-- Drop every policy name we've used across revisions so re-running is idempotent.
 drop policy if exists "authenticated read"   on public.collections;
 drop policy if exists "authenticated insert" on public.collections;
 drop policy if exists "authenticated update" on public.collections;
@@ -34,18 +37,18 @@ drop policy if exists "public insert" on public.collections;
 drop policy if exists "public update" on public.collections;
 drop policy if exists "public delete" on public.collections;
 
-create policy "authenticated read"
+create policy "public read"
   on public.collections for select
-  to authenticated using (true);
+  to anon, authenticated using (true);
 
-create policy "authenticated insert"
+create policy "public insert"
   on public.collections for insert
-  to authenticated with check (true);
+  to anon, authenticated with check (true);
 
-create policy "authenticated update"
+create policy "public update"
   on public.collections for update
-  to authenticated using (true) with check (true);
+  to anon, authenticated using (true) with check (true);
 
-create policy "authenticated delete"
+create policy "public delete"
   on public.collections for delete
-  to authenticated using (true);
+  to anon, authenticated using (true);
