@@ -3,10 +3,14 @@ import {
   Building2, Columns, TrendingUp, BookOpen, Receipt, Settings, Plus, X, Search,
   Mic, MicOff, Send, Check, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
-  ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText, Zap,
+  ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
   Bot, Database, CalendarCheck2, Sun, Moon
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
+import logoLight from "./assets/elecbits-logo.png";
+import logoDark from "./assets/elecbits-logo-dark.png";
+import markLight from "./assets/elecbits-mark.png";
+import markDark from "./assets/elecbits-mark-dark.png";
 
 /* ============================================================
    ELECBITS SALES OS
@@ -15,15 +19,24 @@ import { supabase } from "./lib/supabase";
    LED status language kept — red = alarm = fix now.
    ============================================================ */
 
-/* Brand mark — the blue lightning bolt from the Elecbits ODM PMS design. */
-function Logo({ size = 28 }) {
+/* Official Elecbits wordmark. The artwork already contains the word
+   "Elecbits", so never pair it with a separate text label.
+   Each form ships in two files because the icon half is pure black: the light
+   file would disappear on dark surfaces, so CSS (index.css) swaps in the
+   white-icon file under [data-theme="dark"].
+   variant="full" is the 5.4:1 lockup; variant="mark" is the circuit glyph
+   alone, for tight spots (the mobile rail) where the wordmark would be too
+   small to read. Sized by height — width follows the artwork's ratio. */
+function Logo({ height = 28, variant = "full", className = "" }) {
+  const isMark = variant === "mark";
+  const style = { height, width: "auto" };
   return (
-    <span
-      className="inline-flex items-center justify-center rounded-lg bg-blue-600 text-white flex-none"
-      style={{ width: size, height: size }}
-    >
-      <Zap size={Math.round(size * 0.58)} fill="currentColor" strokeWidth={0} />
-    </span>
+    <>
+      <img src={isMark ? markLight : logoLight} alt="Elecbits" style={style}
+        className={cls("eb-logo-light flex-none", className)} />
+      <img src={isMark ? markDark : logoDark} alt="" aria-hidden="true" style={style}
+        className={cls("eb-logo-dark flex-none", className)} />
+    </>
   );
 }
 
@@ -783,7 +796,8 @@ export default function App() {
 /* Full-screen loading state, shown while auth/data resolve. */
 function Splash() {
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-5">
+      <Logo height={34} />
       <div className="flex items-center gap-3 text-slate-500 font-mono text-sm"><Loader2 className="animate-spin text-blue-600" size={18} /> loading sales os…</div>
     </div>
   );
@@ -815,9 +829,8 @@ function Login({ users, onLogin }) {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm fade">
-        <div className="flex items-center gap-2.5 justify-center mb-1.5">
-          <Logo size={34} />
-          <span className="text-slate-900 font-bold tracking-tight text-2xl">Elecbits</span>
+        <div className="flex items-center justify-center mb-3">
+          <Logo height={40} />
         </div>
         <p className="text-center font-mono text-xs text-slate-500 mb-8">sales os · lead → po, nothing missed</p>
         <form onSubmit={submit} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
@@ -893,13 +906,8 @@ function Sidebar({ me, tab, setTab, onLogout }) {
       {/* desktop rail */}
       <aside className="hidden md:flex w-56 flex-none bg-white border-r border-slate-200 text-slate-500 flex-col">
         <div className="px-4 py-5">
-          <div className="flex items-center gap-2.5">
-            <Logo size={30} />
-            <div className="min-w-0">
-              <span className="block text-slate-900 font-bold tracking-tight leading-none">Elecbits</span>
-              <span className="block font-mono text-[10px] text-slate-400 mt-1">sales os v1</span>
-            </div>
-          </div>
+          <Logo height={26} />
+          <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Sales OS</p>
         </div>
         <nav className="flex-1 px-2 pb-3 space-y-4 overflow-y-auto">
           {groups.map((g) => (
@@ -930,8 +938,9 @@ function Sidebar({ me, tab, setTab, onLogout }) {
       </aside>
       {/* mobile rail */}
       <div className="md:hidden bg-white border-b border-slate-200 px-3 py-2 flex items-center gap-1 overflow-x-auto">
-        <span className="flex items-center gap-1.5 pr-2 mr-1 border-r border-slate-200 flex-none">
-          <Logo size={22} />
+        {/* Glyph only — the full lockup's wordmark is unreadable at rail height */}
+        <span className="flex items-center pr-2.5 mr-1 border-r border-slate-200 flex-none">
+          <Logo variant="mark" height={22} />
         </span>
         {flat.map((it) => (
           <button key={it.key} onClick={() => setTab(it.key)}

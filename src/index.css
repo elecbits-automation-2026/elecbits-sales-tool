@@ -44,6 +44,14 @@ body {
   background: #94a3b8; /* slate-400 */
 }
 
+/* Brand wordmark: the artwork's icon half is pure black, so a second file with
+   a white icon is swapped in under the dark theme. Both <img>s are rendered;
+   exactly one is ever displayed. */
+.eb-logo-light { display: block; }
+.eb-logo-dark { display: none; }
+:root[data-theme="dark"] .eb-logo-light { display: none; }
+:root[data-theme="dark"] .eb-logo-dark { display: block; }
+
 /* Entrance animation used by cards/panels via the `.fade` utility. */
 @keyframes eb-fade-up {
   from {

@@ -1,6 +1,13 @@
+<!-- GitHub renders READMEs on light and dark backgrounds; the logo's icon half
+     is pure black, so a dark-theme reader gets the white-icon variant. -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/assets/elecbits-logo-dark.png" />
+  <img src="src/assets/elecbits-logo.png" alt="Elecbits" width="360" />
+</picture>
+
 # Elecbits — Sales OS
 
-Internal sales tool for Elecbits (electronics ODM/EMS). A test-bench-styled
+Internal sales tool for Elecbits (electronics ODM/EMS). A clean, light-first
 CRM + pipeline that enforces two rules: **no information is missed** and
 **knowledge is power**. React + Vite + TypeScript + Tailwind, backed by Supabase,
 with a serverless AI proxy.
