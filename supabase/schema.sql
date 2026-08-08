@@ -28,6 +28,7 @@ alter table public.collections enable row level security;
 drop policy if exists "authenticated read"   on public.collections;
 drop policy if exists "authenticated insert" on public.collections;
 drop policy if exists "authenticated update" on public.collections;
+drop policy if exists "authenticated delete" on public.collections;
 drop policy if exists "public read"   on public.collections;
 drop policy if exists "public insert" on public.collections;
 drop policy if exists "public update" on public.collections;
