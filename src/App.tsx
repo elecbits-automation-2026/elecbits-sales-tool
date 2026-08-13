@@ -688,7 +688,7 @@ export default function App() {
           {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "lld" && <LLDView me={me} data={data} saveLlds={saveLlds} />}
-          {tab === "resources" && <ResourcesView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "resources" && <ResourcesView me={me} data={data} saveUsers={saveUsers} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
           {tab === "knowledge" && <KnowledgeView me={me} data={data} saveKnowledge={saveKnowledge} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
@@ -2393,6 +2393,9 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
         summary: parsed.summary || "", createdAt: nowTS(),
       };
+      // Scrum IS the task source: every organised line lands in My Tasks
+      // immediately — no extra click, no line left behind.
+      note.tasked = scrumToTasks(note) > 0;
       saveScrums([note, ...scrums]);
       setRaw("");
     } catch (e) { setErr("Could not organise this — saved nothing. Check connection and try again."); }
@@ -2471,7 +2474,9 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
                       </div>
                     ))}
                     <div className="flex items-center gap-3 mt-1">
-                      <Btn size="sm" onClick={() => { const n = scrumToTasks(s); if (n) alert(n + " task(s) sent to My Tasks."); }}><ListTodo size={12} /> Send to My Tasks</Btn>
+                      {s.tasked
+                        ? <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> in My Tasks</span>
+                        : <Btn size="sm" onClick={() => { const n = scrumToTasks(s); if (n) saveScrums(scrums.map((x) => x.id === s.id ? { ...x, tasked: true } : x)); }}><ListTodo size={12} /> Send to My Tasks</Btn>}
                       <details>
                         <summary className="text-xs text-slate-400 cursor-pointer hover:text-slate-600">Original note</summary>
                         <p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{s.raw}</p>
@@ -2984,81 +2989,265 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
 }
 
 /* ============================================================
-   RESOURCES — team view like the ODM PMS, driven by sales data
+   RESOURCES — carried from the ODM PMS Resources module, driven
+   by this tool's data: Team View · Resource Planning · Efficiency
    ============================================================ */
 
-function ResourcesView({ me, data, openCompany }) {
-  const { users, companies, deals, tasks, trainings } = data;
+function ResourcesView({ me, data, saveUsers, openCompany }) {
+  const { users, companies, deals, tasks, trainings, worklogs, expenses, kpis } = data;
+  const isAdmin = me.role === "admin" || me.role === "dept_head";
+  const [tab, setTab] = useState("team");
   const [q, setQ] = useState("");
+  const [roleF, setRoleF] = useState("all");
+  const [deptF, setDeptF] = useState("all");
+  const [avFrom, setAvFrom] = useState(todayStr());
+  const [avTo, setAvTo] = useState(() => localISO(new Date(Date.now() + 14 * 86400000)));
   const [person, setPerson] = useState(null);
+  const [resModal, setResModal] = useState(null); // null | "new" | user
+  const CAP = 8; // open deals one person can genuinely work
+
+  const roles = [...new Set(users.map((u) => u.role))];
+  const depts = [...new Set(users.map((u) => u.dept).filter(Boolean))];
   const needle = q.trim().toLowerCase();
-  const members = users.filter((u) => !needle || [u.name, u.email, u.dept, roleLabel(u.role)].some((v) => String(v || "").toLowerCase().includes(needle)));
+  const matchesQ = (u) => !needle || [u.name, u.email, u.dept, roleLabel(u.role)].some((v) => String(v || "").toLowerCase().includes(needle));
+  const filtered = users.filter((u) => (roleF === "all" || u.role === roleF) && (deptF === "all" || u.dept === deptF) && matchesQ(u));
 
-  const openDealsOf = (uid_) => deals.filter((d) => d.ownerId === uid_ && !d.lost && d.stage !== "po");
-  const openTasksOf = (uid_) => tasks.filter((t) => t.assignee === uid_ && t.status === "open");
-  const CAP = 8; // open deals an agent can genuinely work
-
+  const openDealsOf = (id) => deals.filter((d) => d.ownerId === id && !d.lost && d.stage !== "po");
+  const openTasksOf = (id) => tasks.filter((t) => t.assignee === id && t.status === "open");
+  const travelIn = (id, from, to) => (expenses || []).filter((e) => e.userId === id && e.status !== "rejected" && e.from && e.to && e.from <= to && e.to >= from);
+  const tasksIn = (id, from, to) => tasks.filter((t) => t.assignee === id && t.status === "open" && t.due && t.due >= from && t.due <= to);
   const statusOf = (u) => {
     if (u.active === false) return ["Inactive", "slate"];
     const n = openDealsOf(u.id).length;
-    return n >= CAP ? ["At capacity", "red"] : n > 0 ? ["Deployed", "amber"] : ["Available", "green"];
+    return n >= CAP ? ["At Capacity", "red"] : n > 0 ? ["Deployed", "amber"] : ["Available", "green"];
   };
 
-  return (
-    <div className="max-w-6xl mx-auto">
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <h1 className="text-lg font-semibold mr-auto">Resources</h1>
-        <div className="relative"><Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" /><Input className="pl-8 w-56" placeholder="Search people…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
-      </div>
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead><tr className="text-left text-xs text-slate-400 border-b border-slate-100">
-              {["Person", "Role", "Dept", "Status", "Open deals", "Pipeline value", "Open tasks", "Health"].map((h) => <th key={h} className="py-2.5 px-4 font-medium whitespace-nowrap">{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {members.map((u) => {
-                const od = openDealsOf(u.id);
-                const val = od.reduce((s, d) => s + Number(d.value || 0), 0);
-                const [st, sc] = statusOf(u);
-                const h = healthOf(u, data);
-                return (
-                  <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/60 cursor-pointer" onClick={() => setPerson(u)}>
-                    <td className="py-2.5 px-4">
-                      <span className="flex items-center gap-2.5">
-                        <Avatar name={u.name} size="sm" />
-                        <span className="min-w-0">
-                          <span className="block font-medium text-slate-800">{u.name}{u.id === me.id && <span className="text-xs text-slate-400 font-normal"> (you)</span>}</span>
-                          {!u.authId && <span className="block text-[11px] text-amber-600">awaiting sign-up{u.email ? " · " + u.email : ""}</span>}
-                        </span>
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-4 whitespace-nowrap">{roleLabel(u.role)}</td>
-                    <td className="py-2.5 px-4">{u.dept}</td>
-                    <td className="py-2.5 px-4"><Chip color={sc}>{st}</Chip></td>
-                    <td className="py-2.5 px-4 font-mono tabular-nums">{od.length}<span className="text-slate-300"> / {CAP}</span></td>
-                    <td className="py-2.5 px-4 font-mono tabular-nums">{fmtINRc(val)}</td>
-                    <td className="py-2.5 px-4 font-mono tabular-nums">{openTasksOf(u.id).length}</td>
-                    <td className="py-2.5 px-4">{h == null ? <span className="text-slate-300">—</span> : <span className={cls("font-mono tabular-nums", h < 60 ? "text-red-600" : h < 80 ? "text-amber-600" : "text-green-600")}>{h}%</span>}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <p className="text-xs text-slate-400 mt-3">Deployment = open deals owned (capacity {CAP}). Health = KPI pace + training + work-update discipline, as in Performance. People are added in Admin → Users.</p>
+  const upsertUser = (u) => {
+    const exists = users.some((x) => x.id === u.id);
+    saveUsers(exists ? users.map((x) => (x.id === u.id ? u : x)) : [...users, u]);
+    setResModal(null);
+  };
 
+  /* Nobody is emailed automatically, so the admin has to tell them. Hand over
+     the exact words — with the exact address — rather than leaving them to
+     retype it and mistype it. (Same pattern as the ODM PMS.) */
+  const InviteBtn = ({ u }) => {
+    const [done, setDone] = useState(false);
+    if (u.authId || !u.email) return null;
+    const text =
+      "You're set up on the Elecbits Sales OS as " + roleLabel(u.role) + ".\n\n" +
+      "1. Open " + (typeof window !== "undefined" ? window.location.origin : "") + "\n" +
+      "2. Sign in with exactly this email: " + u.email + "\n" +
+      "3. Pick any password — the account is created the first time you press Sign in.\n\n" +
+      "Use that email exactly, or the app won't know it's you.";
+    return (
+      <button title="Copy the joining instructions for this person"
+        onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 2000); }).catch(() => {}); }}
+        className={cls("inline-flex items-center gap-1 border border-slate-300 rounded-md px-2 py-1 text-xs font-medium", done ? "text-green-600" : "text-blue-600 hover:bg-slate-50")}>
+        {done ? <CheckCircle2 size={12} /> : <Send size={12} />} {done ? "Copied" : "Invite"}
+      </button>
+    );
+  };
+
+  const NameCell = ({ u }) => (
+    <button onClick={() => setPerson(u)} className="flex items-center gap-2.5 text-left">
+      <Avatar name={u.name} size="sm" />
+      <span className="min-w-0">
+        <span className="block font-medium text-slate-800 text-sm">{u.name}{u.id === me.id && <span className="text-xs text-slate-400 font-normal"> (you)</span>}</span>
+        {!u.authId && <span className="block text-[11px] text-amber-600">{u.email ? "awaiting sign-up · " + u.email : "awaiting sign-up — no email on file"}</span>}
+      </span>
+    </button>
+  );
+
+  const DealsCell = ({ id }) => {
+    const list = openDealsOf(id);
+    if (!list.length) return <span className="text-slate-300 text-sm">None</span>;
+    return (
+      <div className="space-y-1">
+        {list.slice(0, 4).map((d) => {
+          const comp = companies.find((x) => x.id === d.companyId);
+          return (
+            <div key={d.id} className="text-sm">
+              <button onClick={() => comp && openCompany(comp.id)} className="font-medium text-slate-800 hover:text-blue-700">{comp ? comp.name : d.did}</button>
+              <span className="font-mono text-[11px] text-slate-400 ml-2">{stageName(d.stage)} · {fmtINRc(d.value)}</span>
+            </div>
+          );
+        })}
+        {list.length > 4 && <p className="text-xs text-slate-400">+{list.length - 4} more</p>}
+      </div>
+    );
+  };
+
+  const TABS = [["team", "Team View", Users], ["planning", "Resource Planning", CalendarCheck2], ["efficiency", "Efficiency", TrendingUp]];
+  const th = "text-left py-2.5 px-4 text-[10.5px] font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap";
+  const td = "py-3 px-4 align-middle";
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-4">
+      {/* toolbar: tabs · search · count · add */}
+      <div className="bg-white border border-slate-200 rounded-xl px-4 flex items-center gap-1 flex-wrap">
+        {TABS.map(([k, l, Ic]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={cls("flex items-center gap-1.5 px-3.5 py-3 text-sm border-b-2 -mb-px", tab === k ? "border-blue-600 text-blue-700 font-semibold" : "border-transparent text-slate-500 font-medium hover:text-slate-700")}>
+            <Ic size={15} /> {l}
+          </button>
+        ))}
+        <div className="ml-auto relative flex items-center">
+          <Search size={14} className="absolute left-2.5 text-slate-400 pointer-events-none" />
+          <Input className="pl-8 w-52 my-2" placeholder="Search people…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <span className="text-xs text-slate-500 pl-2"><b className="text-slate-800">{filtered.length}</b> resource{filtered.length !== 1 ? "s" : ""}</span>
+        {isAdmin && <Btn size="sm" kind="primary" className="ml-2 my-2" onClick={() => setResModal("new")}><Plus size={13} /> Add Resource</Btn>}
+      </div>
+
+      {/* filters */}
+      {(tab === "team" || tab === "planning") && (
+        <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-end gap-3 flex-wrap">
+          <Field label="Role"><Sel className="w-44" value={roleF} onChange={(e) => setRoleF(e.target.value)}><option value="all">All roles</option>{roles.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}</Sel></Field>
+          <Field label="Department"><Sel className="w-44" value={deptF} onChange={(e) => setDeptF(e.target.value)}><option value="all">All departments</option>{depts.map((d) => <option key={d} value={d}>{d}</option>)}</Sel></Field>
+          {tab === "planning" && (<>
+            <Field label="Available from"><Input type="date" className="w-40" value={avFrom} onChange={(e) => setAvFrom(e.target.value)} /></Field>
+            <Field label="Available to"><Input type="date" className="w-40" value={avTo} onChange={(e) => setAvTo(e.target.value)} /></Field>
+          </>)}
+        </div>
+      )}
+
+      {/* ── TEAM VIEW ─────────────────────────────────────────── */}
+      {tab === "team" && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead><tr className="border-b border-slate-100 bg-slate-50/60">
+                <th className={th}>Name</th><th className={th}>Role</th><th className={th}>Dept</th>
+                <th className={th}>Working on — open deals</th><th className={cls(th, "text-center")}>Open tasks</th>
+                <th className={cls(th, "text-center")}>Cap</th><th className={th}>Status</th>
+                {isAdmin && <th className={th}>Actions</th>}
+              </tr></thead>
+              <tbody>
+                {filtered.map((u) => {
+                  const n = openDealsOf(u.id).length; const ot = openTasksOf(u.id).length;
+                  const [sl, sc] = statusOf(u);
+                  return (
+                    <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <td className={td}><NameCell u={u} /></td>
+                      <td className={td}><Chip color="blue">{roleLabel(u.role)}</Chip></td>
+                      <td className={cls(td, "text-sm text-slate-600")}>{u.dept}</td>
+                      <td className={td}><DealsCell id={u.id} /></td>
+                      <td className={cls(td, "text-center font-mono text-sm tabular-nums", ot ? "text-blue-600 font-semibold" : "text-slate-300")}>{ot}</td>
+                      <td className={cls(td, "text-center font-mono text-sm font-bold tabular-nums", n >= CAP ? "text-red-600" : "text-green-600")}>{n}/{CAP}</td>
+                      <td className={td}><Chip color={sc}>{sl}</Chip></td>
+                      {isAdmin && <td className={cls(td, "whitespace-nowrap")}><InviteBtn u={u} /> <button title="Edit resource" onClick={(e) => { e.stopPropagation(); setResModal(u); }} className="inline-flex border border-slate-300 rounded-md p-1.5 text-blue-600 hover:bg-slate-50 align-middle"><Pencil size={13} /></button></td>}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── RESOURCE PLANNING ─────────────────────────────────── */}
+      {tab === "planning" && (
+        <div className="space-y-3">
+          <div className="bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-600">
+            Showing availability in the period <b className="text-blue-700">{fmtDate(avFrom)}</b> → <b className="text-blue-700">{fmtDate(avTo)}</b> — travel bookings, tasks due, and deal load all count.
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead><tr className="border-b border-slate-100 bg-slate-50/60">
+                  <th className={th}>Resource</th><th className={th}>Role</th><th className={th}>Availability in period</th>
+                  <th className={th}>Travel in period</th><th className={cls(th, "text-center")}>Tasks due</th><th className={th}>Status</th>
+                </tr></thead>
+                <tbody>
+                  {filtered.map((u) => {
+                    const trips = travelIn(u.id, avFrom, avTo);
+                    const due = tasksIn(u.id, avFrom, avTo).length;
+                    const nDeals = openDealsOf(u.id).length;
+                    const busy = nDeals >= CAP; const partly = trips.length > 0 || due > 0 || nDeals > 0;
+                    const label = busy ? "At capacity in this period" : trips.length ? "Travelling — check the dates" : partly ? "Partially available — check load" : "Fully free " + fmtDate(avFrom) + " → " + fmtDate(avTo);
+                    return (
+                      <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/60">
+                        <td className={td}><NameCell u={u} /></td>
+                        <td className={td}><Chip color="blue">{roleLabel(u.role)}</Chip></td>
+                        <td className={cls(td, "text-sm font-semibold", busy ? "text-red-600" : partly ? "text-amber-600" : "text-green-600")}>{label}</td>
+                        <td className={td}>
+                          {trips.length === 0 ? <span className="text-slate-300 text-sm">None</span> : trips.map((t) => {
+                            const comp = companies.find((c) => c.id === t.companyId);
+                            return <div key={t.id} className="text-sm"><span className="font-medium text-slate-800">{t.city || t.purpose}</span><span className="font-mono text-[11px] text-slate-400 ml-2">{fmtDate(t.from)} – {fmtDate(t.to)}{comp ? " · " + comp.name : ""}</span></div>;
+                          })}
+                        </td>
+                        <td className={cls(td, "text-center font-mono text-sm tabular-nums", due ? "text-blue-600 font-semibold" : "text-slate-300")}>{due}</td>
+                        <td className={td}><Chip color={busy ? "red" : partly ? "amber" : "green"}>{busy ? "At Capacity" : partly ? "Partially Deployed" : "Available"}</Chip></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── EFFICIENCY ────────────────────────────────────────── */}
+      {tab === "efficiency" && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead><tr className="border-b border-slate-100 bg-slate-50/60">
+                <th className={th}>Name</th><th className={th}>Role</th>
+                <th className={cls(th, "text-center")}>Open deals</th><th className={cls(th, "text-center")}>Won (PO)</th>
+                <th className={cls(th, "text-center")}>Tasks</th><th className={cls(th, "text-center")}>Done</th><th className={cls(th, "text-center")}>Overdue</th>
+                <th className={cls(th, "w-40")}>Completion</th><th className={cls(th, "text-center")}>Health</th>
+              </tr></thead>
+              <tbody>
+                {filtered.map((u) => {
+                  const mine = tasks.filter((t) => t.assignee === u.id);
+                  const done = mine.filter((t) => t.status === "done").length;
+                  const overdue = mine.filter((t) => t.status === "open" && t.due && t.due < todayStr()).length;
+                  const pct = mine.length ? Math.round((done / mine.length) * 100) : 0;
+                  const won = deals.filter((d) => d.ownerId === u.id && d.stage === "po" && !d.lost).length;
+                  const h = healthOf(u, data);
+                  return (
+                    <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <td className={td}><NameCell u={u} /></td>
+                      <td className={td}><Chip color="blue">{roleLabel(u.role)}</Chip></td>
+                      <td className={cls(td, "text-center font-mono text-sm tabular-nums")}>{openDealsOf(u.id).length}</td>
+                      <td className={cls(td, "text-center font-mono text-sm tabular-nums text-green-600 font-semibold")}>{won}</td>
+                      <td className={cls(td, "text-center font-mono text-sm tabular-nums")}>{mine.length}</td>
+                      <td className={cls(td, "text-center font-mono text-sm tabular-nums text-green-600")}>{done}</td>
+                      <td className={cls(td, "text-center font-mono text-sm tabular-nums", overdue ? "text-red-600 font-semibold" : "text-slate-300")}>{overdue}</td>
+                      <td className={td}>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className={cls("h-full rounded-full", pct >= 70 ? "bg-green-500" : pct >= 40 ? "bg-amber-500" : "bg-red-500")} style={{ width: pct + "%" }} /></div>
+                          <span className="font-mono text-xs tabular-nums text-slate-500 w-9 text-right">{pct}%</span>
+                        </div>
+                      </td>
+                      <td className={cls(td, "text-center")}>{h == null ? <span className="text-slate-300">—</span> : <span className={cls("font-mono text-sm tabular-nums", h < 60 ? "text-red-600" : h < 80 ? "text-amber-600" : "text-green-600")}>{h}%</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs text-slate-400">Deployment = open deals owned (capacity {CAP}). Tasks flow in from Daily Scrum and the company chat. Health = KPI pace + training + work-update discipline.</p>
+
+      {/* person profile — deals, tasks, trainings, recent work updates */}
       {person && (
         <Modal title={person.name + " — deployment"} onClose={() => setPerson(null)} wide>
           <div className="space-y-4">
-            <div className="flex flex-wrap gap-4 text-sm">
-              <span className="text-slate-500">{roleLabel(person.role)} · {person.dept}</span>
-              <span className="font-mono text-xs text-slate-400 self-center">{person.email}</span>
+            <div className="flex flex-wrap gap-3 items-center text-sm">
+              <Chip color="blue">{roleLabel(person.role)}</Chip>
+              <span className="text-slate-500">{person.dept}</span>
+              <span className="font-mono text-xs text-slate-400">{person.email}</span>
               {!person.authId && <Chip color="amber">awaiting sign-up</Chip>}
+              {isAdmin && <span className="ml-auto"><InviteBtn u={person} /></span>}
             </div>
             <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Working on — open deals ({openDealsOf(person.id).length})</p>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Working on — open deals ({openDealsOf(person.id).length}/{CAP})</p>
               {openDealsOf(person.id).length === 0 ? <p className="text-sm text-slate-400">Nothing on the board.</p> : (
                 <div className="space-y-1.5">
                   {openDealsOf(person.id).map((d) => {
@@ -3076,22 +3265,33 @@ function ResourcesView({ me, data, openCompany }) {
             </div>
             <div>
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Open tasks ({openTasksOf(person.id).length})</p>
-              {openTasksOf(person.id).slice(0, 8).map((t) => {
+              {openTasksOf(person.id).slice(0, 10).map((t) => {
                 const comp = companies.find((x) => x.id === t.companyId);
-                return <p key={t.id} className="text-sm text-slate-700 py-0.5">• {t.title} {comp && <span className="text-xs text-slate-400">({comp.name})</span>} {t.due && <span className="text-xs text-slate-400">due {fmtDate(t.due)}</span>}</p>;
+                return <p key={t.id} className="text-sm text-slate-700 py-0.5">• {t.title} {comp && <span className="text-xs text-slate-400">({comp.name})</span>} {t.due && <span className={cls("text-xs", t.due < todayStr() ? "text-red-600 font-semibold" : "text-slate-400")}>due {fmtDate(t.due)}</span>} <span className="text-[10px] uppercase text-slate-300">{t.source}</span></p>;
               })}
               {openTasksOf(person.id).length === 0 && <p className="text-sm text-slate-400">No open tasks.</p>}
             </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Trainings</p>
-              {trainings.filter((t) => t.assignedTo === person.id).map((t) => (
-                <p key={t.id} className="text-sm text-slate-700 py-0.5">• {t.title} <Chip color={t.status === "done" ? "green" : "amber"}>{t.status}</Chip></p>
-              ))}
-              {trainings.filter((t) => t.assignedTo === person.id).length === 0 && <p className="text-sm text-slate-400">None assigned.</p>}
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Trainings</p>
+                {trainings.filter((t) => t.assignedTo === person.id).map((t) => (
+                  <p key={t.id} className="text-sm text-slate-700 py-0.5">• {t.title} <Chip color={t.status === "done" ? "green" : "amber"}>{t.status}</Chip></p>
+                ))}
+                {trainings.filter((t) => t.assignedTo === person.id).length === 0 && <p className="text-sm text-slate-400">None assigned.</p>}
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Recent work updates</p>
+                {(worklogs || []).filter((w) => w.userId === person.id).slice(0, 3).map((w) => (
+                  <p key={w.id} className="text-sm text-slate-700 py-0.5 truncate">• <span className="font-mono text-xs text-slate-400">{fmtDate(w.date)}</span> {w.progress}</p>
+                ))}
+                {(worklogs || []).filter((w) => w.userId === person.id).length === 0 && <p className="text-sm text-slate-400">Nothing logged.</p>}
+              </div>
             </div>
           </div>
         </Modal>
       )}
+
+      {resModal && <UserModal user={resModal === "new" ? null : resModal} me={me} onClose={() => setResModal(null)} onSave={upsertUser} />}
     </div>
   );
 }
