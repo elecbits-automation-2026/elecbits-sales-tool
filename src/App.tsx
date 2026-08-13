@@ -5,7 +5,7 @@ import {
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
   Bot, Database, CalendarCheck2, Sun, Moon, ListTodo, FolderOpen, PencilRuler,
-  ExternalLink, BadgeCheck, Rocket
+  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
@@ -1981,11 +1981,29 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
   const isSelf = viewUser.id === me.id && (me.role === "agent" || me.role === "dept_head");
   const team = teamOf(me, users);
 
-  const submit = () => {
-    if (!String(doc || "").trim()) return;
-    const entry = { id: existing ? existing.id : uid(), userId: me.id, date: today, progress: doc.trim() };
+  const [scoring, setScoring] = useState(false);
+  const submit = async () => {
+    if (!String(doc || "").trim() || scoring) return;
+    setScoring(true);
+    // The PMS pattern: submitting runs the AI against your KPI targets and
+    // stores the score + feedback with the day. Scoring failure never blocks
+    // the log — the entry saves either way.
+    let score = null, feedback = "";
+    try {
+      const t = data.kpis[me.id] || {};
+      const sys = [
+        "You score a salesperson's daily work update against their KPI targets, 1-10, like a fair but demanding sales head.",
+        "THEIR MONTHLY KPI TARGETS: " + JSON.stringify(t),
+        "Reward concrete movement (calls made, meetings held, RFQs advanced, blockers cleared, honest lessons). Punish vagueness and activity theatre.",
+        "Reply ONLY: SCORE_JSON {\"score\":1-10,\"feedback\":\"two blunt sentences: what aligned with the KPI, what to do differently tomorrow\"}",
+      ].join("\n");
+      const reply = await askClaude(sys, [{ role: "user", content: doc.trim() }]);
+      const v = extractMarkedJSON(reply, "SCORE_JSON");
+      if (v && v.score) { score = Number(v.score); feedback = v.feedback || ""; }
+    } catch (e) { /* save unscored */ }
+    const entry = { id: existing ? existing.id : uid(), userId: me.id, date: today, progress: doc.trim(), score, feedback };
     const next = worklogs.some((w) => w.id === entry.id) ? worklogs.map((w) => (w.id === entry.id ? entry : w)) : [entry, ...worklogs];
-    saveWorklogs(next); setSaved(true); setTimeout(() => setSaved(false), 2000);
+    saveWorklogs(next); setScoring(false); setSaved(true); setTimeout(() => setSaved(false), 2500);
   };
 
   const DOC_PROMPTS = "Open-ended — write the day like a doc.\n\n· What moved forward today…\n· What I learned…\n· Which decisions went wrong, and why…\n· Blockers and what's next…\n\nThis is the mistake & learning vault — the more honest it is, the more it teaches.";
@@ -2032,10 +2050,19 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
           <div className="flex items-center justify-between gap-2 mt-3">
             <p className="text-xs text-slate-400">The mistake &amp; learning vault — honest notes today save the deal tomorrow.</p>
             <span className="flex items-center gap-2">
-              {saved && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={13} /> Logged</span>}
-              <Btn kind="primary" disabled={!String(doc || "").trim()} onClick={submit}><Check size={15} /> {existing ? "Update log" : "Log update"}</Btn>
+              {saved && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={13} /> Logged{existing && existing.score ? " · scored" : ""}</span>}
+              <Btn kind="primary" disabled={!String(doc || "").trim() || scoring} onClick={submit}>
+                {scoring ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} {scoring ? "Scoring vs KPI…" : "Submit — AI scores it vs your KPI"}
+              </Btn>
             </span>
           </div>
+          {existing && existing.score != null && (
+            <div className={cls("mt-3 rounded-lg border px-3 py-2 text-sm flex items-start gap-2",
+              existing.score >= 7 ? "bg-green-50 border-green-200 text-green-800" : existing.score >= 4 ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-red-50 border-red-200 text-red-800")}>
+              <Gauge size={15} className="mt-0.5 flex-none" />
+              <span><b className="font-mono">{existing.score}/10</b> vs your KPI — {existing.feedback}</span>
+            </div>
+          )}
         </div>
       )}
 

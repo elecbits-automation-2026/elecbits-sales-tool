@@ -174,6 +174,7 @@ export async function loadWorkspace() {
 
   const worklogsOut = worklogs.map((w: any) => ({
     id: w.id, userId: w.person_id, date: w.on_date, progress: w.note || "",
+    score: w.score, feedback: w.feedback || "",
   }));
 
   const knowledgeOut = knowledge.map((k: any) => ({
@@ -452,6 +453,7 @@ export async function syncWorklogs(worklogs: any[]): Promise<boolean> {
   if (!worklogs.length) return true;
   const rowsIn = worklogs.map((w) => ({
     id: w.id, person_id: w.userId, on_date: w.date, note: w.progress || "",
+    score: w.score ?? null, feedback: w.feedback || null,
   }));
   const { error } = await supabase.from("work_updates")
     .upsert(rowsIn, { onConflict: "person_id,on_date" });
