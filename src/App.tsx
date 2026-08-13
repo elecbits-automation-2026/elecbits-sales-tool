@@ -12,6 +12,7 @@ import {
   loadWorkspace, syncUsers, syncCompanies, syncDeals, syncKpis, syncTrainings,
   syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
   syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
+  loadChat, loadChatDates, saveChat,
   signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
 } from "./lib/data";
 import logoLight from "./assets/elecbits-logo.png";
@@ -2508,8 +2509,19 @@ function AssistantView({ me, data }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [date, setDate] = useState(todayStr());
+  const [dates, setDates] = useState([]);
   const bodyRef = useRef(null);
   const speech = useSpeech((t) => setInput((p) => (p ? p + " " : "") + t));
+
+  // Date-wise threads: each day is its own saved conversation, like the PMS.
+  useEffect(() => {
+    let alive = true;
+    loadChat(me.id, date).then((m) => { if (alive) setMsgs(m); });
+    loadChatDates(me.id).then((d) => { if (alive) setDates(d); });
+    return () => { alive = false; };
+  }, [me.id, date]);
+  const persist = (m) => { setMsgs(m); saveChat(me.id, date, m).catch(() => {}); };
 
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
 
@@ -2564,7 +2576,7 @@ function AssistantView({ me, data }) {
         convo.push({ role: "user", content: "DRIVE_RESULT " + result + "\n\nNow answer the original question from this listing (or make one more DRIVE_JSON request if you must drill deeper)." });
         reply = await askClaude(buildSystem(), convo);
       }
-      setMsgs([...next, { role: "assistant", content: reply }]);
+      persist([...next, { role: "assistant", content: reply, at: nowTS() }]);
     } catch (e) { setErr("AI call failed — try again."); setInput(text); setMsgs(msgs); }
     setBusy(false);
   };
@@ -2582,6 +2594,11 @@ function AssistantView({ me, data }) {
         <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Bot size={18} className="text-blue-600" /> Assistant</h1>
         <Chip color="green"><Database size={11} /> Reads the workspace</Chip>
         <Chip color="blue"><FolderOpen size={11} /> Reads Google Drive</Chip>
+        <Sel className="w-auto text-xs" value={date} onChange={(e) => setDate(e.target.value)} title="Chats are saved per day — browse any earlier day">
+          {[todayStr(), ...dates.filter((d) => d !== todayStr())].map((d) => (
+            <option key={d} value={d}>{d === todayStr() ? "Today" : fmtDate(d)}</option>
+          ))}
+        </Sel>
       </div>
       <p className="text-sm text-slate-500 mb-4">Ask about the pipeline, companies, team and KPIs — it answers from live workspace data and your system memory.</p>
 
