@@ -2528,7 +2528,20 @@ function AssistantView({ me, data }) {
       "COMPANIES: " + JSON.stringify(compSnap),
       "DEALS: " + JSON.stringify(dealSnap),
       "TEAM: " + JSON.stringify(users.map((u) => ({ name: u.name, role: roleLabel(u.role), dept: u.dept }))),
+      "GOOGLE DRIVE: you CAN read the sales Drive (folders and file listings — names, dates, links; not file contents yet).",
+      "To look something up, reply with ONLY one line and nothing else: DRIVE_JSON {\"action\":\"root\"} to list the top-level folders · DRIVE_JSON {\"action\":\"list\",\"name\":\"<exact folder name>\"} for a folder's files · DRIVE_JSON {\"action\":\"search\",\"q\":\"<term>\"} to find files by name.",
+      "You'll get the listing back as data and can then answer, citing file names and links. Company folders are named '<client-ID> — <company name>'.",
     ].join("\n\n");
+  };
+
+  // The Drive tool loop: when the model asks for a listing, fetch it, hand it
+  // back, and let it answer — at most 3 hops so it can drill root → folder.
+  const runDriveTool = async (spec) => {
+    const p = new URLSearchParams({ action: spec.action || "root" });
+    if (spec.name) p.set("name", spec.name);
+    if (spec.q) p.set("q", spec.q);
+    const r = await fetch("/api/drive?" + p.toString()).then((x) => x.json());
+    return JSON.stringify(r).slice(0, 6000);
   };
 
   const send = async () => {
@@ -2538,7 +2551,16 @@ function AssistantView({ me, data }) {
     const next = [...msgs, { role: "user", content: text }];
     setMsgs(next); setBusy(true);
     try {
-      const reply = await askClaude(buildSystem(), next.map((m) => ({ role: m.role, content: m.content })));
+      const convo = next.map((m) => ({ role: m.role, content: m.content }));
+      let reply = await askClaude(buildSystem(), convo);
+      for (let hop = 0; hop < 3; hop++) {
+        const spec = extractMarkedJSON(reply, "DRIVE_JSON");
+        if (!spec) break;
+        const result = await runDriveTool(spec);
+        convo.push({ role: "assistant", content: reply });
+        convo.push({ role: "user", content: "DRIVE_RESULT " + result + "\n\nNow answer the original question from this listing (or make one more DRIVE_JSON request if you must drill deeper)." });
+        reply = await askClaude(buildSystem(), convo);
+      }
       setMsgs([...next, { role: "assistant", content: reply }]);
     } catch (e) { setErr("AI call failed — try again."); setInput(text); setMsgs(msgs); }
     setBusy(false);
@@ -2556,6 +2578,7 @@ function AssistantView({ me, data }) {
       <div className="flex items-center gap-2 mb-1">
         <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Bot size={18} className="text-blue-600" /> Assistant</h1>
         <Chip color="green"><Database size={11} /> Reads the workspace</Chip>
+        <Chip color="blue"><FolderOpen size={11} /> Reads Google Drive</Chip>
       </div>
       <p className="text-sm text-slate-500 mb-4">Ask about the pipeline, companies, team and KPIs — it answers from live workspace data and your system memory.</p>
 

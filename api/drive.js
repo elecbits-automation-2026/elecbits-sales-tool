@@ -94,11 +94,38 @@ export default async function handler(req, res) {
     return res.status(501).json({ error: "Drive not configured. Set GOOGLE_SERVICE_ACCOUNT_JSON and DRIVE_ROOT_FOLDER_ID in Vercel." });
   }
 
-  const name = (req.query.name || "").toString().trim();
-  if (!name) return res.status(400).json({ error: "name required" });
-
   try {
     const token = await accessToken(sa);
+
+    // Listings that don't need a folder name: the root's own folders, and a
+    // name search across everything shared with the service account.
+    if (action === "root") {
+      const l = await gapi(token, "files", {
+        q: `'${esc(root)}' in parents and trashed = false`,
+        fields: "files(id,name,mimeType,modifiedTime,webViewLink)",
+        orderBy: "name", pageSize: "100",
+        supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+      });
+      return res.status(200).json({
+        files: (l.files || []).map((x) => ({ id: x.id, name: x.name, mime: x.mimeType, modified: x.modifiedTime, link: x.webViewLink })),
+      });
+    }
+    if (action === "search") {
+      const term = (req.query.q || "").toString().trim();
+      if (!term) return res.status(400).json({ error: "q required" });
+      const l = await gapi(token, "files", {
+        q: `name contains '${esc(term)}' and trashed = false`,
+        fields: "files(id,name,mimeType,modifiedTime,webViewLink,parents)",
+        orderBy: "modifiedTime desc", pageSize: "30",
+        supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+      });
+      return res.status(200).json({
+        files: (l.files || []).map((x) => ({ id: x.id, name: x.name, mime: x.mimeType, modified: x.modifiedTime, link: x.webViewLink })),
+      });
+    }
+
+    const name = (req.query.name || "").toString().trim();
+    if (!name) return res.status(400).json({ error: "name required" });
     if (action === "open") {
       const f = await findOrCreateFolder(token, root, name, true);
       return res.status(200).json({ id: f.id, link: f.webViewLink || ("https://drive.google.com/drive/folders/" + f.id) });
