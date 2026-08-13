@@ -2345,11 +2345,14 @@ function DailyScrumView({ me, data, saveScrums, saveTasks }) {
     const { users, tasks } = data;
     const fresh = (s.tasks || []).map((t) => {
       const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
+      const win = parseWin(t.window);
       return {
         id: uid(), companyId: "", dealId: "",
         assignee: owner ? owner.id : s.userId, author: me.id,
-        title: t.task + (t.window ? " (" + t.window + ")" : ""),
+        title: t.task,
         details: t.condition || "", due: s.date || todayStr(),
+        windowStart: win.start, windowEnd: win.end,
+        work: {}, ai: {}, escalated: false, branchedFrom: "",
         status: "open", source: "scrum", createdAt: nowTS(),
       };
     });
@@ -2925,6 +2928,185 @@ const c0 = (company) => company.official ? company.cid : "Eb-…";
    MY TASKS — today / tomorrow, grouped per company
    ============================================================ */
 
+/* ── task-gate helpers ── */
+const parseWin = (w) => {
+  const m = String(w || "").match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|–|-|—)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (!m) return { start: "", end: "" };
+  const h = (n, ap, apOther) => { let x = Number(n) % 12; const a = (ap || apOther || "").toLowerCase(); if (a === "pm") x += 12; return x; };
+  const p = (n) => String(n).padStart(2, "0");
+  return { start: p(h(m[1], m[3], m[6])) + ":" + (m[2] || "00"), end: p(h(m[4], m[6], m[3])) + ":" + (m[5] || "00") };
+};
+const overdueSecs = (t) => {
+  if (!t.due || t.status === "done") return 0;
+  const end = new Date(t.due + "T" + (t.windowEnd || "23:59") + ":00");
+  return Math.max(0, Math.floor((Date.now() - end.getTime()) / 1000));
+};
+const fmtDur = (s) => { const p = (n) => String(n).padStart(2, "0"); return p(Math.floor(s / 3600)) + ":" + p(Math.floor((s % 3600) / 60)) + ":" + p(s % 60); };
+
+/* ============================================================
+   TASK CLOSE FLOW — work window → honesty gate → AI verdict /
+   branch sub-tasks. The PMS closure pattern, on sales tasks.
+   ============================================================ */
+function TaskCloseFlow({ me, data, task: t, startAt, onClose, saveTasks }) {
+  const { users, companies, tasks } = data;
+  const comp = companies.find((c) => c.id === t.companyId);
+  const deptHead = users.find((u) => u.role === "dept_head" && u.active !== false);
+  const [step, setStep] = useState(startAt); // work | gate | verdict | branch
+  const [what, setWhat] = useState(t.work.what || "");
+  const [file, setFile] = useState(t.work.file || "");
+  const [path, setPath] = useState(t.work.path || (comp ? "/Eb-07-Sales/" + driveFolderName(comp) + "/" : ""));
+  const [busy, setBusy] = useState(false);
+  const [verdict, setVerdict] = useState(t.ai.score != null ? t.ai : null);
+  const [escalate, setEscalate] = useState(!!t.escalated);
+  const [blocker, setBlocker] = useState("");
+  const [subs, setSubs] = useState([]);
+  const secs = overdueSecs(t);
+
+  const patch = (fields) => {
+    const next = { ...t, ...fields, escalated: escalate || fields.escalated || false };
+    saveTasks(tasks.map((x) => (x.id === t.id ? next : x)));
+    return next;
+  };
+  const saveProgress = () => { patch({ work: { ...t.work, what, file, path } }); onClose(); };
+
+  const verify = async () => {
+    setBusy(true);
+    try {
+      const sys = [
+        "You are the closure gate on the Elecbits Sales OS. A task is being closed as fully done — judge the evidence like a strict but fair reviewer.",
+        "TASK: " + t.title + (t.details ? " — " + t.details : "") + (comp ? " (company: " + comp.name + ")" : ""),
+        "EVIDENCE — what they did: " + what, "File produced: " + (file || "(none)"), "Stored at: " + (path || "(none)"),
+        "Score 0-10. Fail (below 7) vague evidence, missing artifacts for tasks that clearly produce one (a quote, a report, an MoM), or claims with no specifics. A call/follow-up task can pass without a file if the outcome is concrete.",
+        "Reply with ONLY: VERDICT_JSON {\"score\":0-10,\"pass\":true|false,\"reasons\":\"one or two blunt sentences\"}",
+      ].join("\n");
+      const reply = await askClaude(sys, [{ role: "user", content: "Judge this closure." }]);
+      const v = extractMarkedJSON(reply, "VERDICT_JSON") || { score: 0, pass: false, reasons: "The gate could not parse a verdict — try again." };
+      setVerdict(v);
+      if (v.pass) { patch({ status: "done", doneAt: nowTS(), work: { ...t.work, what, file, path }, ai: v }); setStep("verdict"); }
+      else { patch({ work: { ...t.work, what, file, path }, ai: v }); setStep("verdict"); }
+    } catch (e) { setVerdict({ score: 0, pass: false, reasons: "AI unreachable — closure not judged. Try again." }); setStep("verdict"); }
+    setBusy(false);
+  };
+
+  const suggestSubs = async () => {
+    setBusy(true);
+    try {
+      const sys = "Break the remaining/blocked work into 2-4 concrete sub-tasks. TASK: " + t.title + ". BLOCKER/REMAINS: " + (blocker || what || "(unstated)") +
+        ". Reply ONLY: SUBTASKS_JSON [{\"title\":\"...\",\"mins\":30}]";
+      const reply = await askClaude(sys, [{ role: "user", content: "Propose sub-tasks." }]);
+      const list = extractMarkedJSON(reply, "SUBTASKS_JSON");
+      if (Array.isArray(list)) setSubs(list.map((s) => ({ title: s.title || "", mins: s.mins || 30, assignee: t.assignee })));
+    } catch (e) { /* rows stay manual */ }
+    setBusy(false);
+  };
+
+  const createSubs = () => {
+    const fresh = subs.filter((s) => s.title.trim()).map((s) => ({
+      id: uid(), companyId: t.companyId, dealId: t.dealId, assignee: s.assignee || t.assignee, author: me.id,
+      title: s.title.trim(), details: blocker ? "From blocker: " + blocker : "", due: todayStr(),
+      status: "open", source: "system", createdAt: nowTS(), windowStart: "", windowEnd: "",
+      work: {}, ai: {}, escalated: false, branchedFrom: t.id,
+    }));
+    const closed = { ...t, status: "done", doneAt: nowTS(), escalated: escalate,
+      work: { ...t.work, what, blocker }, ai: { ...t.ai, verdict: "branched", reasons: blocker } };
+    saveTasks([...fresh, ...tasks.map((x) => (x.id === t.id ? closed : x))]);
+    onClose();
+  };
+
+  const Esc = (
+    <label className="flex items-start gap-2 border border-dashed border-slate-300 rounded-lg p-3 cursor-pointer mt-3">
+      <input type="checkbox" checked={escalate} onChange={(e) => setEscalate(e.target.checked)} className="mt-0.5" />
+      <span className="text-sm text-slate-700">Shall I escalate this to {deptHead ? deptHead.name : "the dept head"}?
+        <span className="block text-xs text-slate-400">Escalations are tracked in the KPI block — fewer is better, but a needed escalation beats a silently stuck task.</span></span>
+    </label>
+  );
+
+  return (
+    <Modal title={(step === "work" ? "" : "Close: ") + t.title} onClose={onClose} wide
+      footer={step === "work" ? <>
+        <Btn onClick={saveProgress}>Save progress</Btn>
+        <Btn kind="primary" onClick={() => setStep("gate")}><CheckCircle2 size={14} /> Complete Now</Btn>
+      </> : null}>
+      {step === "work" && (
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Scope & guidance</p>
+            <p className="text-sm text-slate-800">{t.title}</p>
+            {t.details && <p className="text-xs text-slate-500 whitespace-pre-wrap">{t.details}</p>}
+            {comp && <p className="text-xs text-blue-700 font-mono">Where things live: /Eb-07-Sales/{driveFolderName(comp)}/</p>}
+            <p className="text-xs text-slate-500"><b>Task quality bar:</b> a closed task names what was done and, when it produces an artifact (quote, MoM, report), the exact file and its Drive path. A task without its artifact is not a finished task.</p>
+            <p className="text-xs text-slate-500">Due {t.due ? fmtDate(t.due) : "—"}{secs > 0 && <span className="text-red-600 font-mono font-semibold ml-2">OVERDUE {fmtDur(secs)}</span>}</p>
+          </div>
+          <div className="space-y-3">
+            <Field label="What did you do?" req><TA value={what} onChange={(e) => setWhat(e.target.value)} className="min-h-24" placeholder="I called / sent / prepared … — be concrete, the AI gate reads this" /></Field>
+            <Field label="File produced (name)"><Input value={file} onChange={(e) => setFile(e.target.value)} placeholder="e.g. 2026-08-13_quote_FMS-200.pdf" /></Field>
+            <Field label="Stored at (Drive path)"><Input value={path} onChange={(e) => setPath(e.target.value)} /></Field>
+            <p className="text-xs text-slate-400">Closing runs the AI gate: it asks whether this is really done and fails vague closures. Full clarity in, quality out.</p>
+          </div>
+        </div>
+      )}
+      {step === "gate" && (
+        <div className="space-y-3">
+          <p className="text-sm font-semibold text-slate-800">Did you actually finish this task?</p>
+          <p className="text-xs text-slate-500">Straight answers keep the chain honest — branching an unfinished task is respected, fake-closing it is not.</p>
+          <button onClick={verify} disabled={busy} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-green-500">
+            <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><CheckCircle2 size={15} className="text-green-600" /> Yes — fully done {busy && <Loader2 size={13} className="animate-spin" />}</span>
+            <span className="block text-xs text-slate-400 mt-0.5">Run the AI verification and close it properly</span>
+          </button>
+          <button onClick={() => { setBlocker(""); setStep("branch"); suggestSubs(); }} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-amber-500">
+            <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><ArrowRight size={15} className="text-amber-600" /> Partially — some of it remains</span>
+            <span className="block text-xs text-slate-400 mt-0.5">AI proposes sub-tasks for the rest</span>
+          </button>
+          <button onClick={() => { setBlocker(""); setStep("branch"); }} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-red-500">
+            <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><AlertTriangle size={15} className="text-red-600" /> Blocked — can't proceed</span>
+            <span className="block text-xs text-slate-400 mt-0.5">Describe the blocker; branch it and/or escalate</span>
+          </button>
+          {Esc}
+        </div>
+      )}
+      {step === "verdict" && verdict && (
+        <div className="space-y-3">
+          <div className={cls("rounded-xl border p-4", verdict.pass ? "bg-green-50 border-green-300" : "bg-red-50 border-red-300")}>
+            <p className={cls("text-sm font-bold flex items-center gap-2", verdict.pass ? "text-green-700" : "text-red-700")}>
+              {verdict.pass ? <CheckCircle2 size={16} /> : <XCircle size={16} />} {verdict.pass ? "CLOSED" : "NOT YET"} · {verdict.score}/10
+            </p>
+            <p className="text-sm text-slate-700 mt-1">{verdict.reasons}</p>
+          </div>
+          {verdict.pass
+            ? <div className="flex justify-end"><Btn kind="primary" onClick={onClose}><Check size={14} /> Done</Btn></div>
+            : <><div className="flex gap-2">
+                <Btn onClick={onClose}>Keep open · revise work</Btn>
+                <Btn kind="primary" onClick={() => { setStep("branch"); suggestSubs(); }}>Branch sub-tasks</Btn>
+              </div>{Esc}</>}
+        </div>
+      )}
+      {step === "branch" && (
+        <div className="space-y-3">
+          <Field label="What's the blocker / what remains?"><TA value={blocker} onChange={(e) => setBlocker(e.target.value)} className="min-h-16" placeholder="e.g. client hasn't shared the BOM — quote can't be finalised" /></Field>
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Sub-tasks</p>
+            <button onClick={suggestSubs} disabled={busy} className="text-xs text-blue-600 hover:underline flex items-center gap-1">{busy ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} AI re-suggest from blocker</button>
+          </div>
+          {subs.map((s, i) => (
+            <div key={i} className="flex gap-2 items-center">
+              <Input value={s.title} onChange={(e) => setSubs(subs.map((x, j) => j === i ? { ...x, title: e.target.value } : x))} />
+              <Sel className="w-40" value={s.assignee} onChange={(e) => setSubs(subs.map((x, j) => j === i ? { ...x, assignee: e.target.value } : x))}>
+                {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </Sel>
+              <Input type="number" className="w-20" value={s.mins} onChange={(e) => setSubs(subs.map((x, j) => j === i ? { ...x, mins: e.target.value } : x))} />
+              <span className="text-xs text-slate-400">min</span>
+              <button onClick={() => setSubs(subs.filter((_, j) => j !== i))} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+            </div>
+          ))}
+          <button onClick={() => setSubs([...subs, { title: "", mins: 30, assignee: t.assignee }])} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Plus size={11} /> add row</button>
+          <Btn kind="primary" disabled={!subs.some((s) => s.title.trim())} onClick={createSubs}><ArrowRight size={14} /> Create sub-tasks & close this as branched</Btn>
+          {Esc}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function MyTasksView({ me, data, saveTasks, openCompany }) {
   const { users, companies, tasks } = data;
   const [scope, setScope] = useState("mine");
@@ -2951,23 +3133,35 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
     setAdding(false); setF({ ...f, title: "" });
   };
 
+  const [closing, setClosing] = useState(null); // {task, startAt}
   const TaskRow = ({ t }) => {
     const comp = companies.find((c) => c.id === t.companyId);
     const who = users.find((u) => u.id === t.assignee);
+    const secs = overdueSecs(t);
     return (
       <div className="flex items-center gap-2.5 border border-slate-200 rounded-md px-3 py-2 bg-white">
-        <button onClick={() => toggle(t)} className={cls("w-4 h-4 rounded border flex-none flex items-center justify-center", t.status === "done" ? "bg-green-600 border-green-600 text-white" : "border-slate-300 hover:border-blue-500")}>
+        <button onClick={() => t.status === "done" ? toggle(t) : setClosing({ task: t, startAt: "gate" })}
+          className={cls("w-4 h-4 rounded border flex-none flex items-center justify-center", t.status === "done" ? "bg-green-600 border-green-600 text-white" : "border-slate-300 hover:border-blue-500")}>
           {t.status === "done" && <Check size={11} />}
         </button>
         <div className="min-w-0 mr-auto">
-          <p className={cls("text-sm", t.status === "done" ? "line-through text-slate-400" : "text-slate-800")}>{t.title}</p>
+          <p className={cls("text-sm", t.status === "done" ? "line-through text-slate-400" : "text-slate-800")}>{t.title}
+            {t.branchedFrom && <span className="ml-1.5 text-[10px] text-purple-600 uppercase">branch</span>}
+            {t.escalated && <span className="ml-1.5 text-[10px] text-red-600 uppercase">escalated</span>}</p>
           <p className="text-xs text-slate-400 flex items-center gap-1.5 flex-wrap">
             {comp && <button className="text-blue-600 hover:underline" onClick={() => openCompany(comp.id)}>{comp.name}</button>}
+            {who && scope === "team" && <span>{who.name}</span>}
+            {(t.windowStart || t.windowEnd) && <span className="font-mono">{t.windowStart || "…"}–{t.windowEnd || "…"}</span>}
             {t.due && <span>due {fmtDate(t.due)}</span>}
+            {secs > 0 && <span className="text-red-600 font-mono font-semibold flex items-center gap-0.5"><Clock size={10} /> OVERDUE {fmtDur(secs)}</span>}
             <span className="uppercase text-[10px] tracking-wide">{t.source}</span>
-            {scope === "team" && who && <span>· {who.name}</span>}
+            {t.status === "done" && t.ai && t.ai.score != null && <span className="text-green-600 font-mono">gate {t.ai.score}/10</span>}
           </p>
         </div>
+        {t.status !== "done" && <>
+          <Btn size="sm" onClick={() => setClosing({ task: t, startAt: "work" })}><FileText size={12} /> Work window</Btn>
+          <Btn size="sm" kind="primary" onClick={() => setClosing({ task: t, startAt: "gate" })}><CheckCircle2 size={12} /> Complete Now</Btn>
+        </>}
         <button onClick={() => remove(t)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
       </div>
     );
@@ -2996,6 +3190,7 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
           </div>
         ))}
       </div>
+      {closing && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closing.task.id) || closing.task} startAt={closing.startAt} onClose={() => setClosing(null)} saveTasks={saveTasks} />}
       {adding && (
         <Modal title="New task" onClose={() => setAdding(false)}
           footer={<><Btn onClick={() => setAdding(false)}>Cancel</Btn><Btn kind="primary" disabled={!f.title.trim()} onClick={add}><Check size={14} /> Add</Btn></>}>
