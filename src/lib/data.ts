@@ -192,6 +192,7 @@ export async function loadWorkspace() {
     id: s.id, userId: s.author_id, date: s.on_date, raw: s.raw,
     tasks: (s.organized && s.organized.tasks) || [],
     summary: (s.organized && s.organized.summary) || "",
+    tasked: !!(s.organized && s.organized.tasked),
     createdAt: s.created_at,
   }));
 
@@ -476,7 +477,7 @@ export async function syncExpenses(expenses: any[]): Promise<boolean> {
 export async function syncScrums(scrums: any[]): Promise<boolean> {
   const rowsIn = scrums.map((s) => ({
     id: s.id, on_date: s.date, raw: s.raw,
-    organized: { tasks: s.tasks || [], summary: s.summary || "" },
+    organized: { tasks: s.tasks || [], summary: s.summary || "", tasked: !!s.tasked },
     author_id: s.userId || null, created_at: s.createdAt,
   }));
   return upsertAndPrune("scrum_notes", rowsIn, scrums.map((s) => s.id), "syncScrums");
