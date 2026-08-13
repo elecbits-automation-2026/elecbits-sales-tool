@@ -1,142 +1,91 @@
-# Going live — Supabase + Vercel
+# Sales OS — setup & the Phase 0 cut-over
 
-This turns the local prototype into a hosted, shared, dynamic app:
+The app runs on the **shared core database** (`eb-core-database-1`), on two
+Postgres schemas:
 
-- **Supabase** stores all data (a single `collections` table).
-- **Vercel** hosts the site and runs one small serverless function
-  (`/api/claude` for the AI helpers).
+- **`core`** — the company spine shared with the ODM PMS: people, orgs,
+  contacts, projects, documents, memory, numbering, and the `core.grants` lock.
+- **`sales`** — this tool's own tables: deals, deal moves, activities, quotes,
+  targets, knowledge, trainings, scrum notes, work updates, travel requests,
+  gate config.
 
-Logins are handled **inside the app**, against the `sales:users` table — there
-are no Supabase Auth accounts to create and no seed script to run.
-
-Follow the steps in order. You only do steps 1–3 once.
+Login is **Supabase Auth**. There is no seed script and no password step for
+admins: put a person's email on the roster (Admin → Add user), and their
+**first sign-in creates the account** — whatever password they type then
+becomes theirs. A DB trigger links the new account to their roster row; an
+email nobody added signs in to a "no workspace access" screen.
 
 ---
 
-## 1. Create the Supabase project
+## Phase 0 cut-over — run these once, in order
 
-1. Go to <https://supabase.com> → sign in → **New project**.
-2. Name it (e.g. `elecbits-sales`), pick a strong database password, choose a
-   region near you, and create it. Wait ~2 minutes for it to finish.
-3. No auth settings to change — sign-in is handled by the app itself.
+All in `eb-core-database-1` → **SQL Editor**, one file at a time, top to
+bottom. Every file is idempotent (safe to re-run).
 
-## 2. Create the database table
+1. **`supabase/01-core-schema.sql`** — creates the `core` schema: the spine,
+   the `core.me()` / `core.can()` lock, the numbering mint (client serial seeded
+   at **781**, project serial at **1877** — above every serial in the tracking
+   sheets; adjust with
+   `update core.numbering set next_val = N where prefix = 'client_serial';`),
+   and the auth-link trigger.
+2. **`supabase/02-sales-schema.sql`** — creates the `sales` schema and the
+   first-run bootstrap RPC.
+3. **`supabase/03-migrate-blobs.sql`** — parses the nine `sales:*` JSON blobs
+   out of `public.collections` into the new tables, and merges the PMS roster
+   (`public.profiles`) into `core.people`. Ends with a row-count report.
+   `public.collections` is left untouched — it is the rollback.
 
-1. In Supabase: **SQL Editor → New query**.
-2. Open `supabase/schema.sql` from this project, copy the whole file, paste it
-   in, and click **Run**. You should see "Success". This creates the
-   `collections` table with Row Level Security enabled.
+Then two dashboard settings:
 
-## 3. Collect your keys
+4. **Settings → API → Exposed schemas**: add `core` and `sales`
+   (keep `public`). Without this every query 404s.
+5. **Authentication → Sign In / Providers → Email**: turn **off**
+   “Confirm email”. First sign-in must produce a session immediately.
 
-In Supabase: **Project Settings → API**. You need two values:
+> ⚠️ Do **not** expose `hr` or `finance` schemas (when they exist) until this
+> app's deploy is confirmed off the old anon-readable `collections` table.
 
-| Value | Where it goes |
+## Deploy order matters
+
+The app in this branch reads `core`+`sales` — if it deploys **before** steps
+1–5, login breaks. Sequence:
+
+1. Run steps 1–5 above.
+2. Merge this branch to `main` (Vercel builds production).
+3. Sign in with your usual email. Existing people from the old user list are
+   already on the roster; each person's **first sign-in sets their password**.
+4. Confirm companies/deals/history all show. The old blob stays in
+   `public.collections` as rollback; drop it only when confident:
+   `drop table public.collections;`
+
+## Environment (unchanged)
+
+| Variable | Where |
 |---|---|
-| **Project URL** (e.g. `https://abcd.supabase.co`) | `VITE_SUPABASE_URL` |
-| **anon public** key | `VITE_SUPABASE_ANON_KEY` |
+| `VITE_SUPABASE_URL` | Vercel — `https://zpesebacpomxllcjmekc.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY` | Vercel — anon public key |
+| `ANTHROPIC_API_KEY` | Vercel — for `/api/claude` (Assistant, gates, scrum) |
 
-That's it — no service-role key needed (sign-in is handled in the app, not by
-Supabase Auth).
+No service-role key anywhere. The anon key + RLS (`core.can()`) is the entire
+client surface; anon alone can reach nothing in `core`/`sales`.
 
-## Logins (built in — nothing to create)
-
-On first load the app seeds the workspace, including these ready-to-use accounts.
-Just open the site and sign in; change passwords anytime via **Admin → Edit user
-→ Reset password**, and add teammates via **Admin → Add user**.
-
-| Email | Password | Role |
-|---|---|---|
-| `admin@elecbits.in` | `admin123` | Admin |
-| `saurav@elecbits.in` | `saurav123` | Dept Head |
-| `ankit@elecbits.in` | `ankit123` | Sales Agent |
-| `akash@elecbits.in` | `akash123` | Sales Agent |
-| `finance@elecbits.in` | `finance123` | Finance |
-
-> Note: sign-in is a lightweight app-level gate (passwords are stored as salted
-> hashes in the `sales:users` table, which the anon key can read). Keep the
-> deployment URL private. For stronger security, switch to Supabase Auth later.
-
----
-
-## 5. Run it locally (optional but recommended)
-
-Fill in the rest of `.env.local`:
-
-```
-VITE_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_URL=https://YOUR-PROJECT.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-ANTHROPIC_API_KEY=your-anthropic-key      # optional locally
-```
-
-Then:
+## Run locally
 
 ```bash
-npm run dev      # http://localhost:5173
+npm install
+npm run dev      # http://localhost:5173 — front-end only; /api/claude runs on Vercel
+npm run build
 ```
 
-Sign in with a seeded account. On the first sign-in the app seeds the sample
-clients/projects/leads/tasks into Supabase. Data now persists and is shared
-across everyone.
+`.env.local` needs just `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 
-> Note: `npm run dev` serves the front-end only — the `/api/*` functions run on
-> Vercel. Locally, the AI note helper and admin user-creation won't work unless
-> you use `vercel dev` (below). Everything else (logins, data) works.
->
-> To run the API functions locally too: `npm i -g vercel` then `vercel dev`.
+## Access model
 
----
-
-## 6. Deploy to Vercel
-
-1. Push this project to a GitHub repo (or use the Vercel CLI).
-   - This folder isn't a git repo yet. To use GitHub:
-     ```bash
-     git init && git add -A && git commit -m "Elecbits Sales OS"
-     ```
-     then create a repo on GitHub and push.
-   - `.gitignore` already excludes `.env*` and `node_modules`, so your secrets
-     won't be committed.
-2. Go to <https://vercel.com> → **Add New → Project** → import your repo.
-3. Vercel auto-detects **Vite**. Leave the build settings as-is
-   (build command `npm run build`, output `dist`). It also auto-detects the
-   `/api` folder as serverless functions — nothing to configure.
-4. **Environment Variables** — add all of these (Settings → Environment
-   Variables), for the Production environment:
-
-   | Name | Value |
-   |---|---|
-   | `VITE_SUPABASE_URL` | your project URL |
-   | `VITE_SUPABASE_ANON_KEY` | anon key |
-   | `SUPABASE_URL` | your project URL (again, no `VITE_`) |
-   | `SUPABASE_SERVICE_ROLE_KEY` | service_role key |
-   | `ANTHROPIC_API_KEY` | your Anthropic key (for the note helper) |
-   | `ANTHROPIC_MODEL` | *(optional)* `claude-opus-4-8`, or `claude-haiku-4-5` to save cost |
-
-5. Click **Deploy**. When it finishes you get a live URL. Open it and sign in.
-
-> If you add env vars after the first deploy, hit **Redeploy** for them to take
-> effect.
-
----
-
-## What's dynamic now
-
-- **Logins** are real Supabase Auth accounts.
-- **All data** (clients, RFQs, leads, projects, tasks, work updates, users) lives
-  in Supabase and is shared across everyone in real time on reload.
-- **Adding an employee** in the app's Employees page also creates their login
-  automatically (via `/api/admin`); removing one deletes their login.
-- **The AI note helper** runs through `/api/claude` with your key kept server-side.
-
-## Known limitations (prototype-grade)
-
-- Row Level Security currently allows any signed-in user to read/write all
-  collections; the app enforces role/department visibility on the client. For
-  stricter security, move to per-collection/per-row policies later.
-- Concurrent edits use last-write-wins on a whole collection (fine for a small
-  team). A future step is per-row tables if you need finer-grained concurrency.
-- Passwords for seeded demo users are simple — change them (or delete the demo
-  users) before real use.
+- Roles inside the app (`admin` / `dept_head` / `agent` / `finance`) live in
+  `sales.people_detail` and drive the UI.
+- Database access is `core.grants`: one row per person per tool
+  (`none|read|write|admin`). The migration grants sales users `write` on
+  `core`+`sales` (admins `admin`). Changing someone's access is one row —
+  no policy edits, ever.
+- First user on an **empty** database becomes admin automatically
+  (`sales.bootstrap_first_admin()`); with migrated data that path never fires.

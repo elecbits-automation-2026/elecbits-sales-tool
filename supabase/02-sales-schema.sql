@@ -23,6 +23,19 @@
 
 create schema if not exists sales;
 
+-- ═══ PEOPLE DETAIL ═════════════════════════════════════════════════════════
+-- The sales tool's opinion of a person — same pattern as org_detail below.
+-- `role` is the app's vocabulary (admin / dept_head / agent / finance); the
+-- database-level lock is still core.grants, this only drives the UI.
+create table if not exists sales.people_detail (
+  person_id  uuid primary key references core.people(id) on delete cascade,
+  role       text not null default 'agent'
+               check (role in ('admin','dept_head','agent','finance')),
+  dept       text default 'Sales',
+  created_at timestamptz not null default now()
+);
+
+
 -- ═══ ORG DETAIL ════════════════════════════════════════════════════════════
 -- The artifact defines <tool>.project_detail for project facts only one tool
 -- cares about. Sales needs the same escape hatch for ORGS: `source`,
@@ -39,6 +52,13 @@ create table if not exists sales.org_detail (
   potential     numeric(14,2) not null default 0,      -- annual, INR
   currency      char(3) not null default 'INR',
   account_owner uuid references core.people(id) on delete set null,
+  -- Primary contact, denormalised for Phase 0 so the app edits one row.
+  -- core.contacts stays the canonical index (the migration writes both);
+  -- Phase 1's HubSpot-style record moves contact editing onto core.contacts.
+  contact_person text,
+  designation    text,
+  contact_phone  text,
+  contact_email  text,
   custom        jsonb not null default '[]'::jsonb,    -- [{k,v}] every minute detail
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
@@ -169,6 +189,21 @@ create table if not exists sales.knowledge (
   updated_at timestamptz not null default now()
 );
 
+-- ═══ TRAININGS ═════════════════════════════════════════════════════════════
+-- Parked in sales until the hr schema exists (the ideal model homes training
+-- there); moving it later is one INSERT..SELECT because the shape matches.
+create table if not exists sales.trainings (
+  id           uuid primary key default gen_random_uuid(),
+  person_id    uuid not null references core.people(id) on delete cascade,
+  title        text not null,
+  knowledge_id uuid references sales.knowledge(id) on delete set null,
+  due          date,
+  status       text not null default 'assigned'
+                 check (status in ('assigned','in_progress','done')),
+  assigned_by  uuid references core.people(id) on delete set null,
+  created_at   timestamptz not null default now()
+);
+
 -- ═══ DAILY SCRUM ═══════════════════════════════════════════════════════════
 create table if not exists sales.scrum_notes (
   id         uuid primary key default gen_random_uuid(),
@@ -250,8 +285,8 @@ do $$
 declare t text;
 begin
   foreach t in array array[
-    'org_detail','deals','deal_moves','activities','quotes','targets',
-    'partners','knowledge','scrum_notes','work_updates','travel_requests','gate_config'
+    'people_detail','org_detail','deals','deal_moves','activities','quotes','targets',
+    'partners','knowledge','trainings','scrum_notes','work_updates','travel_requests','gate_config'
   ] loop
     execute format('alter table sales.%I enable row level security', t);
     execute format('drop policy if exists %I_read  on sales.%I', t, t);
@@ -287,6 +322,31 @@ grant usage, select on all sequences in schema sales to authenticated;
 alter default privileges in schema sales
   grant select, insert, update, delete on tables to authenticated;
 revoke all on all tables in schema sales from anon;
+
+-- ═══ FIRST-RUN BOOTSTRAP ═══════════════════════════════════════════════════
+-- On a brand-new database the roster is empty, and RLS would stop the very
+-- first signed-in user from inserting themselves. This SECURITY DEFINER RPC
+-- makes the first authenticated caller the admin — and only ever the first:
+-- once core.people has a row, it degrades to returning core.me().
+create or replace function sales.bootstrap_first_admin(_name text default null)
+returns uuid language plpgsql security definer set search_path = core, sales, public as $$
+declare pid uuid; em text;
+begin
+  if exists (select 1 from core.people) then
+    return core.me();
+  end if;
+  select email into em from auth.users where id = auth.uid();
+  if em is null then return null; end if;
+  insert into core.people (full_name, work_email, auth_id)
+  values (coalesce(nullif(_name,''), split_part(em,'@',1)), lower(em)::citext, auth.uid())
+  returning id into pid;
+  insert into core.grants (person_id, tool, level)
+  values (pid,'core','admin'), (pid,'sales','admin');
+  insert into sales.people_detail (person_id, role) values (pid, 'admin');
+  return pid;
+end $$;
+revoke all on function sales.bootstrap_first_admin(text) from public;
+grant execute on function sales.bootstrap_first_admin(text) to authenticated;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ⚠  STAGE 5 PRECONDITION

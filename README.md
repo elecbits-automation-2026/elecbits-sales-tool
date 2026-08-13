@@ -45,19 +45,17 @@ Roles: **Admin**, **Dept Head**, **Sales Agent**, **Finance**.
 ## Architecture
 
 - **`src/App.tsx`** — the entire UI + logic (Tailwind classes).
-- **Persistence** — Supabase. Each slice (`sales:users`, `sales:companies`,
-  `sales:deals`, `sales:kpis`, `sales:trainings`, `sales:worklogs`,
-  `sales:knowledge`, `sales:expenses`, `sales:gates`) is one JSON row in the
-  `collections` table (`supabase/schema.sql`). See the `store` object in
-  `App.tsx`.
-- **Session/auth** — app-level login against the `sales:users` table (no Supabase
-  Auth). The login form matches the email and a salted SHA-256 password hash
-  (`pwHash`) stored on each user row; the session is a per-browser pointer in
-  `localStorage`. The `collections` table is anon-accessible (see
-  `supabase/schema.sql`), so the browser reaches data with the anon key. Admins
-  add users / reset passwords from **Admin → Add user**. This is a lightweight
-  internal gate — keep the deployment URL private, or move to Supabase Auth for
-  stronger security.
+- **Persistence** — Supabase, relational: the shared `core` schema (people,
+  orgs, contacts, memory, numbering, grants) plus this tool's `sales` schema
+  (deals, deal moves, activities, targets, knowledge, trainings, scrum notes,
+  work updates, travel requests, gate config). `src/lib/data.ts` loads the
+  workspace and syncs edits; `supabase/01–03` create and migrate it.
+- **Session/auth** — Supabase Auth on the shared core database. An admin puts a
+  person's email on the roster (**Admin → Add user**); their first sign-in
+  creates the account and a DB trigger links it to their `core.people` row.
+  Data lives in the relational `core` + `sales` schemas behind `core.can()`
+  RLS (see `supabase/01–03` and `SETUP.md`); the app's data layer is
+  `src/lib/data.ts`.
 - **AI** — `askClaude(system, messages)` posts to `/api/claude`
   (`api/claude.js`), which holds `ANTHROPIC_API_KEY` and forwards to the
   Anthropic Messages API. The model is chosen server-side (`ANTHROPIC_MODEL`,
@@ -75,8 +73,8 @@ Create `.env.local` from `.env.example` with your Supabase URL + anon key. The A
 features need the app deployed to Vercel (or `vercel dev`) so `/api/claude` runs
 with `ANTHROPIC_API_KEY` set.
 
-See **[`SETUP.md`](./SETUP.md)** for the full Supabase + Vercel deploy guide,
-no login accounts to create — sign in with the built-in demo users.
+See **[`SETUP.md`](./SETUP.md)** for the Phase 0 cut-over runbook (the three
+SQL files, exposed schemas, and the deploy order).
 
 ### Reference
 

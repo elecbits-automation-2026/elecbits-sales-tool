@@ -51,6 +51,11 @@ create index if not exists people_auth_idx on core.people(auth_id);
 -- GSTIN in two places forever.
 create table if not exists core.orgs (
   id          uuid primary key default gen_random_uuid(),
+  -- The official Elecbits client ID (Eb-<industry>-<org size>-<serial>, e.g.
+  -- Eb-01-ML-04), per the Client ID sheet. Serial minted from core.numbering
+  -- ('client_serial') so Sales and PMS can never issue the same one. Null until
+  -- a client ID is assigned.
+  code        text unique,
   name        text not null,
   legal_name  text,
   gstin       text,
@@ -61,6 +66,7 @@ create table if not exists core.orgs (
   archived_at timestamptz,
   created_at  timestamptz not null default now()
 );
+alter table core.orgs add column if not exists code text unique;
 create index if not exists orgs_name_idx on core.orgs(lower(name));
 
 -- The same company can be a client and a vendor at once.
@@ -179,6 +185,30 @@ begin
   return _prefix || lpad(n::text, _width, '0');
 end $$;
 
+-- Bare serial for composite codes (client IDs, project IDs) where the caller
+-- assembles the full string: Eb-<industry>-<size>-<serial>. Same atomic
+-- UPDATE..RETURNING, so two tools can never draw the same number.
+create or replace function core.next_serial(_prefix text)
+returns integer language plpgsql security definer set search_path = core as $$
+declare n integer;
+begin
+  insert into core.numbering (prefix, next_val) values (_prefix, 1)
+    on conflict (prefix) do nothing;
+  update core.numbering set next_val = next_val + 1
+    where prefix = _prefix returning next_val - 1 into n;
+  return n;
+end $$;
+
+-- Seeds, from the Client ID sheet and the Centralised Project Tracking sheet
+-- (12 Aug 2026). Highest client serial observed anywhere is 779 (an EbX-RD
+-- row; the plain client series tops out at 516), highest project serial 1876.
+-- Seeded above both — a gap in the series is harmless, a collision is not.
+-- To adjust:  update core.numbering set next_val = <N> where prefix = '...';
+insert into core.numbering (prefix, next_val) values
+  ('client_serial', 781),
+  ('project_serial', 1877)
+on conflict (prefix) do nothing;
+
 -- ═══ THE LOCK ══════════════════════════════════════════════════════════════
 -- Six tools x forty tables is a lot of policies, and hand-written policies
 -- drift. So the permission question is asked in exactly ONE place, and every
@@ -196,6 +226,27 @@ create or replace function core.me() returns uuid
 language sql stable security definer set search_path = core as $$
   select id from core.people where auth_id = auth.uid();
 $$;
+
+-- Link a new auth account to its roster row by email (PMS onboarding pattern:
+-- an admin adds the person with their email; the person's first sign-in creates
+-- the auth account, and this trigger connects the two). An email nobody put on
+-- the roster authenticates but matches no core.people row, so core.me() stays
+-- null and RLS shows them nothing.
+create or replace function core.handle_new_auth_user()
+returns trigger language plpgsql security definer set search_path = core as $$
+begin
+  update core.people
+     set auth_id = new.id
+   where auth_id is null
+     and work_email is not null
+     and lower(work_email::text) = lower(coalesce(new.email, ''));
+  return new;
+end $$;
+
+drop trigger if exists core_on_auth_user_created on auth.users;
+create trigger core_on_auth_user_created
+  after insert on auth.users
+  for each row execute function core.handle_new_auth_user();
 
 -- Does the caller hold at least `_level` on `_tool`?
 create or replace function core.can(_tool text, _level text) returns boolean
