@@ -514,21 +514,73 @@ export async function syncGates(gates: Record<string, string[]>): Promise<boolea
   return ok(e2, "syncGates.prune") && allOk;
 }
 
-// Assistant chat threads — one per person per day (date-wise history).
-export async function loadChat(personId: string, date: string): Promise<any[]> {
-  const { data } = await supabase.from("chats").select("messages")
-    .eq("person_id", personId).eq("on_date", date).maybeSingle();
+// Brainstorming sessions — sales.meetings + ideas/decisions/challenges
+// (the Phase 0 quartet). Loaded on demand per company; wholesale-synced.
+export async function loadSessions(orgId: string): Promise<any[]> {
+  const [m, i, d, c] = await Promise.all([
+    supabase.from("meetings").select("*").eq("org_id", orgId).order("created_at", { ascending: false }),
+    supabase.from("meeting_ideas").select("*"),
+    supabase.from("meeting_decisions").select("*"),
+    supabase.from("meeting_challenges").select("*"),
+  ]);
+  return (m.data || []).map((s: any) => ({
+    id: s.id, companyId: s.org_id, dealId: s.deal_id || "", date: s.on_date,
+    title: s.title || "", attendees: s.attendees || [], raw: s.raw || "",
+    createdBy: s.author_id, createdAt: s.created_at,
+    ideas: (i.data || []).filter((x: any) => x.meeting_id === s.id).sort((a: any, b: any) => a.seq - b.seq)
+      .map((x: any) => ({ _id: x.id, by: x.by_name || "", authorId: x.author_id, idea: x.idea, impact: x.impact || "", value: x.value, why: x.why || "" })),
+    decisions: (d.data || []).filter((x: any) => x.meeting_id === s.id).sort((a: any, b: any) => a.seq - b.seq)
+      .map((x: any) => ({ _id: x.id, what: x.what, ownerName: x.owner_name || "" })),
+    challenges: (c.data || []).filter((x: any) => x.meeting_id === s.id).sort((a: any, b: any) => a.seq - b.seq)
+      .map((x: any) => ({ _id: x.id, challenge: x.challenge, action: x.action || "", status: x.status })),
+  }));
+}
+export async function saveSession(s: any): Promise<boolean> {
+  const r1 = await supabase.from("meetings").upsert({
+    id: s.id, org_id: s.companyId, deal_id: s.dealId || null, on_date: s.date,
+    title: s.title || null, attendees: s.attendees || [], raw: s.raw || null, author_id: s.createdBy || null,
+  }, { onConflict: "id" });
+  let allOk = ok(r1.error, "saveSession.meeting");
+  const kid = (x: any) => x._id || crypto.randomUUID();
+  const ideas = (s.ideas || []).map((x: any, seq: number) => ({ id: (x._id = kid(x)), meeting_id: s.id, seq, author_id: x.authorId || null, by_name: x.by || null, idea: x.idea, impact: x.impact || null, value: x.value || null, why: x.why || null }));
+  const decisions = (s.decisions || []).map((x: any, seq: number) => ({ id: (x._id = kid(x)), meeting_id: s.id, seq, what: x.what, owner_name: x.ownerName || null }));
+  const challenges = (s.challenges || []).map((x: any, seq: number) => ({ id: (x._id = kid(x)), meeting_id: s.id, seq, challenge: x.challenge, action: x.action || null, status: x.status || "open" }));
+  for (const [table, rowsIn] of [["meeting_ideas", ideas], ["meeting_decisions", decisions], ["meeting_challenges", challenges]] as any) {
+    if (rowsIn.length) {
+      const { error } = await supabase.from(table).upsert(rowsIn, { onConflict: "id" });
+      allOk = ok(error, "saveSession." + table) && allOk;
+    }
+  }
+  return allOk;
+}
+
+// Chat threads — one per person per day; org_id scopes a thread to a company
+// ("Ask the AI" on the record) while null is the personal Assistant.
+// select→insert/update instead of upsert: the uniqueness lives in two partial
+// indexes (with/without org), which ON CONFLICT can't target generically.
+function chatScope(q: any, personId: string, date: string, orgId?: string | null) {
+  q = q.eq("person_id", personId).eq("on_date", date);
+  return orgId ? q.eq("org_id", orgId) : q.is("org_id", null);
+}
+export async function loadChat(personId: string, date: string, orgId?: string | null): Promise<any[]> {
+  const { data } = await chatScope(supabase.from("chats").select("messages"), personId, date, orgId).maybeSingle();
   return (data && data.messages) || [];
 }
-export async function loadChatDates(personId: string): Promise<string[]> {
-  const { data } = await supabase.from("chats").select("on_date")
-    .eq("person_id", personId).order("on_date", { ascending: false }).limit(60);
+export async function loadChatDates(personId: string, orgId?: string | null): Promise<string[]> {
+  let q = supabase.from("chats").select("on_date").eq("person_id", personId);
+  q = orgId ? q.eq("org_id", orgId) : q.is("org_id", null);
+  const { data } = await q.order("on_date", { ascending: false }).limit(60);
   return (data || []).map((r: any) => r.on_date);
 }
-export async function saveChat(personId: string, date: string, messages: any[]): Promise<boolean> {
+export async function saveChat(personId: string, date: string, messages: any[], orgId?: string | null): Promise<boolean> {
+  const { data } = await chatScope(supabase.from("chats").select("id"), personId, date, orgId).maybeSingle();
+  if (data?.id) {
+    const { error } = await supabase.from("chats").update({ messages }).eq("id", data.id);
+    return ok(error, "saveChat.update");
+  }
   const { error } = await supabase.from("chats")
-    .upsert({ person_id: personId, on_date: date, messages }, { onConflict: "person_id,on_date" });
-  return ok(error, "saveChat");
+    .insert({ person_id: personId, on_date: date, messages, org_id: orgId || null });
+  return ok(error, "saveChat.insert");
 }
 
 /* ---------- auth ---------- */

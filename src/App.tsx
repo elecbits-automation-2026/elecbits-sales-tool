@@ -12,7 +12,7 @@ import {
   loadWorkspace, syncUsers, syncCompanies, syncDeals, syncKpis, syncTrainings,
   syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
   syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
-  loadChat, loadChatDates, saveChat,
+  loadChat, loadChatDates, saveChat, loadSessions, saveSession,
   signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
 } from "./lib/data";
 import logoLight from "./assets/elecbits-logo.png";
@@ -470,6 +470,7 @@ function Chip({ children, color = "slate", className }) {
     amber: "bg-amber-50 text-amber-700",
     green: "bg-green-50 text-green-700",
     blue: "bg-blue-50 text-blue-700",
+    purple: "bg-purple-50 text-purple-700",
   };
   return <span className={cls("inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap", map[color], className)}>{children}</span>;
 }
@@ -1141,6 +1142,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
   const [newDeal, setNewDeal] = useState(false);
   const [minting, setMinting] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [ctab, setCtab] = useState("overview");
 
   const onRequestSubmitted = (reqId, title) => {
     setApplying(false);
@@ -1207,7 +1209,22 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
             <span><span className="font-semibold">Missing:</span> {missingFields(c).join(", ")}. No excuses — fill these before the next stage move.</span>
           </div>
         )}
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3 mt-5">
+      </div>
+
+      {/* the workspace tabs — the PMS project-section, for a company */}
+      <div className="bg-white border border-slate-200 rounded-xl px-4 mt-4 flex items-center gap-1 overflow-x-auto">
+        {[["overview", "Overview", TrendingUp], ["plan", "Plan", ClipboardList], ["todos", "To-dos", ListTodo], ["brainstorm", "Brainstorming", Lightbulb], ["files", "Files & Drive", FolderOpen], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
+          <button key={k} onClick={() => setCtab(k)}
+            className={cls("flex items-center gap-1.5 px-3.5 py-3 text-sm border-b-2 -mb-px whitespace-nowrap", ctab === k ? "border-blue-600 text-blue-700 font-semibold" : "border-transparent text-slate-500 font-medium hover:text-slate-700")}>
+            <Ic size={15} /> {l}
+            {k === "todos" && myTasks.length > 0 && <span className="font-mono text-[10px] bg-blue-50 text-blue-700 rounded-full px-1.5">{myTasks.length}</span>}
+          </button>
+        ))}
+      </div>
+
+      {ctab === "overview" && (<>
+      <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
           {COMPANY_FIELDS.map((fd) => (
             <div key={fd.k} className={fd.long ? "sm:col-span-2 lg:col-span-3" : ""}>
               <p className="text-xs text-slate-400">{fd.label}</p>
@@ -1277,30 +1294,41 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-4 mt-4">
-        <CompanyAssistant me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} />
-        <div className="space-y-4">
-          <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <SectionTitle>Open tasks on this company</SectionTitle>
-            {myTasks.length === 0 ? <p className="text-sm text-slate-400">None. Create them from the chat, scrum, or My Tasks.</p> : (
-              <div className="space-y-1.5">
-                {myTasks.map((t) => {
-                  const who = users.find((u) => u.id === t.assignee);
-                  return (
-                    <div key={t.id} className="flex items-center gap-2 text-sm border border-slate-200 rounded-md px-3 py-2">
-                      <ListTodo size={13} className="text-slate-400 flex-none" />
-                      <span className="mr-auto text-slate-800">{t.title}</span>
-                      {t.due && <span className="text-xs text-slate-400">{fmtDate(t.due)}</span>}
-                      {who && <Avatar name={who.name} size="sm" />}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <DriveCard company={c} />
+      </>)}
+
+      {ctab === "plan" && <PlanTab me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} />}
+
+      {ctab === "todos" && (
+        <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
+          <SectionTitle>Open tasks on this company</SectionTitle>
+          {myTasks.length === 0 ? <p className="text-sm text-slate-400">None. Create them from the chat, scrum, or My Tasks.</p> : (
+            <div className="space-y-1.5">
+              {myTasks.map((t) => {
+                const who = users.find((u) => u.id === t.assignee);
+                return (
+                  <div key={t.id} className="flex items-center gap-2 text-sm border border-slate-200 rounded-md px-3 py-2">
+                    <ListTodo size={13} className="text-slate-400 flex-none" />
+                    <span className="mr-auto text-slate-800">{t.title}</span>
+                    {t.due && <span className="text-xs text-slate-400">{fmtDate(t.due)}</span>}
+                    {who && <Avatar name={who.name} size="sm" />}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
-      </div>
+      )}
+
+      {ctab === "brainstorm" && <BrainstormTab me={me} company={c} data={data} saveTasks={saveTasks} />}
+
+      {ctab === "files" && (
+        <div className="grid lg:grid-cols-2 gap-4 mt-4 items-start">
+          <DriveCard company={c} />
+          <DriveIntel me={me} company={c} data={data} saveCompanies={saveCompanies} />
+        </div>
+      )}
+
+      {ctab === "ask" && <div className="mt-4"><CompanyAssistant me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} /></div>}
 
       {editing && <CompanyModal me={me} data={data} company={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={upsert} />}
       {newDeal && <NewDealModal me={me} data={data} fixedCompany={c} onClose={() => setNewDeal(false)} onCreate={createDeal} />}
@@ -2865,6 +2893,9 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
   const [busy, setBusy] = useState(false);
   const [suggested, setSuggested] = useState([]); // [{title, due}]
   const endRef = useRef(null);
+  // Date-wise persistence, scoped to this company (needs 16-company-chat.sql).
+  useEffect(() => { let a = true; loadChat(me.id, todayStr(), c.id).then((m) => a && setMsgs(m)); return () => { a = false; }; }, [c.id, me.id]);
+  const persistMsgs = (m) => { setMsgs(m); saveChat(me.id, todayStr(), m, c.id).catch(() => {}); };
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, suggested]);
 
   const qset = (questionSets.company_card && questionSets.company_card.questions) || [];
@@ -2898,9 +2929,9 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
       const reply = await askClaude(system, nm.slice(-12));
       const t = extractMarkedJSON(reply, "TASKS_JSON");
       if (Array.isArray(t) && t.length) setSuggested(t);
-      setMsgs([...nm, { role: "assistant", content: reply.replace(/TASKS_JSON[\s\S]*$/, "").trim() }]);
+      persistMsgs([...nm, { role: "assistant", content: reply.replace(/TASKS_JSON[\s\S]*$/, "").trim() }]);
     } catch (e) {
-      setMsgs([...nm, { role: "assistant", content: "Couldn't reach the AI — the note is filed on the record anyway." }]);
+      persistMsgs([...nm, { role: "assistant", content: "Couldn't reach the AI — the note is filed on the record anyway." }]);
     }
     setBusy(false);
   };
@@ -2931,6 +2962,225 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
         <Input placeholder="What happened with this company?" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} />
         <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}</Btn>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   PLAN — the AI account plan (the PMS project plan, for a company)
+   ============================================================ */
+
+function PlanTab({ me, company: c, data, saveCompanies, saveTasks }) {
+  const { companies, deals, tasks } = data;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const plan = (c.plan && c.plan.stages) ? c.plan : null;
+  const STAGE_COLORS = { done: "green", now: "blue", next: "amber", later: "slate", blocked: "red" };
+
+  const generate = async () => {
+    setBusy(true); setErr("");
+    try {
+      const myDeals = deals.filter((d) => d.companyId === c.id);
+      const myTasks = tasks.filter((t) => t.companyId === c.id);
+      const sys = [
+        "You are the account strategist on the Elecbits Sales OS. Build a staged ACCOUNT PLAN that takes this company from where it is today to a closed PO — the sales equivalent of a project plan.",
+        "COMPANY: " + JSON.stringify({ name: c.name, industry: c.industry, city: c.city, whatTheyDo: c.whatTheyDo, potential: c.potential, source: c.source, contact: c.contactPerson }),
+        "DEALS: " + JSON.stringify(myDeals.map((d) => ({ stage: d.lost ? "lost" : d.stage, value: d.value }))),
+        "OPEN TASKS: " + JSON.stringify(myTasks.filter((t) => t.status === "open").map((t) => t.title)),
+        "RECENT ACTIVITY: " + JSON.stringify((c.activity || []).slice(-8).map((a) => a.text)),
+        "5-8 stages, each: name, status (done|now|next|later|blocked), why (one factual sentence tied to THIS company's data), actions (1-3 concrete next moves). Statuses must reflect the actual deal stage and activity — never mark 'done' without evidence.",
+        "Reply ONLY: PLAN_JSON {\"summary\":\"2-3 sentences on where this account stands and the play\",\"stages\":[{\"name\":\"...\",\"status\":\"now\",\"why\":\"...\",\"actions\":[\"...\"]}]}",
+      ].join("\n");
+      const reply = await askClaude(sys, [{ role: "user", content: "Build the plan." }]);
+      const p = extractMarkedJSON(reply, "PLAN_JSON");
+      if (!p || !Array.isArray(p.stages)) throw new Error("no plan");
+      saveCompanies(companies.map((x) => x.id === c.id ? { ...x, plan: { ...(x.plan || {}), summary: p.summary || "", stages: p.stages, generatedAt: nowTS(), by: me.id } } : x));
+    } catch (e) { setErr("Plan generation failed — check the AI connection and try again."); }
+    setBusy(false);
+  };
+
+  const addAction = (title) => {
+    saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title, details: "From the account plan", due: localISO(new Date(Date.now() + 86400000)), status: "open", source: "system", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
+      <SectionTitle right={<Btn size="sm" kind="primary" disabled={busy} onClick={generate}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} {plan ? "Re-plan from live data" : "Generate account plan"}</Btn>}>
+        Account plan{plan && plan.generatedAt ? <span className="font-normal text-xs text-slate-400 ml-2">generated {fmtDate(plan.generatedAt)}</span> : null}
+      </SectionTitle>
+      {err && <p className="text-xs text-red-600 mb-2">{err}</p>}
+      {!plan && !busy && <Empty icon={ClipboardList} title="No plan yet" sub="The AI reads this company's record, deals, tasks and activity, and lays out the staged route to a PO — like the PMS project plan." action={<Btn kind="primary" onClick={generate}><Sparkles size={14} /> Generate account plan</Btn>} />}
+      {plan && (
+        <div className="space-y-4">
+          {plan.summary && <p className="text-sm text-slate-600 border-l-2 border-blue-500 pl-3">{plan.summary}</p>}
+          {plan.stages.map((s, i) => (
+            <div key={i} className="border-l-2 border-slate-200 pl-4 relative">
+              <span className={cls("absolute -left-[5px] top-1.5 w-2 h-2 rounded-full", s.status === "done" ? "bg-green-500" : s.status === "now" ? "bg-blue-600" : s.status === "blocked" ? "bg-red-500" : s.status === "next" ? "bg-amber-500" : "bg-slate-300")} />
+              <p className="text-sm font-semibold text-slate-800 flex items-center gap-2">{s.name} <Chip color={STAGE_COLORS[s.status] || "slate"}>{s.status}</Chip></p>
+              {s.why && <p className="text-xs text-slate-500 mt-0.5">{s.why}</p>}
+              {(s.actions || []).map((a, j) => (
+                <p key={j} className="text-sm text-slate-700 mt-1 flex items-center gap-2">• {a}
+                  <button onClick={() => addAction(a)} className="text-xs text-blue-600 hover:underline flex items-center gap-0.5"><Plus size={11} /> task</button>
+                </p>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   BRAINSTORMING — per-company sessions: ideas credited, challenges
+   + how they were beaten (the PMS Brainstorming module)
+   ============================================================ */
+
+function BrainstormTab({ me, company: c, data, saveTasks }) {
+  const { users, tasks } = data;
+  const [sessions, setSessions] = useState(null); // null = loading
+  const [who, setWho] = useState("");
+  const [raw, setRaw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [proposed, setProposed] = useState([]); // tasks from last write-up
+  useEffect(() => { let a = true; loadSessions(c.id).then((s) => a && setSessions(s)); return () => { a = false; }; }, [c.id]);
+
+  const writeUp = async () => {
+    if (!raw.trim() || busy) return;
+    setBusy(true); setErr("");
+    try {
+      const sys = [
+        "You write up a sales brainstorming session for the record, exactly like the Elecbits PMS: pull out what the challenge really was and how it was beaten, whose idea helped (credit by name), what was decided, and what has to happen next.",
+        "COMPANY: " + c.name + ". PEOPLE WHO MIGHT BE NAMED: " + users.map((u) => u.name).join(", "),
+        "Credit an idea ONLY when the suggestion actually changed the approach, saved time or money, caught a risk, or lifted quality — value 1-5 with a one-line why.",
+        "Reply ONLY: MOM_JSON {\"title\":\"short session title\",\"ideas\":[{\"by\":\"name\",\"idea\":\"...\",\"impact\":\"...\",\"value\":1-5,\"why\":\"...\"}],\"decisions\":[{\"what\":\"...\",\"owner\":\"name or empty\"}],\"challenges\":[{\"challenge\":\"...\",\"action\":\"how it was/will be beaten\",\"status\":\"solved|open|watch\"}],\"tasks\":[{\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+      ].join("\n");
+      const reply = await askClaude(sys, [{ role: "user", content: (who ? "In the room: " + who + "\n" : "") + raw.trim() }]);
+      const m = extractMarkedJSON(reply, "MOM_JSON");
+      if (!m) throw new Error("no writeup");
+      const s = {
+        id: uid(), companyId: c.id, dealId: "", date: todayStr(),
+        title: m.title || "Brainstorming session", attendees: who ? who.split(",").map((x) => x.trim()) : [],
+        raw: raw.trim(), createdBy: me.id, createdAt: nowTS(),
+        ideas: (m.ideas || []).map((x) => ({ by: x.by || "", idea: x.idea || "", impact: x.impact || "", value: x.value || null, why: x.why || "" })),
+        decisions: (m.decisions || []).map((x) => ({ what: x.what || "", ownerName: x.owner || "" })),
+        challenges: (m.challenges || []).map((x) => ({ challenge: x.challenge || "", action: x.action || "", status: ["solved", "open", "watch"].includes(x.status) ? x.status : "open" })),
+      };
+      saveSession(s);
+      setSessions([s, ...(sessions || [])]);
+      setProposed(Array.isArray(m.tasks) ? m.tasks : []);
+      setRaw(""); setWho("");
+    } catch (e) { setErr("Write-up failed — nothing was saved. Try again."); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <SectionTitle right={<Chip color="blue"><Lightbulb size={11} /> ideas · challenges · lessons</Chip>}>Brainstorming session</SectionTitle>
+        <p className="text-xs text-slate-500 mb-3">Type up what was discussed — a pricing argument, an objection, a review that went badly. The AI pulls out the challenge and how it was beaten, credits whose idea helped, what was decided, and what happens next. Actions become tasks; the write-up stays on this company so the same mistake is never made twice.</p>
+        <Input placeholder="Who was in the room? (optional)" value={who} onChange={(e) => setWho(e.target.value)} className="mb-2" />
+        <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-28" placeholder="e.g. Client pushed back on the quote — Akash suggested splitting the pilot from production pricing; we agreed, and Saurav will re-send by Friday…" />
+        <div className="flex items-center gap-2 mt-3">
+          <Btn kind="primary" disabled={busy || !raw.trim()} onClick={writeUp}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Save and write it up</Btn>
+          <span className="text-xs text-slate-400">{sessions ? sessions.length + " session" + (sessions.length === 1 ? "" : "s") + " kept on this company" : "loading…"}</span>
+        </div>
+        {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
+        {proposed.length > 0 && (
+          <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-3 mt-3">
+            <p className="text-xs font-semibold text-blue-700 mb-1.5">Actions from the session</p>
+            {proposed.map((t, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm py-0.5">
+                <span className="mr-auto text-slate-700">{t.title}</span>
+                <Btn size="sm" kind="primary" onClick={() => { saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title: t.title, details: "From brainstorming", due: t.due || todayStr(), status: "open", source: "system", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]); setProposed(proposed.filter((_, j) => j !== i)); }}><Plus size={12} /> Task</Btn>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {(sessions || []).map((s) => (
+        <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-5 border-l-4 border-l-purple-500">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="font-semibold text-sm text-slate-900 mr-auto">{s.title}</p>
+            <span className="font-mono text-xs text-slate-400">{fmtDate(s.date)}</span>
+            {(users.find((u) => u.id === s.createdBy) || {}).name && <span className="text-xs text-slate-400">by {(users.find((u) => u.id === s.createdBy) || {}).name}</span>}
+          </div>
+          {s.attendees.length > 0 && <p className="text-xs text-slate-400 mt-0.5">In the room: {s.attendees.join(", ")}</p>}
+          {s.ideas.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Ideas credited</p>
+              {s.ideas.map((x, i) => (
+                <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color="purple">{x.by || "?"}</Chip> {x.idea} {x.value && <span className="font-mono text-xs text-purple-600">·{x.value}/5</span>} {x.why && <span className="text-xs text-slate-400">— {x.why}</span>}</p>
+              ))}
+            </div>
+          )}
+          {s.challenges.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Challenges — and how they were beaten</p>
+              {s.challenges.map((x, i) => (
+                <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color={x.status === "solved" ? "green" : x.status === "watch" ? "amber" : "red"}>{x.status}</Chip> {x.challenge}{x.action && <span className="text-slate-500"> → {x.action}</span>}</p>
+              ))}
+            </div>
+          )}
+          {s.decisions.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Decided</p>
+              {s.decisions.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x.what}{x.ownerName && <span className="text-xs text-slate-400"> — {x.ownerName}</span>}</p>)}
+            </div>
+          )}
+          <details className="mt-2"><summary className="text-xs text-slate-400 cursor-pointer">Original note</summary><p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{s.raw}</p></details>
+        </div>
+      ))}
+      {sessions && sessions.length === 0 && <p className="text-sm text-slate-400 text-center py-4">Nothing written up yet for {c.name}.</p>}
+    </div>
+  );
+}
+
+/* ============================================================
+   DRIVE INTELLIGENCE — "re-analyse how it's moving" per company
+   ============================================================ */
+
+function DriveIntel({ me, company: c, data, saveCompanies }) {
+  const { companies } = data;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const intel = c.plan && c.plan.driveIntel;
+
+  const analyse = async () => {
+    setBusy(true); setErr("");
+    try {
+      const l = await fetch("/api/drive?action=list&name=" + encodeURIComponent(driveFolderName(c))).then((r) => r.json());
+      const sys = [
+        "You are the Drive-intelligence analyst on the Elecbits Sales OS. From the company record and its Drive folder listing, say how this account is ACTUALLY moving — blunt, factual, no praise.",
+        "COMPANY: " + JSON.stringify({ name: c.name, cid: c.cid, potential: c.potential, activity: (c.activity || []).slice(-6).map((a) => a.text) }),
+        "DRIVE FOLDER (" + driveFolderName(c) + "): " + JSON.stringify((l.files || []).map((f) => ({ name: f.name, modified: f.modified }))) + (l.error ? " (Drive error: " + l.error + ")" : ""),
+        "An empty folder for an active account is itself a finding — quotes, RFQs and MoMs should leave artifacts.",
+        "Reply ONLY: INTEL_JSON {\"stands\":\"WHERE IT STANDS — 2-3 sentences\",\"moving\":\"HOW IT IS MOVING — 2-3 sentences\",\"risks\":\"RISKS / BLOCKERS — 1-3 sentences\",\"next\":\"NEXT MOVES — who must do what\"}",
+      ].join("\n");
+      const reply = await askClaude(sys, [{ role: "user", content: "Analyse it." }]);
+      const v = extractMarkedJSON(reply, "INTEL_JSON");
+      if (!v) throw new Error("no intel");
+      saveCompanies(companies.map((x) => x.id === c.id ? { ...x, plan: { ...(x.plan || {}), driveIntel: { ...v, at: nowTS(), by: me.id } } } : x));
+    } catch (e) { setErr("Analysis failed — check the AI/Drive connection."); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <SectionTitle right={<Btn size="sm" kind="primary" disabled={busy} onClick={analyse}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} Re-analyse how it's moving</Btn>}>Drive intelligence</SectionTitle>
+      <p className="text-xs text-slate-500 mb-3">The OS reads this company's folder and tells you what's going on — artifacts are the truth, claims are not.</p>
+      {err && <p className="text-xs text-red-600 mb-2">{err}</p>}
+      {!intel && !busy && <p className="text-sm text-slate-400">Not analysed yet.</p>}
+      {intel && (
+        <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3 text-sm text-slate-700">
+          {[["WHERE IT STANDS", intel.stands], ["HOW IT IS MOVING", intel.moving], ["RISKS / BLOCKERS", intel.risks], ["NEXT MOVES", intel.next]].map(([h, t]) => t && (
+            <div key={h}><p className="text-xs font-bold text-slate-500 tracking-wide mb-0.5">{h}</p><p>{t}</p></div>
+          ))}
+          <p className="text-xs text-slate-400">analysed {fmtDate(intel.at)}</p>
+        </div>
+      )}
     </div>
   );
 }
