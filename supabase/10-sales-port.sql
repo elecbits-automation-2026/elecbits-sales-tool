@@ -41,6 +41,13 @@
 
 create schema if not exists sales;
 
+-- Their updated_at helper (defined in projects-into-a-real-table.sql; body
+-- identical — this only guards against a database where that file never ran).
+create or replace function public.touch_updated_at() returns trigger
+language plpgsql as $$
+begin new.updated_at = now(); return new; end;
+$$;
+
 -- ═══ PEOPLE DETAIL — the sales tool's opinion of a person ══════════════════
 create table if not exists sales.people_detail (
   person_id  uuid primary key references core.people(id) on delete cascade,
@@ -413,7 +420,7 @@ do $$
 declare t text;
 begin
   foreach t in array array[
-    'people_detail','org_detail','deals','deal_moves','org_activities',
+    'org_detail','deals','deal_moves','org_activities',
     'targets','knowledge','work_updates','travel_requests','scrum_notes',
     'memory','gate_config','meetings','meeting_ideas','meeting_decisions',
     'meeting_challenges',
@@ -432,6 +439,18 @@ begin
     end if;
   end loop;
 end $$;
+
+-- people_detail is the roster: everyone reads it, but rank changes only move
+-- through sales.upsert_person (SECURITY DEFINER) or a sales admin — otherwise
+-- any agent could hand themself 'admin' with one direct update.
+alter table sales.people_detail enable row level security;
+drop policy if exists people_detail_read on sales.people_detail;
+create policy people_detail_read on sales.people_detail
+  for select to authenticated using (true);
+drop policy if exists people_detail_write on sales.people_detail;
+create policy people_detail_write on sales.people_detail
+  for all to authenticated
+  using (sales.is_sales_admin()) with check (sales.is_sales_admin());
 
 grant usage on schema sales to authenticated;
 grant select, insert, update, delete on all tables in schema sales to authenticated;
