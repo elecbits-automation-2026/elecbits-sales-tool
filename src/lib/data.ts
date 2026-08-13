@@ -57,6 +57,7 @@ export async function loadWorkspace() {
     people, details, orgs, orgDetails, activities,
     deals, moves, targets, trainings, worklogs,
     knowledge, expenses, scrums, memory, gates,
+    tasks, llds, questionSets, requests,
   ] = await Promise.all([
     rows(core.from("people").select("*"), "people"),
     rows(supabase.from("people_detail").select("*"), "people_detail"),
@@ -73,6 +74,11 @@ export async function loadWorkspace() {
     rows(supabase.from("scrum_notes").select("*"), "scrum_notes"),
     rows(supabase.from("memory").select("*"), "memory"),
     rows(supabase.from("gate_config").select("*"), "gate_config"),
+    // Phase 1 tables may not exist until 12-phase1.sql runs — degrade to empty.
+    supabase.from("tasks").select("*").then((r: any) => r.data || []),
+    supabase.from("llds").select("*").then((r: any) => r.data || []),
+    supabase.from("question_sets").select("*").then((r: any) => r.data || []),
+    supabase.from("requests").select("*").then((r: any) => r.data || []),
   ]);
 
   const peopleById = new Map(people.map((p: any) => [p.id, p]));
@@ -86,6 +92,7 @@ export async function loadWorkspace() {
         id: p.id, name: p.name || "", email: (p.email || "").toLowerCase(),
         role: d.role, dept: d.dept || "Sales",
         active: d.active !== false,
+        authId: p.auth_id || null, // null = rostered but never signed in
       };
     })
     .filter(Boolean);
@@ -108,6 +115,8 @@ export async function loadWorkspace() {
       return {
         id: o.id,
         cid: o.client_id || d.legacy_cid || "",
+        official: !!o.client_id, // true once the Eb- ID is minted
+        orgSize: o.org_size || "",
         name: o.name,
         contactPerson: d.contact_person || "", designation: d.designation || "",
         phone: d.contact_phone || "", email: d.contact_email || "",
@@ -115,6 +124,7 @@ export async function loadWorkspace() {
         whatTheyDo: d.what_they_do || "", source: d.source || "",
         potential: Number(d.potential || 0), website: o.website || "",
         address: (o.address && o.address.text) || "",
+        legacyCid: d.legacy_cid || "",
         accountOwner: o.owner_id, createdBy: o.owner_id,
         createdAt: d.created_at,
         custom: Array.isArray(d.custom) ? d.custom : [],
@@ -192,11 +202,92 @@ export async function loadWorkspace() {
   const gatesOut: Record<string, string[]> = {};
   for (const g of gates) gatesOut[g.stage] = g.requirements || [];
 
+  const tasksOut = tasks.map((t: any) => ({
+    id: t.id, companyId: t.org_id || "", dealId: t.deal_id || "",
+    assignee: t.assignee_id, author: t.author_id,
+    title: t.title, details: t.details || "", due: t.due || "",
+    status: t.status, source: t.source, createdAt: t.created_at, doneAt: t.done_at,
+  }));
+
+  const lldsOut = llds.map((l: any) => ({
+    id: l.id, companyId: l.org_id, dealId: l.deal_id || "", title: l.title,
+    answers: l.answers || {}, status: l.status, createdBy: l.created_by,
+    createdAt: l.created_at, updatedAt: l.updated_at,
+  }));
+
+  const qsetsOut: Record<string, { title: string; questions: string[] }> = {};
+  for (const q of questionSets) qsetsOut[q.key] = { title: q.title, questions: q.questions || [] };
+
+  const requestsOut = requests.map((r: any) => ({
+    id: r.id, companyId: r.org_id || "", title: r.title, summary: r.summary || "",
+    kind: r.proposed_kind || "", qty: r.qty, targetDate: r.target_date || "",
+    value: Number(r.value_inr || 0), urgency: r.urgency, status: r.status,
+    projectId: r.project_id || "", decidedAt: r.decided_at, decisionNote: r.decision_note || "",
+    submittedBy: r.submitted_by, submittedAt: r.submitted_at,
+  }));
+
   return {
     users, companies, deals: dealsOut, kpis, trainings: trainingsOut,
     worklogs: worklogsOut, knowledge: knowledgeOut, expenses: expensesOut,
     scrums: scrumsOut, memory: memoryOut, gates: gatesOut,
+    tasks: tasksOut, llds: lldsOut, questionSets: qsetsOut, requests: requestsOut,
   };
+}
+
+/* ---------- phase 1 syncs ---------- */
+
+export async function syncTasks(tasks: any[]): Promise<boolean> {
+  const rowsIn = tasks.map((t) => ({
+    id: t.id, org_id: t.companyId || null, deal_id: t.dealId || null,
+    assignee_id: t.assignee, author_id: t.author || null,
+    title: t.title, details: t.details || null, due: t.due || null,
+    status: t.status, source: t.source || "manual",
+    done_at: t.status === "done" ? (t.doneAt || new Date().toISOString()) : null,
+  }));
+  return upsertAndPrune("tasks", rowsIn, tasks.map((t) => t.id), "syncTasks");
+}
+
+export async function syncLlds(llds: any[]): Promise<boolean> {
+  const rowsIn = llds.map((l) => ({
+    id: l.id, org_id: l.companyId, deal_id: l.dealId || null, title: l.title,
+    answers: l.answers || {}, status: l.status, created_by: l.createdBy || null,
+  }));
+  return upsertAndPrune("llds", rowsIn, llds.map((l) => l.id), "syncLlds");
+}
+
+export async function syncQuestionSet(key: string, title: string, questions: string[]): Promise<boolean> {
+  const { error } = await supabase.from("question_sets")
+    .upsert({ key, title, questions }, { onConflict: "key" });
+  return ok(error, "syncQuestionSet." + key);
+}
+
+// Mint the next official client serial from the shared core.numbering mint and
+// stamp the composed Eb-<industry>-<size>-<serial> onto the org. One-way: an
+// org that already has an official ID keeps it.
+export async function mintClientId(orgId: string, industryCode: number, sizeCode: string): Promise<string | null> {
+  const { data: existing } = await core.from("orgs").select("client_id").eq("id", orgId).maybeSingle();
+  if (existing?.client_id) return existing.client_id;
+  const { data: serial, error } = await core.rpc("next_number", { p_kind: "client_serial" });
+  if (error) { console.error("mintClientId", error.message); return null; }
+  const cid = "Eb-" + String(industryCode).padStart(2, "0") + "-" + sizeCode + "-" + serial;
+  const { error: e2 } = await core.from("orgs")
+    .update({ client_id: cid, org_size: sizeCode }).eq("id", orgId);
+  if (e2) { console.error("mintClientId.update", e2.message); return null; }
+  return cid;
+}
+
+// Raise a Project-ID request into the shared pipe (sales.requests → core.intake
+// → ULM decides). Returns the created row's id, or null.
+export async function submitProjectRequest(req: any): Promise<string | null> {
+  const { data, error } = await supabase.from("requests").insert({
+    org_id: req.companyId, title: req.title, summary: req.summary || null,
+    proposed_kind: req.kind || null, qty: req.qty || null,
+    target_date: req.targetDate || null, value_inr: Number(req.value || 0) || null,
+    urgency: req.urgency || "normal", status: "submitted",
+    submitted_by: req.by || null,
+  }).select("id").single();
+  if (error) { console.error("submitProjectRequest", error.message); return null; }
+  return data?.id || null;
 }
 
 /* ---------- syncs (wholesale, Phase 0) ---------- */
@@ -236,7 +327,9 @@ export async function syncCompanies(companies: any[]): Promise<boolean> {
     org_id: c.id, what_they_do: c.whatTheyDo || null,
     city: c.city || null, source: c.source || null,
     potential: Number(c.potential || 0),
-    legacy_cid: c.cid || null,
+    // once the official Eb- ID is minted, cid holds it — keep the legacy
+    // pseudo-id separately and never let the official ID overwrite it
+    legacy_cid: (c.official ? c.legacyCid : (c.legacyCid || c.cid)) || null,
     contact_person: c.contactPerson || null, designation: c.designation || null,
     contact_phone: c.phone || null, contact_email: c.email || null,
     custom: c.custom || [],
