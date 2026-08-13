@@ -4,12 +4,14 @@ import {
   Mic, MicOff, Send, Check, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
-  Bot, Database, CalendarCheck2, Sun, Moon
+  Bot, Database, CalendarCheck2, Sun, Moon, ListTodo, FolderOpen, PencilRuler,
+  ExternalLink, BadgeCheck, Rocket
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
   loadWorkspace, syncUsers, syncCompanies, syncDeals, syncKpis, syncTrainings,
   syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
+  syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
   signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
 } from "./lib/data";
 import logoLight from "./assets/elecbits-logo.png";
@@ -100,6 +102,69 @@ const COMPANY_FIELDS = [
   { k: "address", label: "Address", req: false, long: true },
 ];
 const REQ_FIELDS = COMPANY_FIELDS.filter((f) => f.req);
+
+/* ── Official client-ID nomenclature (EbClient_ID_Sheet) ──────────────────
+   Eb-<industry 01-43>-<size>-<serial>. The serial comes from the shared
+   core.numbering mint — never typed by hand. */
+const INDUSTRIES = [
+  [1, "Electric Vehicle"], [2, "EMS"], [3, "Just IoT"], [4, "IIoT"],
+  [5, "Home Automation"], [6, "Medical & Healthcare"], [7, "Energy Meter & Metering"],
+  [8, "Wearables"], [9, "Camera & Opticals"], [10, "Agri Tech/Farm Tech/Food Tech"],
+  [11, "AR/VR/AI"], [12, "Education-Tech/EdTech"], [13, "Industrial/ Machine Setup"],
+  [14, "ERP Solutions"], [15, "Robotics"], [16, "Information Technology"],
+  [17, "Defence/Military"], [18, "Automotive"], [19, "Battery Manufacturer"],
+  [20, "Consumer Electronics"], [21, "Other"], [22, "Government & Alliance"],
+  [23, "Freelance/Individual/Personal"], [24, "Logistics/Fleet Management"],
+  [25, "Fintech"], [26, "Aerospace"], [27, "BLDC"], [28, "Renewables"],
+  [29, "Oil & Gas"], [30, "Smart home"], [31, "Research"], [32, "E-Mobility"],
+  [33, "Infrastructure"], [34, "Toys and Games"], [35, "Incubator"],
+  [36, "Security/ surveilance"], [37, "Electronics components manufacturing"],
+  [38, "Drone tech"], [39, "Solar"], [40, "IT Hardware"], [41, "Display Manufacturers"],
+  [42, "Industrial Applications"], [43, "Trader"],
+];
+const ORG_SIZES = [
+  ["PL", "Proto Level — Small Hardware Startups"],
+  ["ML", "Mid Level — Hardware Startups"],
+  ["EL", "Enterprise Level — Large Product Companies"],
+  ["EM", "EMS"],
+  ["UN", "Individuals/Unknown"],
+  ["GO", "Government Organisation"],
+];
+const industryCodeOf = (label) => { const m = INDUSTRIES.find(([, l]) => l.toLowerCase() === String(label || "").toLowerCase()); return m ? m[0] : null; };
+
+/* ── LLD questions (30 — same set as the ODM PMS) ─────────────────────────── */
+const LLD_QUESTIONS = [
+  { id: 1, sec: "Product", text: "What is the product you want to build? Describe it in one sentence." },
+  { id: 2, sec: "Product", text: "What category does it fall into?" },
+  { id: 3, sec: "Product", text: "What problem does it solve for the end user?" },
+  { id: 4, sec: "Product", text: "Who is the target user?" },
+  { id: 5, sec: "Product", text: "Any existing products or references we should study?" },
+  { id: 6, sec: "Functions", text: "List the key features / functions this product must have." },
+  { id: 7, sec: "Functions", text: "Which sensors or input devices are needed?" },
+  { id: 8, sec: "Functions", text: "What outputs / actuators are required?" },
+  { id: 9, sec: "Functions", text: "Does it need a user interface?" },
+  { id: 10, sec: "Functions", text: "Any special processing needs (AI/ML, real-time, high-speed data)?" },
+  { id: 11, sec: "Connectivity", text: "What wireless connectivity is needed?" },
+  { id: 12, sec: "Connectivity", text: "Which wireless protocols are required (Wi-Fi, BLE, LoRa, Cellular, GPS…)?" },
+  { id: 13, sec: "Connectivity", text: "Any wired interfaces needed (USB-C, Ethernet, RS-485, CAN…)?" },
+  { id: 14, sec: "Connectivity", text: "Does it need cloud connectivity or a backend?" },
+  { id: 15, sec: "Power", text: "How will the device be powered?" },
+  { id: 16, sec: "Power", text: "If battery-powered, what is the expected battery life?" },
+  { id: 17, sec: "Power", text: "Any power consumption constraints or targets?" },
+  { id: 18, sec: "Power", text: "Does it need power-saving / sleep modes?" },
+  { id: 19, sec: "Software", text: "Is there a companion mobile or web app?" },
+  { id: 20, sec: "Software", text: "Does the firmware need OTA update capability?" },
+  { id: 21, sec: "Software", text: "Any data logging, analytics or reporting requirements?" },
+  { id: 22, sec: "Physical", text: "Approximate size constraints? (L × W × H in mm, or describe)" },
+  { id: 23, sec: "Physical", text: "What environment will it operate in?" },
+  { id: 24, sec: "Physical", text: "Enclosure material preference?" },
+  { id: 25, sec: "Certs", text: "Which certifications are required (CE, FCC, BIS, RoHS, IP rating…)?" },
+  { id: 26, sec: "Certs", text: "Any regulatory or compliance notes we should know about?" },
+  { id: 27, sec: "Cost & Time", text: "What is the target unit cost (BOM) range?" },
+  { id: 28, sec: "Cost & Time", text: "Expected production volume in the first year?" },
+  { id: 29, sec: "Cost & Time", text: "Any hard deadline or launch date we must hit?" },
+  { id: 30, sec: "Cost & Time", text: "Anything else we should know? Risks, constraints, special requests…" },
+];
 
 const ROLES = [
   { key: "admin", label: "Admin" },
@@ -493,6 +558,10 @@ export default function App() {
   const [gates, setGates] = useState({});
   const [scrums, setScrums] = useState([]);
   const [memory, setMemory] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [llds, setLlds] = useState([]);
+  const [questionSets, setQuestionSets] = useState({});
+  const [requests, setRequests] = useState([]);
 
   // Theme: default light; persisted per browser and applied to <html>.
   const [theme, setTheme] = useState(() => {
@@ -546,6 +615,8 @@ export default function App() {
         setUsers(ws.users); setCompanies(ws.companies); setDeals(ws.deals); setKpis(ws.kpis);
         setTrainings(ws.trainings); setWorklogs(ws.worklogs); setKnowledge(ws.knowledge);
         setExpenses(ws.expenses); setGates(ws.gates); setScrums(ws.scrums); setMemory(ws.memory);
+        setTasks(ws.tasks || []); setLlds(ws.llds || []);
+        setQuestionSets(ws.questionSets || {}); setRequests(ws.requests || []);
       } catch (e) { console.error("loadWorkspace failed", e); }
       if (alive) setLoading(false);
     })();
@@ -566,9 +637,15 @@ export default function App() {
   const saveGates = (v) => { setGates(v); flag(syncGates(v)); };
   const saveScrums = (v) => { setScrums(v); flag(syncScrums(v)); };
   const saveMemory = (v) => { setMemory(v); flag(syncMemory(v)); };
+  const saveTasks = (v) => { setTasks(v); flag(syncTasks(v)); };
+  const saveLlds = (v) => { setLlds(v); flag(syncLlds(v)); };
+  const saveQuestionSet = (key, title, questions) => {
+    setQuestionSets({ ...questionSets, [key]: { title, questions } });
+    flag(syncQuestionSet(key, title, questions));
+  };
 
   const me = (authEmail && users.find((u) => (u.email || "").toLowerCase() === authEmail && u.active !== false)) || null;
-  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory };
+  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
@@ -607,15 +684,18 @@ export default function App() {
           </div>
         )}
         <main key={tab} className="flex-1 min-w-0 p-4 md:p-6 overflow-x-hidden fade">
-          {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
+          {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} saveTasks={saveTasks} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
           {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "lld" && <LLDView me={me} data={data} saveLlds={saveLlds} />}
+          {tab === "resources" && <ResourcesView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
           {tab === "knowledge" && <KnowledgeView me={me} data={data} saveKnowledge={saveKnowledge} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
-          {tab === "scrum" && <DailyScrumView me={me} data={data} saveScrums={saveScrums} />}
+          {tab === "scrum" && <DailyScrumView me={me} data={data} saveScrums={saveScrums} saveTasks={saveTasks} />}
           {tab === "assistant" && me.role === "admin" && <AssistantView me={me} data={data} />}
           {tab === "memory" && me.role === "admin" && <SystemMemoryView me={me} data={data} saveMemory={saveMemory} />}
-          {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} />}
+          {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} saveQuestionSet={saveQuestionSet} />}
         </main>
         {saveErr && (
           <div className="fixed bottom-3 left-3 z-50 bg-red-600 text-white text-xs px-3 py-2 rounded-md shadow-lg flex items-center gap-2">
@@ -728,12 +808,15 @@ function navGroups(me) {
     { label: "Workspace", items: [
       { key: "pipeline", label: "Pipeline", icon: Columns },
       { key: "companies", label: "Companies", icon: Building2 },
+      { key: "tasks", label: "My Tasks", icon: ListTodo },
+      { key: "lld", label: "LLD Creation", icon: PencilRuler },
     ] },
     { label: "Personal", items: [
       { key: "scrum", label: "Daily Scrum", icon: CalendarCheck2 },
       { key: "performance", label: "Performance", icon: TrendingUp },
     ] },
     { label: "Resources", items: [
+      { key: "resources", label: "Resources", icon: Users },
       { key: "knowledge", label: "Product / Service", icon: BookOpen },
       { key: "expenses", label: "Expenses", icon: Receipt },
     ] },
@@ -848,7 +931,7 @@ function Topbar({ me, health, onAlarmClick, theme, onToggleTheme }) {
    COMPANIES
    ============================================================ */
 
-function CompaniesView({ me, data, saveCompanies, saveDeals, focusCompanyId, setFocusCompanyId, setTab }) {
+function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCompanyId, setFocusCompanyId, setTab }) {
   const { users, companies, deals } = data;
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(null); // company object or "new"
@@ -869,7 +952,7 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, focusCompanyId, set
   };
 
   if (open) {
-    return <CompanyDetail me={me} company={open} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals}
+    return <CompanyDetail me={me} company={open} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} saveTasks={saveTasks}
       onBack={() => setFocusCompanyId(null)} onEdit={() => setEditing(open)} editing={editing} setEditing={setEditing} upsert={upsert} setTab={setTab} />;
   }
 
@@ -984,14 +1067,24 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
   );
 }
 
-function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack, onEdit, editing, setEditing, upsert, setTab }) {
-  const { users, deals, companies } = data;
+function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTasks, onBack, onEdit, editing, setEditing, upsert, setTab }) {
+  const { users, deals, companies, tasks, requests } = data;
   const comp = completeness(c);
   const cc = comp >= 90 ? "green" : comp >= 70 ? "amber" : "red";
   const owner = users.find((u) => u.id === c.accountOwner);
   const myDeals = deals.filter((d) => d.companyId === c.id);
+  const myTasks = (tasks || []).filter((t) => t.companyId === c.id && t.status === "open");
+  const myRequests = (requests || []).filter((r) => r.companyId === c.id);
   const [note, setNote] = useState("");
   const [newDeal, setNewDeal] = useState(false);
+  const [minting, setMinting] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const onRequestSubmitted = (reqId, title) => {
+    setApplying(false);
+    const next = companies.map((x) => x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text: "Project-ID application submitted to ULM: " + title }] } : x);
+    saveCompanies(next);
+  };
 
   const addNote = () => {
     if (!note.trim()) return;
@@ -1017,14 +1110,35 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack,
               <h1 className="text-xl font-semibold">{c.name}</h1>
               <Dot color={cc} />
             </div>
-            <p className="font-mono text-xs text-slate-400 mt-0.5">{c.cid} · created {fmtDate(c.createdAt)}</p>
+            <p className="font-mono text-xs text-slate-400 mt-0.5 flex items-center gap-2">
+              {c.cid || "no ID yet"}
+              {c.official
+                ? <Chip color="green"><BadgeCheck size={11} /> official</Chip>
+                : <button onClick={() => setMinting(true)} className="text-blue-600 hover:underline text-xs font-sans">mint official client ID →</button>}
+              <span>· created {fmtDate(c.createdAt)}</span>
+            </p>
           </div>
           <div className="text-right">
             <p className={cls("font-mono text-2xl tabular-nums", cc === "red" ? "text-red-600" : cc === "amber" ? "text-amber-600" : "text-green-600")}>{comp}%</p>
             <p className="text-xs text-slate-400">data complete</p>
           </div>
+          <Btn onClick={() => setApplying(true)}><Rocket size={14} /> Apply for Project ID</Btn>
           <Btn onClick={onEdit}><Pencil size={14} /> Edit</Btn>
         </div>
+        {myRequests.length > 0 && (
+          <div className="mt-4 space-y-1.5">
+            {myRequests.map((r) => (
+              <div key={r.id} className={cls("rounded-md border px-3 py-2 text-sm flex items-center gap-2 flex-wrap",
+                r.status === "accepted" ? "bg-green-50 border-green-200 text-green-800" : r.status === "rejected" ? "bg-red-50 border-red-200 text-red-800" : "bg-blue-50 border-blue-200 text-blue-800")}>
+                <Rocket size={14} className="flex-none" />
+                <span className="font-medium mr-auto">{r.title}</span>
+                <Chip color={r.status === "accepted" ? "green" : r.status === "rejected" ? "red" : "blue"}>{r.status === "submitted" ? "awaiting ULM sanction" : r.status}</Chip>
+                {r.status === "accepted" && r.kind === "odm" && <span className="text-xs">→ sanctioned: create the LLD (menu → LLD Creation)</span>}
+                {r.decisionNote && <span className="text-xs w-full">{r.decisionNote}</span>}
+              </div>
+            ))}
+          </div>
+        )}
         {comp < 100 && (
           <div className={cls("mt-4 rounded-md border px-3 py-2 text-sm flex items-start gap-2", cc === "red" ? "bg-red-50 border-red-200 text-red-800" : "bg-amber-50 border-amber-200 text-amber-800")}>
             <AlertTriangle size={15} className="mt-0.5 flex-none" />
@@ -1101,9 +1215,75 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, onBack,
         </div>
       </div>
 
+      <div className="grid lg:grid-cols-2 gap-4 mt-4">
+        <CompanyAssistant me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} />
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <SectionTitle>Open tasks on this company</SectionTitle>
+            {myTasks.length === 0 ? <p className="text-sm text-slate-400">None. Create them from the chat, scrum, or My Tasks.</p> : (
+              <div className="space-y-1.5">
+                {myTasks.map((t) => {
+                  const who = users.find((u) => u.id === t.assignee);
+                  return (
+                    <div key={t.id} className="flex items-center gap-2 text-sm border border-slate-200 rounded-md px-3 py-2">
+                      <ListTodo size={13} className="text-slate-400 flex-none" />
+                      <span className="mr-auto text-slate-800">{t.title}</span>
+                      {t.due && <span className="text-xs text-slate-400">{fmtDate(t.due)}</span>}
+                      {who && <Avatar name={who.name} size="sm" />}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <DriveCard company={c} />
+        </div>
+      </div>
+
       {editing && <CompanyModal me={me} data={data} company={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={upsert} />}
       {newDeal && <NewDealModal me={me} data={data} fixedCompany={c} onClose={() => setNewDeal(false)} onCreate={createDeal} />}
+      {minting && <MintIdModal company={c} data={data} onClose={() => setMinting(false)} saveCompanies={saveCompanies} me={me} />}
+      {applying && <ProjectIdModal me={me} data={data} company={c} deal={myDeals.find((d) => !d.lost)} onClose={() => setApplying(false)} onSubmitted={onRequestSubmitted} />}
     </div>
+  );
+}
+
+/* Mint the official Eb-<industry>-<size>-<serial> from the shared company mint. */
+function MintIdModal({ company: c, data, onClose, saveCompanies, me }) {
+  const { companies } = data;
+  const guess = industryCodeOf(c.industry);
+  const [ind, setInd] = useState(guess || 21);
+  const [size, setSize] = useState(c.orgSize || "ML");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const mint = async () => {
+    setBusy(true); setErr("");
+    const cid = await mintClientId(c.id, Number(ind), size);
+    setBusy(false);
+    if (!cid) { setErr("Minting failed — check connection (the serial mint lives in core.numbering)."); return; }
+    saveCompanies(companies.map((x) => x.id === c.id
+      ? { ...x, cid, official: true, orgSize: size, legacyCid: x.official ? x.legacyCid : x.cid, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text: "Official client ID minted: " + cid }] }
+      : x));
+    onClose();
+  };
+  return (
+    <Modal title="Mint official client ID" onClose={onClose}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={busy} onClick={mint}>{busy ? <Loader2 size={14} className="animate-spin" /> : <BadgeCheck size={14} />} Mint Eb-{String(ind).padStart(2, "0")}-{size}-…</Btn></>}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">One serial, company-wide, from the shared mint — the same series the client ID sheet uses. This cannot be undone or retyped; the old working ID ({c.cid || "none"}) stays on record as the legacy ID.</p>
+        <Field label="Industry / application" req>
+          <Sel value={ind} onChange={(e) => setInd(e.target.value)}>
+            {INDUSTRIES.map(([n, l]) => <option key={n} value={n}>{String(n).padStart(2, "0")} — {l}</option>)}
+          </Sel>
+        </Field>
+        <Field label="Org size" req>
+          <Sel value={size} onChange={(e) => setSize(e.target.value)}>
+            {ORG_SIZES.map(([k, l]) => <option key={k} value={k}>{k} — {l}</option>)}
+          </Sel>
+        </Field>
+        {err && <p className="text-xs text-red-600">{err}</p>}
+      </div>
+    </Modal>
   );
 }
 
@@ -1246,6 +1426,9 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
                       <div className="flex items-center justify-between mt-2">
                         <span className="flex items-center gap-1 text-xs text-slate-500">{o && <Avatar name={o.name} size="sm" />}</span>
                         <div className="flex items-center gap-2">
+                          {c && stageIdx(d.stage) >= stageIdx("rfq") && !d.lost && (
+                            <button onClick={() => openCompany(c.id)} className="text-xs text-blue-600 hover:underline flex items-center gap-0.5" title="RFQ in hand? Apply for the official Project ID — ULM sanctions it."><Rocket size={11} /> Project ID</button>
+                          )}
                           {c && compPct < 70 && <span title="Company data incomplete"><AlertTriangle size={13} className="text-red-500" /></span>}
                           {!d.lost && d.stage !== "po" && (
                             <button onClick={() => setGate({ deal: d, from: d.stage, to: "lost", mode: "lost" })}
@@ -2155,7 +2338,28 @@ function ExpenseModal({ me, data, onClose, onSave }) {
    DAILY SCRUM — write it as it comes → AI-organised tasks
    ============================================================ */
 
-function DailyScrumView({ me, data, saveScrums }) {
+function DailyScrumView({ me, data, saveScrums, saveTasks }) {
+  // A scrum line becomes a real task: owner matched to the roster by name
+  // (unmatched → the note's author), due = the scrum's date.
+  const scrumToTasks = (s) => {
+    const { users, tasks } = data;
+    const fresh = (s.tasks || []).map((t) => {
+      const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
+      return {
+        id: uid(), companyId: "", dealId: "",
+        assignee: owner ? owner.id : s.userId, author: me.id,
+        title: t.task + (t.window ? " (" + t.window + ")" : ""),
+        details: t.condition || "", due: s.date || todayStr(),
+        status: "open", source: "scrum", createdAt: nowTS(),
+      };
+    });
+    if (fresh.length) saveTasks([...fresh, ...tasks]);
+    return fresh.length;
+  };
+  return <DailyScrumInner me={me} data={data} saveScrums={saveScrums} scrumToTasks={scrumToTasks} />;
+}
+
+function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   const { users, scrums } = data;
   const [date, setDate] = useState(todayStr());
   const [raw, setRaw] = useState("");
@@ -2266,10 +2470,13 @@ function DailyScrumView({ me, data, saveScrums }) {
                         </div>
                       </div>
                     ))}
-                    <details className="mt-1">
-                      <summary className="text-xs text-slate-400 cursor-pointer hover:text-slate-600">Original note</summary>
-                      <p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{s.raw}</p>
-                    </details>
+                    <div className="flex items-center gap-3 mt-1">
+                      <Btn size="sm" onClick={() => { const n = scrumToTasks(s); if (n) alert(n + " task(s) sent to My Tasks."); }}><ListTodo size={12} /> Send to My Tasks</Btn>
+                      <details>
+                        <summary className="text-xs text-slate-400 cursor-pointer hover:text-slate-600">Original note</summary>
+                        <p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{s.raw}</p>
+                      </details>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-sm text-slate-700 whitespace-pre-wrap">{s.raw}</p>
@@ -2448,8 +2655,554 @@ function MemoryModal({ entry, me, onClose, onSave }) {
    ADMIN
    ============================================================ */
 
-function AdminView({ me, data, saveUsers, saveGates }) {
-  const { users, gates } = data;
+/* ============================================================
+   GOOGLE DRIVE — one folder per company under the shared root
+   ============================================================ */
+
+const driveFolderName = (c) => (c.cid ? c.cid + " — " : "") + c.name;
+
+function DriveCard({ company }) {
+  const [state, setState] = useState({ phase: "loading" }); // loading | off | ready | error
+  const [opening, setOpening] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const s = await fetch("/api/drive?action=status").then((r) => r.json());
+        if (!alive) return;
+        if (!s.connected) { setState({ phase: "off", email: s.email }); return; }
+        const l = await fetch("/api/drive?action=list&name=" + encodeURIComponent(driveFolderName(company))).then((r) => r.json());
+        if (!alive) return;
+        setState(l.error ? { phase: "error", msg: l.error } : { phase: "ready", ...l });
+      } catch (e) { if (alive) setState({ phase: "error", msg: "Drive check failed — is the app deployed on Vercel?" }); }
+    })();
+    return () => { alive = false; };
+  }, [company.id]);
+
+  const open = async () => {
+    setOpening(true);
+    try {
+      const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(company))).then((x) => x.json());
+      if (r.link) window.open(r.link, "_blank");
+      else setState({ phase: "error", msg: r.error || "Could not open folder" });
+    } catch (e) { setState({ phase: "error", msg: "Could not reach /api/drive" }); }
+    setOpening(false);
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <SectionTitle right={state.phase === "ready" || state.phase === "error" ? (
+        <Btn size="sm" kind="primary" disabled={opening} onClick={open}>
+          {opening ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />} Open Drive folder
+        </Btn>) : null}>Documents — Google Drive</SectionTitle>
+      {state.phase === "loading" && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Checking Drive…</p>}
+      {state.phase === "off" && (
+        <p className="text-sm text-slate-500">Google Drive is <span className="font-medium text-slate-700">not connected</span>. An admin adds two Vercel env vars — <span className="font-mono text-xs">GOOGLE_SERVICE_ACCOUNT_JSON</span> and <span className="font-mono text-xs">DRIVE_ROOT_FOLDER_ID</span> — and every company gets its own folder here (RFQs, quotes, drawings).</p>
+      )}
+      {state.phase === "error" && <p className="text-sm text-red-600 flex items-start gap-1.5"><AlertCircle size={14} className="mt-0.5 flex-none" /> {state.msg}</p>}
+      {state.phase === "ready" && (
+        (state.files || []).length === 0
+          ? <p className="text-sm text-slate-400">Folder is empty (or not created yet — “Open Drive folder” creates it). Drop RFQs, drawings and quotes there; they'll list here.</p>
+          : <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
+              {state.files.map((f) => (
+                <a key={f.id} href={f.link} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-md hover:bg-slate-50 border border-transparent hover:border-slate-200">
+                  <FileText size={14} className="text-slate-400 flex-none" />
+                  <span className="truncate text-slate-700">{f.name}</span>
+                  <span className="ml-auto text-xs text-slate-400 flex-none">{fmtDate(f.modified)}</span>
+                  <ExternalLink size={12} className="text-slate-300 flex-none" />
+                </a>
+              ))}
+            </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   COMPANY ASSISTANT — trainable questions + chat → notes & tasks
+   ============================================================ */
+
+function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
+  const { users, companies, tasks, questionSets } = data;
+  const [msgs, setMsgs] = useState([]); // {role, content}
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [suggested, setSuggested] = useState([]); // [{title, due}]
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, suggested]);
+
+  const qset = (questionSets.company_card && questionSets.company_card.questions) || [];
+  const missing = missingFields(c);
+
+  const fileNote = (text) => {
+    const next = companies.map((x) => x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text }] } : x);
+    saveCompanies(next);
+  };
+  const addTask = (title, due) => {
+    saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title, details: "", due: due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS() }, ...tasks]);
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput("");
+    const nm = [...msgs, { role: "user", content: text }];
+    setMsgs(nm); setBusy(true);
+    // everything the agent types is knowledge — file it on the record
+    fileNote(text);
+    try {
+      const system = [
+        "You are the company-record assistant on the Elecbits Sales OS, working the record of \"" + c.name + "\" like a disciplined HubSpot operator.",
+        "COMPANY RECORD: " + JSON.stringify({ name: c.name, cid: c.cid, industry: c.industry, city: c.city, whatTheyDo: c.whatTheyDo, potential: c.potential, contact: c.contactPerson, designation: c.designation, source: c.source }),
+        "FIELDS STILL MISSING ON THE RECORD: " + (missing.join(", ") || "none"),
+        "THE TRAINED QUESTION SET (ask these, one at a time, most important first — never a wall of questions): " + JSON.stringify(qset),
+        "Rules: acknowledge what the agent just told you in one short sentence; extract any facts; then ask exactly ONE next question from the set that is still unanswered. Be specific and factual, never generic.",
+        "If the agent's message contains anything that should be FOLLOWED UP (a call to make, a document to send, a meeting to book), propose tasks by ending your reply with one line: TASKS_JSON [{\"title\":\"...\",\"due\":\"YYYY-MM-DD\"}] — due defaults to tomorrow. No tasks: no line.",
+      ].join("\n");
+      const reply = await askClaude(system, nm.slice(-12));
+      const t = extractMarkedJSON(reply, "TASKS_JSON");
+      if (Array.isArray(t) && t.length) setSuggested(t);
+      setMsgs([...nm, { role: "assistant", content: reply.replace(/TASKS_JSON[\s\S]*$/, "").trim() }]);
+    } catch (e) {
+      setMsgs([...nm, { role: "assistant", content: "Couldn't reach the AI — the note is filed on the record anyway." }]);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col">
+      <SectionTitle>Record assistant — chat, notes & tasks</SectionTitle>
+      <p className="text-xs text-slate-500 mb-3">Talk to the record. Everything you write is filed as activity; the AI works the trained question set ({qset.length} questions, editable in Admin) and proposes tasks — accepted tasks land in <span className="font-medium">My Tasks</span> and on this company.</p>
+      <div className="space-y-2 max-h-72 overflow-y-auto pr-1 mb-3">
+        {msgs.length === 0 && <p className="text-sm text-slate-400">Start with what happened — “spoke to {c.contactPerson || "the client"}, they want…”</p>}
+        {msgs.map((m, i) => (
+          <div key={i} className={cls("text-sm rounded-lg px-3 py-2 max-w-[92%] whitespace-pre-wrap", m.role === "user" ? "bg-blue-50 text-slate-800 ml-auto" : "bg-slate-50 text-slate-700")}>{m.content}</div>
+        ))}
+        {suggested.length > 0 && (
+          <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-3">
+            <p className="text-xs font-semibold text-blue-700 mb-2 flex items-center gap-1"><ListTodo size={13} /> Suggested tasks</p>
+            {suggested.map((t, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm py-1">
+                <span className="mr-auto text-slate-700">{t.title} <span className="text-xs text-slate-400">due {fmtDate(t.due || localISO(new Date(Date.now() + 86400000)))}</span></span>
+                <Btn size="sm" kind="primary" onClick={() => { addTask(t.title, t.due); setSuggested(suggested.filter((_, j) => j !== i)); }}><Plus size={12} /> Add</Btn>
+              </div>
+            ))}
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+      <div className="flex gap-2 mt-auto">
+        <Input placeholder="What happened with this company?" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} />
+        <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}</Btn>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   PROJECT-ID APPLICATION — sales.requests → core.intake → ULM
+   ============================================================ */
+
+function ProjectIdModal({ me, data, company, deal, onClose, onSubmitted }) {
+  const { questionSets } = data;
+  const criteria = (questionSets.boxbuild_criteria && questionSets.boxbuild_criteria.questions) || [];
+  const [kind, setKind] = useState("odm");
+  const [svc, setSvc] = useState("01");
+  const [priority, setPriority] = useState("P2");
+  const [spoc, setSpoc] = useState(company.contactPerson || "");
+  const [desc, setDesc] = useState("");
+  const [target, setTarget] = useState("");
+  const [margin, setMargin] = useState("");
+  const [value, setValue] = useState(deal ? String(deal.value || "") : "");
+  const [pm, setPm] = useState("");
+  const [checks, setChecks] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const allChecked = criteria.every((_, i) => checks[i]);
+  const ready = desc.trim() && spoc.trim() && (kind !== "boxbuild" || allChecked);
+
+  const submit = async () => {
+    setBusy(true); setErr("");
+    const title = company.name + " — " + (kind === "boxbuild" ? "Box Build" : "ODM") + " (" + (svc === "01" ? "01 R&D" : "02 SCS") + ")";
+    const summary = [
+      "Priority: " + priority, "Customer SPOC: " + spoc, "Service category: " + (svc === "01" ? "01 R&D" : "02 SCS/Manufacturing"),
+      "Description: " + desc.trim(), margin ? "Margin %: " + margin : "", pm ? "Proposed PM: " + pm : "",
+      deal ? "Deal: " + deal.did : "",
+      kind === "boxbuild" ? "Box-build acceptance criteria: ALL " + criteria.length + " passed" : "",
+    ].filter(Boolean).join("\n");
+    const id = await submitProjectRequest({
+      companyId: company.id, title, summary, kind, targetDate: target || null,
+      value: value || 0, urgency: priority === "P0" ? "high" : priority === "P3" ? "low" : "normal", by: me.id,
+    });
+    setBusy(false);
+    if (!id) { setErr("Submission failed — check connection and that the Phase-1 SQL has run."); return; }
+    onSubmitted(id, title);
+  };
+
+  return (
+    <Modal title={"Apply for Project ID — " + company.name} onClose={onClose} wide
+      footer={<>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" disabled={!ready || busy} onClick={submit}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />} Submit to ULM for sanction</Btn>
+      </>}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">The question set below comes from the centralised project tracking sheet (editable in Admin). On sanction, ULM mints the official project ID <span className="font-mono">{c0(company)}-{svc}-…</span> and the project is allocated.</p>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <Field label="Project kind" req>
+            <Sel value={kind} onChange={(e) => setKind(e.target.value)}>
+              <option value="odm">ODM (design + build)</option>
+              <option value="boxbuild">Box Build</option>
+            </Sel>
+          </Field>
+          <Field label="Service category" req>
+            <Sel value={svc} onChange={(e) => setSvc(e.target.value)}>
+              <option value="01">01 — R&D</option>
+              <option value="02">02 — SCS / Manufacturing</option>
+            </Sel>
+          </Field>
+          <Field label="Priority" req>
+            <Sel value={priority} onChange={(e) => setPriority(e.target.value)}>
+              <option>P0</option><option>P1</option><option>P2</option><option>P3</option>
+            </Sel>
+          </Field>
+          <Field label="Customer SPOC" req><Input value={spoc} onChange={(e) => setSpoc(e.target.value)} placeholder="Name — designation — phone" /></Field>
+          <Field label="Target delivery date"><Input type="date" value={target} onChange={(e) => setTarget(e.target.value)} /></Field>
+          <Field label="Expected order value (₹)"><Input type="number" value={value} onChange={(e) => setValue(e.target.value)} /></Field>
+          <Field label="Margin %"><Input type="number" value={margin} onChange={(e) => setMargin(e.target.value)} /></Field>
+          <Field label="Proposed PM"><Input value={pm} onChange={(e) => setPm(e.target.value)} /></Field>
+        </div>
+        <Field label="Project description" req hint="What exactly is being built or supplied — this is what ULM sanctions."><TA value={desc} onChange={(e) => setDesc(e.target.value)} className="min-h-24" /></Field>
+        {kind === "boxbuild" && (
+          <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
+            <p className="text-xs font-semibold text-amber-800 mb-2">Box-build RFQ acceptance criteria — every box must be ticked or this cannot be submitted</p>
+            {criteria.map((q, i) => (
+              <label key={i} className="flex items-start gap-2 text-sm py-1 cursor-pointer">
+                <input type="checkbox" checked={!!checks[i]} onChange={(e) => setChecks({ ...checks, [i]: e.target.checked })} className="mt-0.5" />
+                <span className="text-slate-700">{q}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        {kind === "odm" && <p className="text-xs text-slate-500 flex items-center gap-1.5"><PencilRuler size={13} /> ODM route: once ULM sanctions this, the deal will ask for LLD creation (menu → LLD Creation).</p>}
+        <p className="text-xs text-slate-500">Attach the RFQ file in the company's Drive folder (Documents card) — reviewers open the same folder.</p>
+        {err && <p className="text-xs text-red-600">{err}</p>}
+      </div>
+    </Modal>
+  );
+}
+const c0 = (company) => company.official ? company.cid : "Eb-…";
+
+/* ============================================================
+   MY TASKS — today / tomorrow, grouped per company
+   ============================================================ */
+
+function MyTasksView({ me, data, saveTasks, openCompany }) {
+  const { users, companies, tasks } = data;
+  const [scope, setScope] = useState("mine");
+  const [showDone, setShowDone] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [f, setF] = useState({ title: "", companyId: "", due: localISO(new Date(Date.now() + 86400000)), assignee: me.id });
+  const today = todayStr();
+  const tomorrow = localISO(new Date(Date.now() + 86400000));
+
+  const canTeam = me.role !== "agent";
+  const mine = tasks.filter((t) => (scope === "mine" ? t.assignee === me.id : true) && (showDone ? true : t.status === "open"));
+  const buckets = [
+    ["Overdue", mine.filter((t) => t.status === "open" && t.due && t.due < today)],
+    ["Today", mine.filter((t) => t.due === today)],
+    ["Tomorrow", mine.filter((t) => t.due === tomorrow)],
+    ["Later / no date", mine.filter((t) => (!t.due || t.due > tomorrow) && !(t.status === "open" && t.due && t.due < today))],
+  ];
+
+  const toggle = (t) => saveTasks(tasks.map((x) => x.id === t.id ? { ...x, status: x.status === "done" ? "open" : "done", doneAt: x.status === "done" ? null : nowTS() } : x));
+  const remove = (t) => saveTasks(tasks.filter((x) => x.id !== t.id));
+  const add = () => {
+    if (!f.title.trim()) return;
+    saveTasks([{ id: uid(), companyId: f.companyId || "", dealId: "", assignee: f.assignee, author: me.id, title: f.title.trim(), details: "", due: f.due || "", status: "open", source: "manual", createdAt: nowTS() }, ...tasks]);
+    setAdding(false); setF({ ...f, title: "" });
+  };
+
+  const TaskRow = ({ t }) => {
+    const comp = companies.find((c) => c.id === t.companyId);
+    const who = users.find((u) => u.id === t.assignee);
+    return (
+      <div className="flex items-center gap-2.5 border border-slate-200 rounded-md px-3 py-2 bg-white">
+        <button onClick={() => toggle(t)} className={cls("w-4 h-4 rounded border flex-none flex items-center justify-center", t.status === "done" ? "bg-green-600 border-green-600 text-white" : "border-slate-300 hover:border-blue-500")}>
+          {t.status === "done" && <Check size={11} />}
+        </button>
+        <div className="min-w-0 mr-auto">
+          <p className={cls("text-sm", t.status === "done" ? "line-through text-slate-400" : "text-slate-800")}>{t.title}</p>
+          <p className="text-xs text-slate-400 flex items-center gap-1.5 flex-wrap">
+            {comp && <button className="text-blue-600 hover:underline" onClick={() => openCompany(comp.id)}>{comp.name}</button>}
+            {t.due && <span>due {fmtDate(t.due)}</span>}
+            <span className="uppercase text-[10px] tracking-wide">{t.source}</span>
+            {scope === "team" && who && <span>· {who.name}</span>}
+          </p>
+        </div>
+        <button onClick={() => remove(t)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+      </div>
+    );
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <h1 className="text-lg font-semibold mr-auto">My Tasks</h1>
+        {canTeam && (
+          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+            {["mine", "team"].map((s) => (
+              <button key={s} onClick={() => setScope(s)} className={cls("px-3 py-1.5 font-medium", scope === s ? "bg-blue-600 text-white" : "bg-white text-slate-600")}>{s === "mine" ? "Mine" : "Team"}</button>
+            ))}
+          </div>
+        )}
+        <label className="text-xs text-slate-500 flex items-center gap-1.5"><input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> show done</label>
+        <Btn kind="primary" size="sm" onClick={() => setAdding(true)}><Plus size={13} /> New task</Btn>
+      </div>
+      {tasks.length === 0 && <Empty icon={ListTodo} title="No tasks yet" sub="Tasks arrive from the company chat, Daily Scrum, or by hand — and every one is tied to a company." action={<Btn kind="primary" onClick={() => setAdding(true)}><Plus size={14} /> New task</Btn>} />}
+      <div className="space-y-5">
+        {buckets.map(([label, list]) => list.length > 0 && (
+          <div key={label}>
+            <p className={cls("text-xs font-semibold uppercase tracking-wide mb-2", label === "Overdue" ? "text-red-600" : "text-slate-500")}>{label} · {list.length}</p>
+            <div className="space-y-1.5">{list.map((t) => <TaskRow key={t.id} t={t} />)}</div>
+          </div>
+        ))}
+      </div>
+      {adding && (
+        <Modal title="New task" onClose={() => setAdding(false)}
+          footer={<><Btn onClick={() => setAdding(false)}>Cancel</Btn><Btn kind="primary" disabled={!f.title.trim()} onClick={add}><Check size={14} /> Add</Btn></>}>
+          <div className="space-y-3">
+            <Field label="Task" req><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="Call Rahul about the pilot PO" /></Field>
+            <Field label="Company"><Sel value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}><option value="">— none —</option>{companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Sel></Field>
+            <Field label="Due"><Input type="date" value={f.due} onChange={(e) => setF({ ...f, due: e.target.value })} /></Field>
+            {me.role !== "agent" && <Field label="Assignee"><Sel value={f.assignee} onChange={(e) => setF({ ...f, assignee: e.target.value })}>{users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Sel></Field>}
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   RESOURCES — team view like the ODM PMS, driven by sales data
+   ============================================================ */
+
+function ResourcesView({ me, data, openCompany }) {
+  const { users, companies, deals, tasks, trainings } = data;
+  const [q, setQ] = useState("");
+  const [person, setPerson] = useState(null);
+  const needle = q.trim().toLowerCase();
+  const members = users.filter((u) => !needle || [u.name, u.email, u.dept, roleLabel(u.role)].some((v) => String(v || "").toLowerCase().includes(needle)));
+
+  const openDealsOf = (uid_) => deals.filter((d) => d.ownerId === uid_ && !d.lost && d.stage !== "po");
+  const openTasksOf = (uid_) => tasks.filter((t) => t.assignee === uid_ && t.status === "open");
+  const CAP = 8; // open deals an agent can genuinely work
+
+  const statusOf = (u) => {
+    if (u.active === false) return ["Inactive", "slate"];
+    const n = openDealsOf(u.id).length;
+    return n >= CAP ? ["At capacity", "red"] : n > 0 ? ["Deployed", "amber"] : ["Available", "green"];
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <h1 className="text-lg font-semibold mr-auto">Resources</h1>
+        <div className="relative"><Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" /><Input className="pl-8 w-56" placeholder="Search people…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-xs text-slate-400 border-b border-slate-100">
+              {["Person", "Role", "Dept", "Status", "Open deals", "Pipeline value", "Open tasks", "Health"].map((h) => <th key={h} className="py-2.5 px-4 font-medium whitespace-nowrap">{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {members.map((u) => {
+                const od = openDealsOf(u.id);
+                const val = od.reduce((s, d) => s + Number(d.value || 0), 0);
+                const [st, sc] = statusOf(u);
+                const h = healthOf(u, data);
+                return (
+                  <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/60 cursor-pointer" onClick={() => setPerson(u)}>
+                    <td className="py-2.5 px-4">
+                      <span className="flex items-center gap-2.5">
+                        <Avatar name={u.name} size="sm" />
+                        <span className="min-w-0">
+                          <span className="block font-medium text-slate-800">{u.name}{u.id === me.id && <span className="text-xs text-slate-400 font-normal"> (you)</span>}</span>
+                          {!u.authId && <span className="block text-[11px] text-amber-600">awaiting sign-up{u.email ? " · " + u.email : ""}</span>}
+                        </span>
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 whitespace-nowrap">{roleLabel(u.role)}</td>
+                    <td className="py-2.5 px-4">{u.dept}</td>
+                    <td className="py-2.5 px-4"><Chip color={sc}>{st}</Chip></td>
+                    <td className="py-2.5 px-4 font-mono tabular-nums">{od.length}<span className="text-slate-300"> / {CAP}</span></td>
+                    <td className="py-2.5 px-4 font-mono tabular-nums">{fmtINRc(val)}</td>
+                    <td className="py-2.5 px-4 font-mono tabular-nums">{openTasksOf(u.id).length}</td>
+                    <td className="py-2.5 px-4">{h == null ? <span className="text-slate-300">—</span> : <span className={cls("font-mono tabular-nums", h < 60 ? "text-red-600" : h < 80 ? "text-amber-600" : "text-green-600")}>{h}%</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p className="text-xs text-slate-400 mt-3">Deployment = open deals owned (capacity {CAP}). Health = KPI pace + training + work-update discipline, as in Performance. People are added in Admin → Users.</p>
+
+      {person && (
+        <Modal title={person.name + " — deployment"} onClose={() => setPerson(null)} wide>
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-4 text-sm">
+              <span className="text-slate-500">{roleLabel(person.role)} · {person.dept}</span>
+              <span className="font-mono text-xs text-slate-400 self-center">{person.email}</span>
+              {!person.authId && <Chip color="amber">awaiting sign-up</Chip>}
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Working on — open deals ({openDealsOf(person.id).length})</p>
+              {openDealsOf(person.id).length === 0 ? <p className="text-sm text-slate-400">Nothing on the board.</p> : (
+                <div className="space-y-1.5">
+                  {openDealsOf(person.id).map((d) => {
+                    const comp = companies.find((x) => x.id === d.companyId);
+                    return (
+                      <button key={d.id} onClick={() => { setPerson(null); comp && openCompany(comp.id); }} className="w-full text-left flex items-center gap-2 border border-slate-200 rounded-md px-3 py-2 hover:border-blue-400">
+                        <span className="font-medium text-sm text-slate-800 mr-auto">{comp ? comp.name : d.did}</span>
+                        <Chip color="blue">{stageName(d.stage)}</Chip>
+                        <span className="font-mono text-sm tabular-nums">{fmtINRc(d.value)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Open tasks ({openTasksOf(person.id).length})</p>
+              {openTasksOf(person.id).slice(0, 8).map((t) => {
+                const comp = companies.find((x) => x.id === t.companyId);
+                return <p key={t.id} className="text-sm text-slate-700 py-0.5">• {t.title} {comp && <span className="text-xs text-slate-400">({comp.name})</span>} {t.due && <span className="text-xs text-slate-400">due {fmtDate(t.due)}</span>}</p>;
+              })}
+              {openTasksOf(person.id).length === 0 && <p className="text-sm text-slate-400">No open tasks.</p>}
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Trainings</p>
+              {trainings.filter((t) => t.assignedTo === person.id).map((t) => (
+                <p key={t.id} className="text-sm text-slate-700 py-0.5">• {t.title} <Chip color={t.status === "done" ? "green" : "amber"}>{t.status}</Chip></p>
+              ))}
+              {trainings.filter((t) => t.assignedTo === person.id).length === 0 && <p className="text-sm text-slate-400">None assigned.</p>}
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   LLD CREATION — 30-question capture, per company/deal
+   ============================================================ */
+
+function LLDView({ me, data, saveLlds }) {
+  const { companies, llds, users } = data;
+  const [editing, setEditing] = useState(null); // lld | "new"
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 mb-4">
+        <h1 className="text-lg font-semibold mr-auto">LLD Creation</h1>
+        <Btn kind="primary" size="sm" onClick={() => setEditing("new")} disabled={!companies.length}><Plus size={13} /> New LLD</Btn>
+      </div>
+      <p className="text-sm text-slate-500 mb-4">The customer Low-Level Design — the same 30-question set the ODM PMS uses. An ODM project that gets sanctioned needs one before engineering picks it up.</p>
+      {llds.length === 0 ? (
+        <Empty icon={PencilRuler} title="No LLDs yet" sub="Start one for any company — usually right after ULM sanctions an ODM project." action={<Btn kind="primary" onClick={() => setEditing("new")} disabled={!companies.length}><Plus size={14} /> New LLD</Btn>} />
+      ) : (
+        <div className="space-y-2">
+          {llds.map((l) => {
+            const comp = companies.find((c) => c.id === l.companyId);
+            const by = users.find((u) => u.id === l.createdBy);
+            const answered = LLD_QUESTIONS.filter((q) => String(l.answers[q.id] || "").trim()).length;
+            return (
+              <button key={l.id} onClick={() => setEditing(l)} className="w-full text-left bg-white border border-slate-200 rounded-xl px-4 py-3 hover:border-blue-400 flex items-center gap-3">
+                <div className="min-w-0 mr-auto">
+                  <p className="font-medium text-sm text-slate-800">{l.title}</p>
+                  <p className="text-xs text-slate-400">{comp ? comp.name : "?"} · {by ? by.name : ""} · {fmtDate(l.updatedAt || l.createdAt)}</p>
+                </div>
+                <span className="font-mono text-xs text-slate-500 tabular-nums">{answered}/30</span>
+                <Chip color={l.status === "final" ? "green" : "amber"}>{l.status}</Chip>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {editing && <LldEditor me={me} data={data} lld={editing === "new" ? null : editing} onClose={() => setEditing(null)} saveLlds={saveLlds} />}
+    </div>
+  );
+}
+
+function LldEditor({ me, data, lld, onClose, saveLlds }) {
+  const { companies, llds } = data;
+  const [companyId, setCompanyId] = useState(lld ? lld.companyId : (companies[0] ? companies[0].id : ""));
+  const [title, setTitle] = useState(lld ? lld.title : "");
+  const [answers, setAnswers] = useState(lld ? { ...lld.answers } : {});
+  const answered = LLD_QUESTIONS.filter((q) => String(answers[q.id] || "").trim()).length;
+  const secs = [...new Set(LLD_QUESTIONS.map((q) => q.sec))];
+
+  const save = (status) => {
+    const comp = companies.find((c) => c.id === companyId);
+    const doc = {
+      id: lld ? lld.id : uid(),
+      companyId, dealId: lld ? lld.dealId : "",
+      title: title.trim() || ((comp ? comp.name : "LLD") + " — customer LLD"),
+      answers, status, createdBy: lld ? lld.createdBy : me.id,
+      createdAt: lld ? lld.createdAt : nowTS(), updatedAt: nowTS(),
+    };
+    saveLlds(lld ? llds.map((x) => (x.id === doc.id ? doc : x)) : [doc, ...llds]);
+    onClose();
+  };
+
+  return (
+    <Modal title={lld ? "Edit LLD" : "New LLD"} onClose={onClose} wide
+      footer={<>
+        <span className="mr-auto font-mono text-xs text-slate-400 self-center">{answered}/30 answered</span>
+        <Btn onClick={() => save("draft")}>Save draft</Btn>
+        <Btn kind="primary" disabled={answered < 30} title={answered < 30 ? "All 30 questions — hard gate, like the PMS" : ""} onClick={() => save("final")}><BadgeCheck size={14} /> Mark final</Btn>
+      </>}>
+      <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-2">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <Field label="Company" req>
+            <Sel value={companyId} onChange={(e) => setCompanyId(e.target.value)} disabled={!!lld}>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Sel>
+          </Field>
+          <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="auto from company" /></Field>
+        </div>
+        {secs.map((sec) => (
+          <div key={sec}>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 mt-2">{sec}</p>
+            <div className="space-y-3">
+              {LLD_QUESTIONS.filter((q) => q.sec === sec).map((q) => (
+                <div key={q.id}>
+                  <p className="text-sm text-slate-700 mb-1"><span className="font-mono text-xs text-slate-400">Q{q.id}</span> {q.text}</p>
+                  <TA value={answers[q.id] || ""} onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })} className="min-h-[38px]" placeholder="Answer, or leave blank for TBD" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+function AdminView({ me, data, saveUsers, saveGates, saveQuestionSet }) {
+  const { users, gates, questionSets } = data;
+  const QSET_KEYS = ["company_card", "project_id", "boxbuild_criteria"];
+  const [qsKey, setQsKey] = useState("company_card");
+  const [qsText, setQsText] = useState(() => ((questionSets.company_card || {}).questions || []).join("\n"));
+  const [qsSaved, setQsSaved] = useState(false);
+  const pickQs = (k) => { setQsKey(k); setQsText(((questionSets[k] || {}).questions || []).join("\n")); };
+  const saveQs = () => {
+    const lines = qsText.split("\n").map((l) => l.trim()).filter(Boolean);
+    saveQuestionSet(qsKey, (questionSets[qsKey] || {}).title || qsKey, lines);
+    setQsSaved(true); setTimeout(() => setQsSaved(false), 1500);
+  };
   const [editUser, setEditUser] = useState(null); // user | "new"
   const [gateStage, setGateStage] = useState("rfq");
   const [gateText, setGateText] = useState(() => ((gates["rfq"] && gates["rfq"].length ? gates["rfq"] : DEFAULT_GATES["rfq"]) || []).join("\n"));
@@ -2521,6 +3274,24 @@ function AdminView({ me, data, saveUsers, saveGates }) {
           <Btn size="sm" onClick={resetGate}>Reset to default</Btn>
           {gateSaved && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> Saved</span>}
           <span className="ml-auto text-xs text-slate-400 font-mono">• = customised</span>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <SectionTitle>Trainable question sets</SectionTitle>
+        <p className="text-xs text-slate-500 mb-3">One question per line. These drive the company record assistant, the Project-ID application, and the box-build acceptance gate. Requires the Phase-1 SQL (<span className="font-mono">supabase/12-phase1.sql</span>) to have run.</p>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {QSET_KEYS.map((k) => (
+            <button key={k} onClick={() => pickQs(k)}
+              className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border", qsKey === k ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-100")}>
+              {k === "company_card" ? "Company record" : k === "project_id" ? "Project-ID application" : "Box-build criteria"}
+            </button>
+          ))}
+        </div>
+        <TA value={qsText} onChange={(e) => setQsText(e.target.value)} className="min-h-40 font-mono text-xs" />
+        <div className="flex items-center gap-2 mt-2">
+          <Btn kind="primary" size="sm" onClick={saveQs}><Check size={13} /> Save</Btn>
+          {qsSaved && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> Saved</span>}
         </div>
       </div>
 
