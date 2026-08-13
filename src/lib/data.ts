@@ -554,6 +554,22 @@ export async function saveSession(s: any): Promise<boolean> {
   return allOk;
 }
 
+// Every credited idea across all brainstorming sessions — for the
+// Performance "Ideas & contribution" tab.
+export async function loadAllIdeas(): Promise<any[]> {
+  const [i, m] = await Promise.all([
+    supabase.from("meeting_ideas").select("*"),
+    supabase.from("meetings").select("id, org_id, on_date, title"),
+  ]);
+  const mm = new Map((m.data || []).map((x: any) => [x.id, x]));
+  return (i.data || []).map((x: any) => {
+    const s: any = mm.get(x.meeting_id) || {};
+    return { id: x.id, by: x.by_name || "", authorId: x.author_id, idea: x.idea,
+             impact: x.impact || "", value: x.value, why: x.why || "",
+             companyId: s.org_id || "", date: s.on_date || "", session: s.title || "" };
+  });
+}
+
 // Chat threads — one per person per day; org_id scopes a thread to a company
 // ("Ask the AI" on the record) while null is the personal Assistant.
 // select→insert/update instead of upsert: the uniqueness lives in two partial

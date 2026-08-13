@@ -12,7 +12,7 @@ import {
   loadWorkspace, syncUsers, syncCompanies, syncDeals, syncKpis, syncTrainings,
   syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
   syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
-  loadChat, loadChatDates, saveChat, loadSessions, saveSession,
+  loadChat, loadChatDates, saveChat, loadSessions, saveSession, loadAllIdeas,
   signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
 } from "./lib/data";
 import logoLight from "./assets/elecbits-logo.png";
@@ -1761,7 +1761,7 @@ function PerformanceView({ me, data, saveKpis, saveTrainings, saveWorklogs, fixN
       {team.length > 0 && <TeamTable me={me} data={data} team={team} onPick={setViewId} />}
 
       <div className="flex gap-1 border-b border-slate-200 mb-4 mt-2">
-        {[["kpi", "KPI", TrendingUp], ["training", "Training", GraduationCap], ["worklog", "Work update sheet", ClipboardList]].map(([k, l, I]) => (
+        {[["kpi", "KPI", TrendingUp], ["training", "Training", GraduationCap], ["worklog", "Work update sheet", ClipboardList], ["ideas", "Ideas & contribution", Lightbulb]].map(([k, l, I]) => (
           <button key={k} onClick={() => setPtab(k)}
             className={cls("flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px", ptab === k ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-slate-500 hover:text-slate-800")}>
             <I size={14} /> {l}
@@ -1772,6 +1772,7 @@ function PerformanceView({ me, data, saveKpis, saveTrainings, saveWorklogs, fixN
       {ptab === "kpi" && <KpiTab me={me} viewUser={viewUser} data={data} saveKpis={saveKpis} goFix={goFix} />}
       {ptab === "training" && <TrainingTab me={me} viewUser={viewUser} data={data} saveTrainings={saveTrainings} />}
       {ptab === "worklog" && <WorklogTab me={me} viewUser={viewUser} data={data} saveWorklogs={saveWorklogs} />}
+      {ptab === "ideas" && <IdeasTab viewUser={viewUser} data={data} />}
     </div>
   );
 }
@@ -1986,6 +1987,44 @@ function AssignTrainingModal({ me, data, defaultTo, onClose, onSave }) {
         </Field>
       </div>
     </Modal>
+  );
+}
+
+/* Ideas credited from brainstorming write-ups — per person + across the team
+   (the PMS Ideas & contribution tab). */
+function IdeasTab({ viewUser, data }) {
+  const { companies } = data;
+  const [ideas, setIdeas] = useState(null);
+  useEffect(() => { let a = true; loadAllIdeas().then((x) => a && setIdeas(x)); return () => { a = false; }; }, []);
+  const first = (n) => String(n || "").trim().toLowerCase().split(" ")[0];
+  const mineList = (ideas || []).filter((x) => x.authorId === viewUser.id || (x.by && first(x.by) === first(viewUser.name)));
+  const compName = (id) => (companies.find((c) => c.id === id) || {}).name || "";
+  const IdeaRow = ({ x, showBy }) => (
+    <div className="border-l-2 border-purple-300 pl-3 py-1.5">
+      <p className="text-sm text-slate-800">{showBy && <Chip color="purple" className="mr-1.5">{x.by || "?"}</Chip>}{x.idea} {x.value && <span className="font-mono text-xs text-purple-600">· {x.value}/5</span>}</p>
+      <p className="text-xs text-slate-400 mt-0.5">{[x.why, compName(x.companyId), fmtDate(x.date)].filter(Boolean).join(" · ")}</p>
+    </div>
+  );
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <SectionTitle><span className="flex items-center gap-2"><Lightbulb size={15} className="text-purple-600" /> {viewUser.name}</span></SectionTitle>
+        {ideas === null ? <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading…</p>
+          : mineList.length === 0 ? (
+            <div className="text-center py-8">
+              <Lightbulb size={28} className="mx-auto text-slate-300 mb-2" />
+              <p className="text-sm font-semibold text-slate-700">No ideas credited yet</p>
+              <p className="text-xs text-slate-400 max-w-md mx-auto mt-1">Ideas are credited when a discussion is written up in a brainstorming session on a company — and only when the suggestion actually changed the approach, saved time or money, caught a risk, or lifted quality.</p>
+            </div>
+          ) : <div className="space-y-1">{mineList.map((x) => <IdeaRow key={x.id} x={x} />)}</div>}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <SectionTitle>Across the team</SectionTitle>
+        {ideas === null ? null
+          : ideas.length === 0 ? <p className="text-sm text-slate-400">Nothing written up yet.</p>
+          : <div className="space-y-1">{ideas.slice(0, 20).map((x) => <IdeaRow key={x.id} x={x} showBy />)}</div>}
+      </div>
+    </div>
   );
 }
 
