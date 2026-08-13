@@ -19,14 +19,38 @@ import crypto from "node:crypto";
 
 const SCOPE = "https://www.googleapis.com/auth/drive";
 
+// A PEM key that lost its newlines (hard-wrapped paste, stripped \n escapes)
+// gets rebuilt: header/footer on their own lines, 64-char body lines.
+function fixPem(k) {
+  if (!k || k.includes("\n")) return k;
+  const m = k.match(/-----BEGIN PRIVATE KEY-----(.*)-----END PRIVATE KEY-----/s);
+  if (!m) return k;
+  const body = m[1].replace(/\s+/g, "");
+  return "-----BEGIN PRIVATE KEY-----\n" + body.replace(/(.{64})/g, "$1\n").trim() + "\n-----END PRIVATE KEY-----\n";
+}
+
+function tryParse(text) {
+  try {
+    const sa = JSON.parse(text);
+    if (!(sa.client_email && sa.private_key)) return null;
+    sa.private_key = fixPem(sa.private_key);
+    return sa;
+  } catch (e) { return null; }
+}
+
 function serviceAccount() {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!raw) return null;
-  try {
-    const text = raw.trim().startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
-    const sa = JSON.parse(text);
-    return sa.client_email && sa.private_key ? sa : null;
-  } catch (e) { return null; }
+  const t = raw.trim();
+  if (!t.startsWith("{")) {
+    try { return tryParse(Buffer.from(t, "base64").toString("utf8")); } catch (e) { return null; }
+  }
+  // Paste-mangled variants, most-likely first: verbatim; raw newlines that
+  // belong inside the key re-escaped; raw newlines stripped entirely.
+  return tryParse(t)
+      || tryParse(t.replace(/(-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----)/,
+                            (s) => s.replace(/\r?\n/g, "\\n")))
+      || tryParse(t.replace(/\r?\n/g, ""));
 }
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
@@ -89,20 +113,10 @@ export default async function handler(req, res) {
 
   if (action === "status") {
     // Spell out which half is missing so nobody has to guess from `false`.
-    const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-    let jsonState = "missing";
-    if (raw) {
-      jsonState = "unparseable";
-      try {
-        const text = raw.trim().startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
-        const j = JSON.parse(text);
-        jsonState = j.client_email && j.private_key ? "ok" : "missing client_email/private_key";
-      } catch (e) { /* stays unparseable */ }
-    }
     return res.status(200).json({
       connected: !!(sa && root),
       email: sa ? sa.client_email : null,
-      service_account_json: jsonState,
+      service_account_json: sa ? "ok" : (process.env.GOOGLE_SERVICE_ACCOUNT_JSON ? "unparseable" : "missing"),
       root_folder_id: root ? "set" : "missing",
     });
   }
