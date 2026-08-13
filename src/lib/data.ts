@@ -7,11 +7,22 @@
 // upserts. Later phases replace wholesale syncs with per-row operations as
 // each feature is reworked — the strangler pattern, applied to a data layer.
 //
-// Ids: every entity id is a uuid. Migrated rows carry md5(old_text_id)::uuid
-// (see supabase/03-migrate-blobs.sql); new rows get crypto.randomUUID() from
-// the app. Append-only children (activities, deal moves) travel inside their
-// parent objects with a hidden `_id` marking rows already persisted — sync
-// inserts only entries without one.
+// The schema is the SHARED one the PMS built (core.people / core.orgs /
+// core.trainings), plus this tool's own `sales` schema — see
+// supabase/10-sales-port.sql. Rules that shape this file:
+//   • core.people rows are shared with the PMS. The sales rank lives in
+//     sales.people_detail; roster writes go through the SECURITY DEFINER
+//     RPC sales.upsert_person, never straight at core.people.
+//   • core.orgs is shared: the app fills gaps but never touches client_id
+//     (official Eb- IDs) or another tool's columns.
+//   • core.trainings is shared with the PMS: queries and prunes are scoped
+//     to people on the SALES roster.
+//
+// Ids: every entity id is a uuid. Migrated rows carry deterministic
+// md5-derived uuids (see supabase/11-migrate-blobs.sql); new rows get
+// crypto.randomUUID() from the app. Append-only children (activities, deal
+// moves) travel inside their parent objects with a hidden `_id` marking rows
+// already persisted — sync inserts only entries without one.
 
 import { supabase, core } from "./supabase";
 
@@ -30,15 +41,17 @@ function ok(error: any, label: string): boolean {
   return true;
 }
 
-const monthKey = () => {
-  const d = new Date();
-  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
-};
+// The KPI blob is one standing set per person, applied month after month.
+const TARGET_PERIOD = "default";
+
+// Who is on the sales roster (core.people ids) — set by loadWorkspace, used
+// to scope the shared core.trainings table to this tool's people.
+let rosterIds: string[] = [];
 
 /* ---------- load ---------- */
 
 // Everything the app needs, in its existing shapes. One round of parallel
-// selects; RLS scopes every query to the signed-in person's grants.
+// selects; RLS decides what the signed-in person may see.
 export async function loadWorkspace() {
   const [
     people, details, orgs, orgDetails, activities,
@@ -47,18 +60,18 @@ export async function loadWorkspace() {
   ] = await Promise.all([
     rows(core.from("people").select("*"), "people"),
     rows(supabase.from("people_detail").select("*"), "people_detail"),
-    rows(core.from("orgs").select("*").is("archived_at", null), "orgs"),
+    rows(core.from("orgs").select("*"), "orgs"),
     rows(supabase.from("org_detail").select("*"), "org_detail"),
-    rows(supabase.from("activities").select("*").order("at"), "activities"),
+    rows(supabase.from("org_activities").select("*").order("at"), "org_activities"),
     rows(supabase.from("deals").select("*"), "deals"),
     rows(supabase.from("deal_moves").select("*").order("at"), "deal_moves"),
-    rows(supabase.from("targets").select("*").eq("period", monthKey()), "targets"),
-    rows(supabase.from("trainings").select("*"), "trainings"),
+    rows(supabase.from("targets").select("*").eq("period", TARGET_PERIOD), "targets"),
+    rows(core.from("trainings").select("*"), "trainings"),
     rows(supabase.from("work_updates").select("*"), "work_updates"),
     rows(supabase.from("knowledge").select("*"), "knowledge"),
     rows(supabase.from("travel_requests").select("*"), "travel_requests"),
     rows(supabase.from("scrum_notes").select("*"), "scrum_notes"),
-    rows(core.from("memory").select("*").eq("scope", "sales").is("archived_at", null), "memory"),
+    rows(supabase.from("memory").select("*"), "memory"),
     rows(supabase.from("gate_config").select("*"), "gate_config"),
   ]);
 
@@ -70,18 +83,21 @@ export async function loadWorkspace() {
       const p: any = peopleById.get(d.person_id);
       if (!p) return null;
       return {
-        id: p.id, name: p.full_name, email: p.work_email || "",
+        id: p.id, name: p.name || "", email: (p.email || "").toLowerCase(),
         role: d.role, dept: d.dept || "Sales",
-        active: p.status === "active",
+        active: d.active !== false,
       };
     })
     .filter(Boolean);
+  rosterIds = users.map((u: any) => u.id);
+  const rosterSet = new Set(rosterIds);
 
-  // companies — orgs that carry a sales.org_detail row are "sales companies".
+  // companies — orgs that carry a sales.org_detail row are "sales companies";
+  // orgs the PMS knows but sales has not touched stay out of the list.
   const actByOrg = new Map<string, any[]>();
   for (const a of activities) {
     const list = actByOrg.get(a.org_id) || [];
-    list.push({ _id: a.id, at: a.at, by: a.by, text: a.body });
+    list.push({ _id: a.id, at: a.at, by: a.author_id, text: a.body });
     actByOrg.set(a.org_id, list);
   }
   const orgById = new Map(orgs.map((o: any) => [o.id, o]));
@@ -90,14 +106,16 @@ export async function loadWorkspace() {
       const o: any = orgById.get(d.org_id);
       if (!o) return null;
       return {
-        id: o.id, cid: o.code || "", name: o.name,
+        id: o.id,
+        cid: o.client_id || d.legacy_cid || "",
+        name: o.name,
         contactPerson: d.contact_person || "", designation: d.designation || "",
         phone: d.contact_phone || "", email: d.contact_email || "",
-        city: d.city || "", industry: d.industry || "",
+        city: d.city || "", industry: o.industry || "",
         whatTheyDo: d.what_they_do || "", source: d.source || "",
         potential: Number(d.potential || 0), website: o.website || "",
-        address: d.address || "",
-        accountOwner: d.account_owner, createdBy: d.account_owner,
+        address: (o.address && o.address.text) || "",
+        accountOwner: o.owner_id, createdBy: o.owner_id,
         createdAt: d.created_at,
         custom: Array.isArray(d.custom) ? d.custom : [],
         activity: actByOrg.get(o.id) || [],
@@ -110,7 +128,7 @@ export async function loadWorkspace() {
   for (const m of moves) {
     const list = movesByDeal.get(m.deal_id) || [];
     list.push({
-      _id: m.id, from: m.from_stage, to: m.to_stage, at: m.at, by: m.by,
+      _id: m.id, from: m.from_stage, to: m.to_stage, at: m.at, by: m.author_id,
       summary: m.summary || "", facts: m.facts || {}, risks: m.risks || [],
       next_action: m.next_action || "", transcript: m.transcript || [],
       gated: m.gated, forced: m.forced,
@@ -125,16 +143,23 @@ export async function loadWorkspace() {
     history: movesByDeal.get(d.id) || [],
   }));
 
-  // kpis — {userId: {metric: target}} for the current month.
+  // kpis — {userId: {metric: target}}.
   const kpis: Record<string, Record<string, number>> = {};
   for (const t of targets) {
     (kpis[t.person_id] = kpis[t.person_id] || {})[t.metric] = Number(t.target || 0);
   }
 
-  const trainingsOut = trainings.map((t: any) => ({
-    id: t.id, title: t.title, assignedTo: t.person_id, assignedBy: t.assigned_by,
-    due: t.due || "", status: t.status, knowledgeId: t.knowledge_id || "",
-  }));
+  // trainings — core.trainings is shared with the PMS; show only rows that
+  // belong to people on the sales roster. `resource` carries the linked
+  // knowledge entry's uuid (as text) when there is one.
+  const knowledgeIds = new Set(knowledge.map((k: any) => k.id));
+  const trainingsOut = trainings
+    .filter((t: any) => rosterSet.has(t.user_id))
+    .map((t: any) => ({
+      id: t.id, title: t.title, assignedTo: t.user_id, assignedBy: t.assigned_by,
+      due: t.due || "", status: t.status,
+      knowledgeId: knowledgeIds.has(t.resource) ? t.resource : "",
+    }));
 
   const worklogsOut = worklogs.map((w: any) => ({
     id: w.id, userId: w.person_id, date: w.on_date, progress: w.note || "",
@@ -154,7 +179,7 @@ export async function loadWorkspace() {
   }));
 
   const scrumsOut = scrums.map((s: any) => ({
-    id: s.id, userId: s.by, date: s.on_date, raw: s.raw,
+    id: s.id, userId: s.author_id, date: s.on_date, raw: s.raw,
     tasks: (s.organized && s.organized.tasks) || [],
     summary: (s.organized && s.organized.summary) || "",
     createdAt: s.created_at,
@@ -176,43 +201,49 @@ export async function loadWorkspace() {
 
 /* ---------- syncs (wholesale, Phase 0) ---------- */
 
+// Roster writes go through the SECURITY DEFINER RPC — a sales admin may
+// manage the sales roster without holding any core-admin role. If an email
+// already belongs to a core person (a PMS engineer, say), the RPC adopts
+// that row instead of duplicating it; the app picks up the real id on the
+// next load.
 export async function syncUsers(users: any[]): Promise<boolean> {
-  if (!users.length) return true;
-  const people = users.map((u) => ({
-    id: u.id, full_name: u.name, work_email: (u.email || "").toLowerCase() || null,
-    kind: "employee", status: u.active === false ? "exited" : "active",
-  }));
-  const details = users.map((u) => ({
-    person_id: u.id, role: u.role, dept: u.dept || "Sales",
-  }));
-  const grants = users.flatMap((u) => ["core", "sales"].map((tool) => ({
-    person_id: u.id, tool, level: u.role === "admin" ? "admin" : "write",
-  })));
-  const r1 = await core.from("people").upsert(people, { onConflict: "id" });
-  const r2 = await supabase.from("people_detail").upsert(details, { onConflict: "person_id" });
-  const r3 = await core.from("grants").upsert(grants, { onConflict: "person_id,tool" });
-  return ok(r1.error, "syncUsers.people") && ok(r2.error, "syncUsers.detail") && ok(r3.error, "syncUsers.grants");
+  let allOk = true;
+  for (const u of users) {
+    const { error } = await supabase.rpc("upsert_person", {
+      p_id: u.id || null,
+      p_name: u.name || "",
+      p_email: (u.email || "").toLowerCase() || null,
+      p_role: u.role || "agent",
+      p_dept: u.dept || "Sales",
+      p_active: u.active !== false,
+    });
+    allOk = ok(error, "syncUsers." + (u.email || u.id)) && allOk;
+  }
+  return allOk;
 }
 
 export async function syncCompanies(companies: any[]): Promise<boolean> {
   if (!companies.length) return true;
+  // core.orgs is shared: write only the columns this tool owns a say in, and
+  // never client_id (official Eb- IDs are minted, not typed).
   const orgs = companies.map((c) => ({
-    id: c.id, code: c.cid || null, name: c.name || "(unnamed)",
-    website: c.website || null, status: "active",
+    id: c.id, name: c.name || "(unnamed)",
+    industry: c.industry || null, website: c.website || null,
+    owner_id: c.accountOwner || null,
+    address: c.address ? { text: c.address } : {},
   }));
-  const roles = companies.map((c) => ({ org_id: c.id, role: "prospect" }));
   const details = companies.map((c) => ({
-    org_id: c.id, what_they_do: c.whatTheyDo || null, industry: c.industry || null,
-    city: c.city || null, address: c.address || null, source: c.source || null,
-    potential: Number(c.potential || 0), account_owner: c.accountOwner || null,
+    org_id: c.id, what_they_do: c.whatTheyDo || null,
+    city: c.city || null, source: c.source || null,
+    potential: Number(c.potential || 0),
+    legacy_cid: c.cid || null,
     contact_person: c.contactPerson || null, designation: c.designation || null,
     contact_phone: c.phone || null, contact_email: c.email || null,
     custom: c.custom || [],
   }));
   const r1 = await core.from("orgs").upsert(orgs, { onConflict: "id" });
-  const r2 = await core.from("org_roles").upsert(roles, { onConflict: "org_id,role", ignoreDuplicates: true });
-  const r3 = await supabase.from("org_detail").upsert(details, { onConflict: "org_id" });
-  let allOk = ok(r1.error, "syncCompanies.orgs") && ok(r2.error, "syncCompanies.roles") && ok(r3.error, "syncCompanies.detail");
+  const r2 = await supabase.from("org_detail").upsert(details, { onConflict: "org_id" });
+  let allOk = ok(r1.error, "syncCompanies.orgs") && ok(r2.error, "syncCompanies.detail");
 
   // Append-only notes: persist only entries that have never been written.
   const fresh: any[] = [];
@@ -220,13 +251,13 @@ export async function syncCompanies(companies: any[]): Promise<boolean> {
     for (const a of c.activity || []) {
       if (!a._id) {
         a._id = uuid();
-        fresh.push({ id: a._id, org_id: c.id, kind: "note", body: a.text || "", by: a.by || null, at: a.at });
+        fresh.push({ id: a._id, org_id: c.id, kind: "note", body: a.text || "", author_id: a.by || null, at: a.at });
       }
     }
   }
   if (fresh.length) {
-    const r4 = await supabase.from("activities").insert(fresh);
-    allOk = ok(r4.error, "syncCompanies.activities") && allOk;
+    const r3 = await supabase.from("org_activities").insert(fresh);
+    allOk = ok(r3.error, "syncCompanies.activities") && allOk;
   }
   return allOk;
 }
@@ -251,7 +282,7 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
           id: h._id, deal_id: d.id, from_stage: h.from || null, to_stage: h.to || null,
           summary: h.summary || null, facts: h.facts || {}, risks: h.risks || [],
           next_action: h.next_action || null, transcript: h.transcript || [],
-          gated: !!h.gated, forced: !!h.forced, by: h.by || null, at: h.at,
+          gated: !!h.gated, forced: !!h.forced, author_id: h.by || null, at: h.at,
         });
       }
     }
@@ -264,19 +295,15 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
 }
 
 export async function syncKpis(kpis: Record<string, Record<string, number>>): Promise<boolean> {
-  const period = monthKey();
-  const rows: any[] = [];
+  const rowsIn: any[] = [];
   for (const [personId, metrics] of Object.entries(kpis || {})) {
     for (const [metric, target] of Object.entries(metrics || {})) {
-      rows.push({
-        id: undefined, person_id: personId, period, metric, target: Number(target || 0),
-      });
+      rowsIn.push({ person_id: personId, period: TARGET_PERIOD, metric, target: Number(target || 0) });
     }
   }
-  if (!rows.length) return true;
-  rows.forEach((r) => delete r.id);
+  if (!rowsIn.length) return true;
   const { error } = await supabase.from("targets")
-    .upsert(rows, { onConflict: "person_id,period,metric" });
+    .upsert(rowsIn, { onConflict: "person_id,period,metric" });
   return ok(error, "syncKpis");
 }
 
@@ -288,7 +315,7 @@ async function upsertAndPrune(table: string, rowsIn: any[], keepIds: string[], l
     const { error } = await client.from(table).upsert(rowsIn, { onConflict: "id" });
     allOk = ok(error, label + ".upsert");
   }
-  const list = keepIds.length ? "(" + keepIds.map((i) => '"' + i + '"').join(",") + ")" : "()";
+  const list = "(" + keepIds.map((i) => '"' + i + '"').join(",") + ")";
   const del = keepIds.length
     ? client.from(table).delete().not("id", "in", list)
     : client.from(table).delete().gte("created_at", "1970-01-01");
@@ -297,12 +324,27 @@ async function upsertAndPrune(table: string, rowsIn: any[], keepIds: string[], l
 }
 
 export async function syncTrainings(trainings: any[]): Promise<boolean> {
+  // core.trainings is shared with the PMS — every write and every delete here
+  // is scoped to people on the sales roster.
   const rowsIn = trainings.map((t) => ({
-    id: t.id, person_id: t.assignedTo, title: t.title,
-    knowledge_id: t.knowledgeId || null, due: t.due || null,
+    id: t.id, user_id: t.assignedTo, title: t.title,
+    resource: t.knowledgeId || null, due: t.due || null,
     status: t.status, assigned_by: t.assignedBy || null,
   }));
-  return upsertAndPrune("trainings", rowsIn, trainings.map((t) => t.id), "syncTrainings");
+  let allOk = true;
+  if (rowsIn.length) {
+    const { error } = await core.from("trainings").upsert(rowsIn, { onConflict: "id" });
+    allOk = ok(error, "syncTrainings.upsert");
+  }
+  if (rosterIds.length) {
+    const keep = trainings.map((t) => t.id);
+    let del = core.from("trainings").delete()
+      .in("user_id", rosterIds);
+    if (keep.length) del = del.not("id", "in", "(" + keep.map((i) => '"' + i + '"').join(",") + ")");
+    const { error: e2 } = await del;
+    allOk = ok(e2, "syncTrainings.prune") && allOk;
+  }
+  return allOk;
 }
 
 export async function syncWorklogs(worklogs: any[]): Promise<boolean> {
@@ -342,28 +384,16 @@ export async function syncScrums(scrums: any[]): Promise<boolean> {
   const rowsIn = scrums.map((s) => ({
     id: s.id, on_date: s.date, raw: s.raw,
     organized: { tasks: s.tasks || [], summary: s.summary || "" },
-    by: s.userId || null, created_at: s.createdAt,
+    author_id: s.userId || null, created_at: s.createdAt,
   }));
   return upsertAndPrune("scrum_notes", rowsIn, scrums.map((s) => s.id), "syncScrums");
 }
 
 export async function syncMemory(memory: any[]): Promise<boolean> {
   const rowsIn = memory.map((m) => ({
-    id: m.id, scope: "sales", title: m.title, content: m.text,
-    created_by: m.by || null,
+    id: m.id, title: m.title, content: m.text, created_by: m.by || null,
   }));
-  let allOk = true;
-  if (rowsIn.length) {
-    const { error } = await core.from("memory").upsert(rowsIn, { onConflict: "id" });
-    allOk = ok(error, "syncMemory.upsert");
-  }
-  // prune only within the sales scope — never touch pms/company memory
-  const keep = memory.map((m) => m.id);
-  const q = core.from("memory").delete().eq("scope", "sales");
-  const { error: e2 } = keep.length
-    ? await q.not("id", "in", "(" + keep.map((i) => '"' + i + '"').join(",") + ")")
-    : await q;
-  return ok(e2, "syncMemory.prune") && allOk;
+  return upsertAndPrune("memory", rowsIn, memory.map((m) => m.id), "syncMemory");
 }
 
 export async function syncGates(gates: Record<string, string[]>): Promise<boolean> {
@@ -383,9 +413,10 @@ export async function syncGates(gates: Record<string, string[]>): Promise<boolea
 
 /* ---------- auth ---------- */
 
-// PMS onboarding pattern: sign in; if the account does not exist yet, the
-// first sign-in creates it (the roster row must already exist — an email
-// nobody added authenticates into an empty workspace and sees NoProfile).
+// Onboarding pattern shared with the PMS: sign in; if the account does not
+// exist yet, the first sign-in creates it, and the DB trigger adopts the
+// person's roster row by email (an email nobody rostered authenticates into
+// a fresh engineer row and sees NoProfile).
 export async function signInOrUp(email: string, password: string) {
   const em = email.trim().toLowerCase();
   const s1 = await supabase.auth.signInWithPassword({ email: em, password });
@@ -418,8 +449,20 @@ export async function currentAuthEmail(): Promise<string | null> {
   } catch (e) { return null; }
 }
 
-// First user on an empty database becomes admin (SECURITY DEFINER RPC; a no-op
-// once anyone exists).
+// First signed-in user on an empty sales roster enrols themself as admin —
+// the RPC allows exactly that one case without a sales admin behind it.
 export async function bootstrapFirstAdmin(name?: string): Promise<void> {
-  try { await supabase.rpc("bootstrap_first_admin", { _name: name || null }); } catch (e) { /* ignore */ }
+  try {
+    const { data } = await supabase.auth.getSession();
+    const u = data?.session?.user;
+    if (!u?.email) return;
+    await supabase.rpc("upsert_person", {
+      p_id: null,
+      p_name: name || u.email.split("@")[0],
+      p_email: u.email.toLowerCase(),
+      p_role: "admin",
+      p_dept: "Management",
+      p_active: true,
+    });
+  } catch (e) { /* ignore */ }
 }

@@ -45,17 +45,16 @@ Roles: **Admin**, **Dept Head**, **Sales Agent**, **Finance**.
 ## Architecture
 
 - **`src/App.tsx`** — the entire UI + logic (Tailwind classes).
-- **Persistence** — Supabase, relational: the shared `core` schema (people,
-  orgs, contacts, memory, numbering, grants) plus this tool's `sales` schema
-  (deals, deal moves, activities, targets, knowledge, trainings, scrum notes,
-  work updates, travel requests, gate config). `src/lib/data.ts` loads the
-  workspace and syncs edits; `supabase/01–03` create and migrate it.
+- **Persistence** — Supabase, relational, on the shared **eb-core-database-1**:
+  the `core` schema the ODM PMS built (people, orgs, trainings, numbering)
+  plus this tool's `sales` schema (deals, deal moves, org activities, targets,
+  knowledge, work updates, travel requests, scrum notes, memory, gate config).
+  `src/lib/data.ts` loads the workspace and syncs edits;
+  `supabase/10–11` create and migrate the sales side.
 - **Session/auth** — Supabase Auth on the shared core database. An admin puts a
   person's email on the roster (**Admin → Add user**); their first sign-in
-  creates the account and a DB trigger links it to their `core.people` row.
-  Data lives in the relational `core` + `sales` schemas behind `core.can()`
-  RLS (see `supabase/01–03` and `SETUP.md`); the app's data layer is
-  `src/lib/data.ts`.
+  creates the account and a DB trigger links it to their `core.people` row by
+  email (see `SETUP.md`).
 - **AI** — `askClaude(system, messages)` posts to `/api/claude`
   (`api/claude.js`), which holds `ANTHROPIC_API_KEY` and forwards to the
   Anthropic Messages API. The model is chosen server-side (`ANTHROPIC_MODEL`,
