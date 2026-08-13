@@ -2507,8 +2507,11 @@ function DailyScrumView({ me, data, saveScrums, saveTasks }) {
   const scrumToTasks = (s) => {
     const { users, tasks } = data;
     const fresh = (s.tasks || []).map((t) => {
-      const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
-      const win = parseWin(t.window);
+      // Preview edits win over name-matching: assigneeId/start/end may already
+      // be set by the "AI organised" card before saving.
+      const owner = (t.assigneeId && users.find((u) => u.id === t.assigneeId))
+        || users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
+      const win = t.start || t.end ? { start: t.start || "", end: t.end || "" } : parseWin(t.window);
       return {
         id: uid(), companyId: "", dealId: "",
         assignee: owner ? owner.id : s.userId, author: me.id,
@@ -2531,6 +2534,14 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   const [raw, setRaw] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [pending, setPending] = useState(null); // AI-organised note awaiting review
+  const setPendingTask = (i, patch) => setPending({ ...pending, tasks: pending.tasks.map((t, j) => (j === i ? { ...t, ...patch } : t)) });
+  const savePending = (withTasks) => {
+    const note = { ...pending };
+    note.tasked = withTasks ? scrumToTasks(note) > 0 : false;
+    saveScrums([note, ...scrums]);
+    setPending(null);
+  };
   const speech = useSpeech((t) => setRaw((p) => (p ? p + " " : "") + t));
 
   const scopeIds = me.role === "admin" ? users.map((u) => u.id)
@@ -2554,15 +2565,18 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
     try {
       const reply = await askClaude(system, [{ role: "user", content: text }]);
       const parsed = extractMarkedJSON(reply, "SCRUM_JSON") || {};
+      const { users } = data;
       const note = {
         id: uid(), userId: me.id, date, raw: text,
-        tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+        tasks: (Array.isArray(parsed.tasks) ? parsed.tasks : []).map((t) => {
+          const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
+          const win = parseWin(t.window);
+          return { ...t, assigneeId: owner ? owner.id : me.id, start: win.start, end: win.end };
+        }),
         summary: parsed.summary || "", createdAt: nowTS(),
       };
-      // Scrum IS the task source: every organised line lands in My Tasks
-      // immediately — no extra click, no line left behind.
-      note.tasked = scrumToTasks(note) > 0;
-      saveScrums([note, ...scrums]);
+      // The PMS preview: adjust assignee + time windows before anything saves.
+      setPending(note);
       setRaw("");
     } catch (e) { setErr("Could not organise this — saved nothing. Check connection and try again."); }
     setBusy(false);
@@ -2600,6 +2614,33 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           <span className="text-xs text-slate-400 ml-auto">Mention project ID, people, time windows and any if/else.</span>
         </div>
         {err && <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
+
+        {pending && (
+          <div className="mt-4 border-t border-dashed border-slate-200 pt-4">
+            <p className="text-xs mb-2"><Chip color="purple">AI organised</Chip> <span className="text-slate-500 italic ml-1">{pending.summary}</span></p>
+            <div className="space-y-2">
+              {pending.tasks.map((t, i) => (
+                <div key={i} className="border border-slate-200 rounded-lg p-3">
+                  <p className="text-sm text-slate-800 mb-2">{t.task}{t.condition && <span className="text-xs text-amber-700 ml-2">({t.condition})</span>}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Sel className="w-44" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
+                      {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                    </Sel>
+                    <Input type="time" className="w-28" value={t.start || ""} onChange={(e) => setPendingTask(i, { start: e.target.value })} />
+                    <ArrowRight size={13} className="text-slate-300" />
+                    <Input type="time" className="w-28" value={t.end || ""} onChange={(e) => setPendingTask(i, { end: e.target.value })} />
+                    <button onClick={() => setPending({ ...pending, tasks: pending.tasks.filter((_, j) => j !== i) })} className="text-slate-300 hover:text-red-500 ml-auto"><Trash2 size={13} /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 mt-3">
+              <Btn onClick={() => savePending(false)}>Save note only</Btn>
+              <Btn kind="primary" onClick={() => savePending(true)}><ListTodo size={14} /> Save note + create {pending.tasks.length} task{pending.tasks.length === 1 ? "" : "s"}</Btn>
+              <Btn kind="ghost" onClick={() => setPending(null)}>Discard</Btn>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 mt-6 mb-3">
@@ -4100,8 +4141,34 @@ function LldEditor({ me, data, lld, onClose, saveLlds }) {
             </div>
           </div>
         ))}
+        <DesignerLld answers={answers} setAnswers={setAnswers} />
       </div>
     </Modal>
+  );
+}
+
+/* Designer LLD — AI-translated from the customer answers (the PMS's second
+   hard gate). Stored alongside the answers as `_designer`. */
+function DesignerLld({ answers, setAnswers }) {
+  const [busy, setBusy] = useState(false);
+  const gen = async () => {
+    setBusy(true);
+    try {
+      const text = LLD_QUESTIONS.map((q) => q.sec + " — " + q.text + "\n→ " + (answers[q.id] || "TBD")).join("\n");
+      const sys = "You are Elecbits' senior solution architect. Translate this customer LLD into a concise DESIGNER LLD: main controller choice and tier, power tree, radios + antenna/cert notes, interfaces, enclosure direction, firmware architecture (OTA/sleep), test points and compliance pre-checks. Terse engineering prose, headed sections, no fluff.";
+      const reply = await askClaude(sys, [{ role: "user", content: text.slice(0, 6000) }]);
+      setAnswers({ ...answers, _designer: reply });
+    } catch (e) { /* leave as-is */ }
+    setBusy(false);
+  };
+  return (
+    <div className="border-t border-slate-200 pt-4 mt-4">
+      <div className="flex items-center gap-2 mb-2">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mr-auto">Designer LLD — what engineering builds from</p>
+        <Btn size="sm" kind="primary" disabled={busy} onClick={gen}>{busy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} Generate from customer answers</Btn>
+      </div>
+      <TA value={answers._designer || ""} onChange={(e) => setAnswers({ ...answers, _designer: e.target.value })} className="min-h-40 font-mono text-xs" placeholder="Generate with AI from the 30 answers, or write/paste it manually — like the PMS, an ODM project needs both LLDs." />
+    </div>
   );
 }
 
