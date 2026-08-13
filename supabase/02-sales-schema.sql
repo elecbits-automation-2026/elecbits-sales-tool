@@ -216,15 +216,78 @@ create table if not exists sales.scrum_notes (
 create index if not exists scrum_notes_date_idx on sales.scrum_notes(on_date desc);
 
 -- ═══ WORK UPDATES ══════════════════════════════════════════════════════════
--- The daily discipline strip. One per person per day, enforced.
+-- The daily discipline strip. One per person per day, enforced. Mirrors the
+-- live PMS's public.work_updates: the AI scores each update against the
+-- person's KPIs and leaves feedback + which KPIs the day actually served.
 create table if not exists sales.work_updates (
   id         uuid primary key default gen_random_uuid(),
   person_id  uuid not null references core.people(id) on delete cascade,
   on_date    date not null default current_date,
   note       text not null,
+  score      int,                                    -- AI: 0–100 vs the KPI block
+  feedback   text,                                   -- AI: one-paragraph coaching
+  kpi_hits   jsonb not null default '[]'::jsonb,     -- AI: which KPIs this day served
   created_at timestamptz not null default now(),
   unique (person_id, on_date)
 );
+alter table sales.work_updates add column if not exists score    int;
+alter table sales.work_updates add column if not exists feedback text;
+alter table sales.work_updates add column if not exists kpi_hits jsonb not null default '[]'::jsonb;
+
+-- ═══ MEETINGS — brainstorming / MoM, replicated from the live PMS set ══════
+-- Same structure as public.meetings + meeting_ideas / _decisions / _challenges,
+-- but sales-scoped: a session happens against a client (and optionally a deal).
+-- Ideas are credited per person and become the contribution score; challenges
+-- carry an honest solved/open/watching status; decisions carry an owner.
+create table if not exists sales.meetings (
+  id         uuid primary key default gen_random_uuid(),
+  org_id     uuid not null references core.orgs(id) on delete cascade,
+  deal_id    uuid references sales.deals(id) on delete set null,
+  on_date    date not null default current_date,
+  title      text,
+  attendees  jsonb not null default '[]'::jsonb,     -- names; people ids where known
+  raw        text,                                   -- what was said, as typed/dictated
+  by         uuid references core.people(id) on delete set null,
+  by_name    text,
+  created_at timestamptz not null default now()
+);
+create index if not exists meetings_org_idx  on sales.meetings(org_id, on_date desc);
+create index if not exists meetings_deal_idx on sales.meetings(deal_id);
+
+create table if not exists sales.meeting_ideas (
+  id         uuid primary key default gen_random_uuid(),
+  meeting_id uuid not null references sales.meetings(id) on delete cascade,
+  seq        int not null default 0,
+  by         uuid references core.people(id) on delete set null,
+  by_name    text,
+  idea       text not null,
+  impact     text,                                   -- changed approach / saved time / caught risk / lifted quality
+  value      int check (value between 1 and 5),      -- how much it actually helped
+  why        text
+);
+create index if not exists meeting_ideas_meeting_idx on sales.meeting_ideas(meeting_id);
+create index if not exists meeting_ideas_by_idx      on sales.meeting_ideas(by);
+
+create table if not exists sales.meeting_decisions (
+  id         uuid primary key default gen_random_uuid(),
+  meeting_id uuid not null references sales.meetings(id) on delete cascade,
+  seq        int not null default 0,
+  what       text not null,
+  owner      uuid references core.people(id) on delete set null,
+  owner_name text
+);
+create index if not exists meeting_decisions_meeting_idx on sales.meeting_decisions(meeting_id);
+
+create table if not exists sales.meeting_challenges (
+  id         uuid primary key default gen_random_uuid(),
+  meeting_id uuid not null references sales.meetings(id) on delete cascade,
+  seq        int not null default 0,
+  challenge  text not null,
+  action     text,
+  status     text not null default 'open'
+               check (status in ('solved','open','watch'))
+);
+create index if not exists meeting_challenges_meeting_idx on sales.meeting_challenges(meeting_id);
 
 -- ═══ TRAVEL REQUESTS ═══════════════════════════════════════════════════════
 -- The ASK, which is a sales workflow. Once the money is actually spent it
@@ -286,7 +349,8 @@ declare t text;
 begin
   foreach t in array array[
     'people_detail','org_detail','deals','deal_moves','activities','quotes','targets',
-    'partners','knowledge','trainings','scrum_notes','work_updates','travel_requests','gate_config'
+    'partners','knowledge','trainings','scrum_notes','work_updates','travel_requests','gate_config',
+    'meetings','meeting_ideas','meeting_decisions','meeting_challenges'
   ] loop
     execute format('alter table sales.%I enable row level security', t);
     execute format('drop policy if exists %I_read  on sales.%I', t, t);
