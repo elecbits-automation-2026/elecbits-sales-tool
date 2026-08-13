@@ -125,6 +125,7 @@ export async function loadWorkspace() {
         potential: Number(d.potential || 0), website: o.website || "",
         address: (o.address && o.address.text) || "",
         legacyCid: d.legacy_cid || "",
+        plan: d.plan || {},
         accountOwner: o.owner_id, createdBy: o.owner_id,
         createdAt: d.created_at,
         custom: Array.isArray(d.custom) ? d.custom : [],
@@ -339,7 +340,7 @@ export async function syncCompanies(companies: any[]): Promise<boolean> {
     legacy_cid: (c.official ? c.legacyCid : (c.legacyCid || c.cid)) || null,
     contact_person: c.contactPerson || null, designation: c.designation || null,
     contact_phone: c.phone || null, contact_email: c.email || null,
-    custom: c.custom || [],
+    custom: c.custom || [], plan: c.plan || {},
   }));
   const r1 = await core.from("orgs").upsert(orgs, { onConflict: "id" });
   const r2 = await supabase.from("org_detail").upsert(details, { onConflict: "org_id" });

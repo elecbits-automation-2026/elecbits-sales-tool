@@ -939,10 +939,37 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
   const openId = focusCompanyId;
   const open = companies.find((c) => c.id === openId) || null;
 
+  const [ownerF, setOwnerF] = useState("all");
+  const [indF, setIndF] = useState("all");
+  const [compF, setCompF] = useState("all");   // completeness band
+  const [dealF, setDealF] = useState("all");   // open-deals presence
+  const [sort, setSort] = useState("attention");
+  const industries = [...new Set(companies.map((c) => c.industry).filter(Boolean))].sort();
+  const peopleOn = (c) => {
+    const ids = new Set();
+    if (c.accountOwner) ids.add(c.accountOwner);
+    deals.forEach((d) => { if (d.companyId === c.id && !d.lost && d.ownerId) ids.add(d.ownerId); });
+    (data.tasks || []).forEach((t) => { if (t.companyId === c.id && t.status === "open" && t.assignee) ids.add(t.assignee); });
+    return [...ids].map((id) => users.find((u) => u.id === id)).filter(Boolean);
+  };
   const visible = companies.filter((c) => {
     const s = (c.name + " " + c.cid + " " + (c.city || "") + " " + (c.contactPerson || "")).toLowerCase();
-    return s.includes(q.toLowerCase());
-  }).sort((a, b) => completeness(a) - completeness(b));
+    if (!s.includes(q.toLowerCase())) return false;
+    if (ownerF !== "all" && c.accountOwner !== ownerF) return false;
+    if (indF !== "all" && c.industry !== indF) return false;
+    const pct = completeness(c);
+    if (compF === "red" && pct >= 70) return false;
+    if (compF === "amber" && (pct < 70 || pct >= 90)) return false;
+    if (compF === "green" && pct < 90) return false;
+    const open = deals.some((d) => d.companyId === c.id && !d.lost && d.stage !== "po");
+    if (dealF === "with" && !open) return false;
+    if (dealF === "without" && open) return false;
+    return true;
+  }).sort((a, b) =>
+    sort === "attention" ? completeness(a) - completeness(b)
+    : sort === "potential" ? Number(b.potential || 0) - Number(a.potential || 0)
+    : sort === "name" ? a.name.localeCompare(b.name)
+    : String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 
   const upsert = (c) => {
     const exists = companies.some((x) => x.id === c.id);
@@ -966,6 +993,35 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
           <Input placeholder="Search name, ID, city…" value={q} onChange={(e) => setQ(e.target.value)} className="pl-8 w-56" />
         </div>
         <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={15} /> Add company</Btn>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-2.5">
+        <Sel className="w-40" value={ownerF} onChange={(e) => setOwnerF(e.target.value)}>
+          <option value="all">All owners</option>
+          {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </Sel>
+        <Sel className="w-44" value={indF} onChange={(e) => setIndF(e.target.value)}>
+          <option value="all">All industries</option>
+          {industries.map((i) => <option key={i} value={i}>{i}</option>)}
+        </Sel>
+        <Sel className="w-40" value={compF} onChange={(e) => setCompF(e.target.value)}>
+          <option value="all">Any data quality</option>
+          <option value="red">Red — below 70%</option>
+          <option value="amber">Amber — 70–89%</option>
+          <option value="green">Green — 90%+</option>
+        </Sel>
+        <Sel className="w-40" value={dealF} onChange={(e) => setDealF(e.target.value)}>
+          <option value="all">Deals: any</option>
+          <option value="with">With open deals</option>
+          <option value="without">No open deals</option>
+        </Sel>
+        <Sel className="w-44 ml-auto" value={sort} onChange={(e) => setSort(e.target.value)}>
+          <option value="attention">Sort: needs attention</option>
+          <option value="potential">Sort: potential ₹</option>
+          <option value="name">Sort: name</option>
+          <option value="recent">Sort: newest</option>
+        </Sel>
+        <span className="text-xs text-slate-500"><b className="text-slate-800 font-mono tabular-nums">{visible.length}</b> compan{visible.length === 1 ? "y" : "ies"}</span>
       </div>
 
       {visible.length === 0 ? (
@@ -996,7 +1052,12 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
                   <Bar pct={comp} color={cc} />
                 </div>
                 <div className="flex items-center justify-between mt-3">
-                  <span className="flex items-center gap-1.5 text-xs text-slate-500">{owner && <Avatar name={owner.name} size="sm" />} {owner ? owner.name : "Unassigned"}</span>
+                  <span className="flex items-center text-xs text-slate-500">
+                    <span className="flex -space-x-1.5 mr-2">
+                      {peopleOn(c).slice(0, 4).map((u) => <span key={u.id} title={u.name + (u.id === c.accountOwner ? " · owner" : "")} className="ring-2 ring-white rounded-full"><Avatar name={u.name} size="sm" /></span>)}
+                    </span>
+                    {owner ? owner.name : "Unassigned"}{peopleOn(c).length > 1 && <span className="text-slate-400 ml-1">+{peopleOn(c).length - 1}</span>}
+                  </span>
                   <span className="font-mono text-xs text-slate-400">{activeDeals} deal{activeDeals === 1 ? "" : "s"}</span>
                 </div>
               </button>
@@ -3134,7 +3195,14 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
   const tomorrow = localISO(new Date(Date.now() + 86400000));
 
   const canTeam = me.role !== "agent";
-  const mine = tasks.filter((t) => (scope === "mine" ? t.assignee === me.id : true) && (showDone ? true : t.status === "open"));
+  const [group, setGroup] = useState("due"); // due | company | person
+  const [personF, setPersonF] = useState("all");
+  const [companyF, setCompanyF] = useState("all");
+  const mine = tasks.filter((t) =>
+    (scope === "mine" ? t.assignee === me.id : true) &&
+    (personF === "all" || t.assignee === personF) &&
+    (companyF === "all" || t.companyId === companyF) &&
+    (showDone ? true : t.status === "open"));
   const buckets = [
     ["Overdue", mine.filter((t) => t.status === "open" && t.due && t.due < today)],
     ["Today", mine.filter((t) => t.due === today)],
@@ -3198,15 +3266,56 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
         <label className="text-xs text-slate-500 flex items-center gap-1.5"><input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> show done</label>
         <Btn kind="primary" size="sm" onClick={() => setAdding(true)}><Plus size={13} /> New task</Btn>
       </div>
-      {tasks.length === 0 && <Empty icon={ListTodo} title="No tasks yet" sub="Tasks arrive from the company chat, Daily Scrum, or by hand — and every one is tied to a company." action={<Btn kind="primary" onClick={() => setAdding(true)}><Plus size={14} /> New task</Btn>} />}
-      <div className="space-y-5">
-        {buckets.map(([label, list]) => list.length > 0 && (
-          <div key={label}>
-            <p className={cls("text-xs font-semibold uppercase tracking-wide mb-2", label === "Overdue" ? "text-red-600" : "text-slate-500")}>{label} · {list.length}</p>
-            <div className="space-y-1.5">{list.map((t) => <TaskRow key={t.id} t={t} />)}</div>
-          </div>
-        ))}
+
+      {/* the PMS filter bar: grouping toggle · people · companies · count */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-2.5">
+        <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+          {[["due", "By due date"], ["company", "By company"], ["person", "By person"]].map(([k, l]) => (
+            <button key={k} onClick={() => setGroup(k)} className={cls("px-3 py-1.5 font-medium flex items-center gap-1", group === k ? "bg-blue-600 text-white" : "bg-white text-slate-600")}>
+              {k === "company" ? <Building2 size={12} /> : k === "person" ? <Users size={12} /> : <Clock size={12} />} {l}
+            </button>
+          ))}
+        </div>
+        {canTeam && (
+          <Sel className="w-44" value={personF} onChange={(e) => setPersonF(e.target.value)}>
+            <option value="all">All people</option>
+            {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </Sel>
+        )}
+        <Sel className="w-48" value={companyF} onChange={(e) => setCompanyF(e.target.value)}>
+          <option value="all">All companies</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Sel>
+        <span className="ml-auto text-xs text-slate-500"><b className="text-slate-800 font-mono tabular-nums">{mine.length}</b> task{mine.length !== 1 ? "s" : ""}</span>
       </div>
+      {tasks.length === 0 && <Empty icon={ListTodo} title="No tasks yet" sub="Tasks arrive from the company chat, Daily Scrum, or by hand — and every one is tied to a company." action={<Btn kind="primary" onClick={() => setAdding(true)}><Plus size={14} /> New task</Btn>} />}
+      {group === "due" && (
+        <div className="space-y-5">
+          {buckets.map(([label, list]) => list.length > 0 && (
+            <div key={label}>
+              <p className={cls("text-xs font-semibold uppercase tracking-wide mb-2", label === "Overdue" ? "text-red-600" : "text-slate-500")}>{label} · {list.length}</p>
+              <div className="space-y-1.5">{list.map((t) => <TaskRow key={t.id} t={t} />)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {group !== "due" && (
+        <div className="space-y-5">
+          {(group === "company"
+            ? [...companies.map((c) => [c.name, mine.filter((t) => t.companyId === c.id)]), ["No company", mine.filter((t) => !t.companyId)]]
+            : users.filter((u) => u.active !== false).map((u) => [u.name, mine.filter((t) => t.assignee === u.id)])
+          ).map(([label, list]) => list.length > 0 && (
+            <div key={label} className="bg-white border border-slate-200 rounded-xl p-4">
+              <p className="text-sm font-semibold text-slate-800 mb-2 flex items-center gap-2">
+                {group === "person" ? <Avatar name={label} size="sm" /> : <Building2 size={14} className="text-slate-400" />}
+                {label}
+                <Chip color="blue">{list.filter((t) => t.status === "open").length} open</Chip>
+              </p>
+              <div className="space-y-1.5">{list.sort((a, b) => (a.due || "9999") < (b.due || "9999") ? -1 : 1).map((t) => <TaskRow key={t.id} t={t} />)}</div>
+            </div>
+          ))}
+        </div>
+      )}
       {closing && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closing.task.id) || closing.task} startAt={closing.startAt} onClose={() => setClosing(null)} saveTasks={saveTasks} />}
       {adding && (
         <Modal title="New task" onClose={() => setAdding(false)}
