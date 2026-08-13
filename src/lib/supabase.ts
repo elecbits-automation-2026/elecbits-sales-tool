@@ -1,6 +1,11 @@
 // Single shared Supabase client for the whole app (auth + data).
 // Reads the project URL and anon key from Vite env vars (VITE_* → exposed to the
-// browser, which is fine: the anon key is public and gated by Row Level Security).
+// browser; the anon key is public and gated by RLS via core.can()).
+//
+// Data lives in two Postgres schemas (both must be listed in Supabase →
+// Settings → API → Exposed schemas):
+//   sales — the tool's own tables (default schema for this client)
+//   core  — the shared spine (people, orgs, memory, numbering)
 import { createClient } from "@supabase/supabase-js";
 
 const url = import.meta.env.VITE_SUPABASE_URL;
@@ -14,8 +19,12 @@ if (!url || !anonKey) {
 }
 
 export const supabase = createClient(url, anonKey, {
+  db: { schema: "sales" },
   auth: {
     persistSession: true,
     autoRefreshToken: true,
   },
 });
+
+// The shared spine. Same client, same session — different schema.
+export const core = supabase.schema("core");

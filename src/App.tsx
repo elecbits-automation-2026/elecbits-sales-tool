@@ -7,6 +7,11 @@ import {
   Bot, Database, CalendarCheck2, Sun, Moon
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
+import {
+  loadWorkspace, syncUsers, syncCompanies, syncDeals, syncKpis, syncTrainings,
+  syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
+  signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
+} from "./lib/data";
 import logoLight from "./assets/elecbits-logo.png";
 import logoDark from "./assets/elecbits-logo-dark.png";
 import markLight from "./assets/elecbits-mark.png";
@@ -107,53 +112,12 @@ const roleLabel = (r) => (ROLES.find((x) => x.key === r) || {}).label || r;
 const STALE_AMBER = 4;
 const STALE_RED = 8;
 
-/* ---------- storage ---------- */
-
-// Persistence — Supabase for all shared data. Each `sales:*` key is one JSON row
-// in the `collections` table (value may be an array or an object — kpis/gates
-// are maps). Reads/writes require an authenticated Supabase session: the user
-// signs in with a real email + password (see auth helpers below), which
-// satisfies the "authenticated" RLS policy on the table.
-const store = {
-  async get(key, shared = true) {
-    if (!shared) {
-      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; }
-    }
-    try {
-      const { data, error } = await supabase.from("collections").select("data").eq("key", key).maybeSingle();
-      if (error) { console.error("store.get", key, error.message); return null; }
-      return data ? data.data : null;
-    } catch (e) { console.error("store.get threw", key, e); return null; }
-  },
-  async set(key, val, shared = true) {
-    if (!shared) {
-      try { localStorage.setItem(key, JSON.stringify(val)); return true; } catch (e) { return false; }
-    }
-    try {
-      const { error } = await supabase
-        .from("collections")
-        .upsert({ key, data: val, updated_at: new Date().toISOString() }, { onConflict: "key" });
-      if (error) { console.error("store.set", key, error.message); return false; }
-      return true;
-    } catch (e) { console.error("store.set threw", key, e); return false; }
-  },
-};
-
-/* ---------- auth (table-based) ---------- */
-
-// Logins live entirely in the `sales:users` collection (one table row) — no
-// Supabase Auth accounts, no dashboard setup. Each user has an `email` and a
-// `pwHash` (salted SHA-256 of their password). Sign-in checks the typed password
-// against that hash; the session is just a per-browser pointer to the user id.
-// The password is never stored in plain text; the salt keeps it off rainbow
-// tables. (This is a lightweight internal gate, not bank-grade auth — the
-// collections table is readable with the anon key.)
-const PW_SALT = "ebsalt:";
-async function hashPw(password) {
-  const bytes = new TextEncoder().encode(PW_SALT + String(password || ""));
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+/* ---------- storage & auth ----------
+   Phase 0 cut-over: data lives in the relational sales.* + core.* schemas of
+   eb-core-database-1 (see supabase/01–03 SQL), loaded and synced through
+   src/lib/data.ts. Login is Supabase Auth — an admin puts a person's email on
+   the roster; their first sign-in creates the account and a DB trigger links
+   it to their core.people row. */
 
 /* ---------- Claude ---------- */
 
@@ -211,7 +175,8 @@ function useSpeech(onText) {
 
 /* ---------- utils ---------- */
 
-const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
+// Entity ids are uuids now — the relational schema's primary keys.
+const uid = () => crypto.randomUUID();
 const pad4 = (n) => String(n).padStart(4, "0");
 function localISO(d = new Date()) {
   const t = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
@@ -410,116 +375,6 @@ function fixNowItems(user, data) {
   return items;
 }
 
-/* ---------- seed data ---------- */
-
-function seedData() {
-  // pwHash = SHA-256("ebsalt:" + password). Demo passwords: <name>123 (admin123,
-  // saurav123, …). Change them in-app via Admin → Edit user → Reset password.
-  const users = [
-    { id: "u_admin", name: "Admin", email: "admin@elecbits.in", role: "admin", dept: "Management", active: true, pwHash: "0699ec0c714b53c6f526ced93e0b6b86530cbe12637af7ea03d825c40d43787b" },
-    { id: "u_saurav", name: "Saurav", email: "saurav@elecbits.in", role: "dept_head", dept: "Sales", active: true, pwHash: "ea3cbddd4f8a4554192ffb8a45e16524e24c468e4ded3d7c2d5ae66b8d62ae0e" },
-    { id: "u_ankit", name: "Ankit", email: "ankit@elecbits.in", role: "agent", dept: "Sales", active: true, pwHash: "45702f347f6f56f588ef7521668634cd146295fcede531a82442595d910dd169" },
-    { id: "u_akash", name: "Akash", email: "akash@elecbits.in", role: "agent", dept: "Sales", active: true, pwHash: "9b7f00c333f7955ba02d266ad2a2452871dce0a5f2cee4993e6e8892e0f75789" },
-    { id: "u_fin", name: "Finance", email: "finance@elecbits.in", role: "finance", dept: "Finance", active: true, pwHash: "b69d1b4f640477d89a44fa23b8ebd71c7fbf0df7477057bf711cae05a1fa6ecc" },
-  ];
-  const companies = [
-    {
-      id: "c1", cid: "EB-C-0001", name: "Nevon Solutions", contactPerson: "Rahul Mehta", designation: "Founder",
-      phone: "+91 98200 11223", email: "rahul@nevon.example", city: "Mumbai", industry: "Consumer IoT",
-      whatTheyDo: "IoT product company; wants an ODM partner for a connected device line.",
-      source: "Inbound - website", potential: 4500000, website: "", address: "",
-      accountOwner: "u_ankit", createdBy: "u_ankit", createdAt: tsDaysAgo(24),
-      custom: [{ k: "Deal shape", v: "20-unit design phase, 200-unit production potential" }],
-      activity: [{ at: tsDaysAgo(24), by: "u_ankit", text: "Company created." }],
-    },
-    {
-      id: "c2", cid: "EB-C-0002", name: "Greenline Paper Mills", contactPerson: "S. Iyer", designation: "",
-      phone: "", email: "", city: "Coimbatore", industry: "Paper machinery",
-      whatTheyDo: "", source: "Cold outreach", potential: 0, website: "", address: "",
-      accountOwner: "u_akash", createdBy: "u_akash", createdAt: tsDaysAgo(12),
-      custom: [], activity: [{ at: tsDaysAgo(12), by: "u_akash", text: "Company created." }],
-    },
-    {
-      id: "c3", cid: "EB-C-0003", name: "Sunrise Retail Tech", contactPerson: "Priya Nair", designation: "COO",
-      phone: "+91 99887 66554", email: "priya@sunrise.example", city: "Bengaluru", industry: "Retail",
-      whatTheyDo: "Retail chain exploring ESL price tags for 40 stores.",
-      source: "Referral", potential: 2000000, website: "", address: "",
-      accountOwner: "u_akash", createdBy: "u_akash", createdAt: tsDaysAgo(6),
-      custom: [], activity: [{ at: tsDaysAgo(6), by: "u_akash", text: "Company created." }],
-    },
-  ];
-  const deals = [
-    {
-      id: "d1", did: "EB-D-0001", companyId: "c1", ownerId: "u_ankit", value: 1800000,
-      stage: "rfq", createdAt: tsDaysAgo(24), updatedAt: tsDaysAgo(9), lost: false,
-      history: [
-        { from: null, to: "lead", at: tsDaysAgo(24), by: "u_ankit", summary: "Deal created from inbound enquiry." },
-        { from: "lead", to: "first_meeting", at: tsDaysAgo(18), by: "u_ankit", summary: "Intro call done. Client needs design + manufacturing for a 20-unit pilot." },
-        { from: "first_meeting", to: "rfq", at: tsDaysAgo(9), by: "u_ankit", summary: "RFQ received for pilot batch; spec shared; target timeline 8 weeks." },
-      ],
-    },
-    {
-      id: "d2", did: "EB-D-0002", companyId: "c3", ownerId: "u_akash", value: 900000,
-      stage: "lead", createdAt: tsDaysAgo(6), updatedAt: tsDaysAgo(6), lost: false,
-      history: [{ from: null, to: "lead", at: tsDaysAgo(6), by: "u_akash", summary: "Deal created after referral intro." }],
-    },
-  ];
-  const kpis = {
-    u_saurav: { companies: 20, meetings: 24, rfqs: 10, quotes: 8, pos: 3, revenue: 6000000, completeness: 90 },
-    u_ankit: { companies: 8, meetings: 10, rfqs: 4, quotes: 3, pos: 1, revenue: 2500000, completeness: 90 },
-    u_akash: { companies: 8, meetings: 10, rfqs: 4, quotes: 3, pos: 1, revenue: 2500000, completeness: 90 },
-  };
-  const trainings = [
-    { id: "t1", title: "ESL product line deep-dive", assignedTo: "u_akash", assignedBy: "u_saurav", due: dateDaysAgo(-2), status: "assigned", knowledgeId: "k2" },
-    { id: "t2", title: "Commercial guardrails: MOQ, payment terms", assignedTo: "u_akash", assignedBy: "u_saurav", due: dateDaysAgo(3), status: "assigned", knowledgeId: "k3" },
-    { id: "t3", title: "Elecbits capabilities pitch", assignedTo: "u_ankit", assignedBy: "u_saurav", due: dateDaysAgo(1), status: "done", knowledgeId: "k1" },
-  ];
-  const worklogs = [
-    { id: "w1", userId: "u_ankit", date: dateDaysAgo(1), companiesWorked: "Nevon Solutions", calls: 6, meetings: 1, progress: "Pushed Nevon RFQ; spec clarifications sent to engineering.", blockers: "Awaiting BOM cost from sourcing.", next: "Follow up on target price." },
-    { id: "w2", userId: "u_ankit", date: dateDaysAgo(2), companiesWorked: "Nevon, 2 new leads", calls: 8, meetings: 0, progress: "Cold calls to paper industry list.", blockers: "", next: "Book meetings." },
-  ];
-  const knowledge = [
-    {
-      id: "k1", title: "Elecbits capabilities overview", access: "all", createdBy: "u_admin", updatedAt: tsDaysAgo(10),
-      content: "Elecbits is an electronics ODM/EMS company. We take products from idea to production: hardware design, firmware, prototyping, certification support, and manufacturing. In-house SMT line coming up at GHP Hi-Tech Defence & Aerospace Park, Bengaluru. We serve consumer electronics, IoT, EV/automotive and industrial clients. Typical engagement: design phase (fixed fee) followed by NRE + per-unit manufacturing pricing.",
-    },
-    {
-      id: "k2", title: "Product lines", access: "all", createdBy: "u_admin", updatedAt: tsDaysAgo(10),
-      content: "Current product families: Soundbox variants (payment audio devices), Enote e-paper notepads, ESL electronic shelf labels with gateway + software, IFPD interactive flat panel displays, IoT gateways, motor drivers, smart energy meters, and development boards. ESL pitch: per-tag hardware + gateway + cloud dashboard; ideal for retail chains 10+ stores. Soundbox pitch: OEM-ready, customisable firmware and branding.",
-    },
-    {
-      id: "k3", title: "Commercial guardrails", access: "all", createdBy: "u_admin", updatedAt: tsDaysAgo(10),
-      content: "Standard terms unless approved otherwise: 50% advance with PO, 50% before dispatch. Design phase always billed separately from production. MOQ guidance: consumer devices 500 units, industrial 100 units, pilots allowed at premium per-unit pricing. Quotes valid 30 days. Never commit delivery dates without engineering sign-off. Discounts beyond 8% need dept head approval; beyond 15% need admin approval.",
-    },
-  ];
-  const expenses = [
-    { id: "e1", userId: "u_akash", companyId: "c3", purpose: "Store visit + ESL demo at Sunrise Retail HQ", city: "Bengaluru", from: dateDaysAgo(-3), to: dateDaysAgo(-2), mode: "Flight", estimate: 14500, notes: "Carrying 5 demo tags + gateway.", status: "pending", createdAt: tsDaysAgo(1), decidedBy: null, decisionNote: "" },
-  ];
-  const memory = [
-    { id: "m1", title: "Company positioning", text: "Elecbits is an electronics ODM/EMS partner: design → firmware → prototyping → certification → manufacturing. Pitch the full journey, not just PCBs.", updatedAt: tsDaysAgo(5), by: "u_admin" },
-    { id: "m2", title: "Commercial default", text: "Standard terms: 50% advance with PO, 50% before dispatch. Design phase billed separately from production. Quotes valid 30 days.", updatedAt: tsDaysAgo(5), by: "u_admin" },
-  ];
-  return { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates: {}, scrums: [], memory };
-}
-
-// Backfill sign-in credentials (email + pwHash) for the built-in demo users on
-// workspaces created before those fields existed. Matches by id, only fills what
-// is missing, and adds any missing demo user — real/custom users are untouched.
-function ensureCredentials(existing) {
-  const seedUsers = seedData().users;
-  const byId = new Map((existing || []).map((u) => [u.id, u]));
-  let changed = false;
-  seedUsers.forEach((su) => {
-    const cur = byId.get(su.id);
-    if (!cur) { byId.set(su.id, su); changed = true; }
-    else if (!cur.pwHash || !cur.email) {
-      byId.set(su.id, { ...cur, email: cur.email || su.email, pwHash: cur.pwHash || su.pwHash });
-      changed = true;
-    }
-  });
-  return { merged: Array.from(byId.values()), changed };
-}
-
 /* ---------- tiny UI atoms ---------- */
 
 function cls(...a) { return a.filter(Boolean).join(" "); }
@@ -651,96 +506,78 @@ export default function App() {
   }, [theme]);
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
-  // Session is a per-browser pointer to the signed-in user id (localStorage).
-  const [sessionId, setSessionId] = useState(() => {
-    try { const s = JSON.parse(localStorage.getItem("sales:session") || "null"); return s && s.userId ? s.userId : null; } catch (e) { return null; }
-  });
+  // Auth: Supabase session drives everything. authReady guards the first
+  // paint; authEmail resolves the roster row (me) once the workspace loads.
+  const [authReady, setAuthReady] = useState(false);
+  const [authEmail, setAuthEmail] = useState(null);
 
   const [focusCompanyId, setFocusCompanyId] = useState(null);
 
-  // Load (and, on an empty workspace, seed) the shared data on mount. Reads use
-  // the anon key directly — the collections table is anon-accessible (see
-  // schema.sql), so no auth session is needed to reach the data.
   useEffect(() => {
+    let alive = true;
+    currentAuthEmail().then((email) => {
+      if (!alive) return;
+      setAuthEmail(email); setAuthReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!alive) return;
+      setAuthEmail(session?.user?.email?.toLowerCase() || null);
+      setAuthReady(true);
+    });
+    return () => { alive = false; sub?.subscription?.unsubscribe(); };
+  }, []);
+
+  // Load the workspace from the relational schema once authenticated. On a
+  // brand-new database the first signed-in person becomes admin (RPC), then
+  // the load runs again.
+  useEffect(() => {
+    if (!authReady) return;
+    if (!authEmail) { setLoading(false); return; }
     let alive = true;
     (async () => {
       setLoading(true);
       try {
-        let u = await store.get("sales:users");
-        if (!u || u.length === 0) {
-          const seed = seedData();
-          await Promise.all([
-            store.set("sales:users", seed.users),
-            store.set("sales:companies", seed.companies),
-            store.set("sales:deals", seed.deals),
-            store.set("sales:kpis", seed.kpis),
-            store.set("sales:trainings", seed.trainings),
-            store.set("sales:worklogs", seed.worklogs),
-            store.set("sales:knowledge", seed.knowledge),
-            store.set("sales:expenses", seed.expenses),
-            store.set("sales:gates", seed.gates),
-            store.set("sales:scrums", seed.scrums),
-            store.set("sales:memory", seed.memory),
-          ]);
-          if (!alive) return;
-          setUsers(seed.users); setCompanies(seed.companies); setDeals(seed.deals); setKpis(seed.kpis);
-          setTrainings(seed.trainings); setWorklogs(seed.worklogs); setKnowledge(seed.knowledge); setExpenses(seed.expenses); setGates(seed.gates);
-          setScrums(seed.scrums); setMemory(seed.memory);
-        } else {
-          const [c, d, k, t, w, kn, e, g, sc, mem] = await Promise.all([
-            store.get("sales:companies"), store.get("sales:deals"), store.get("sales:kpis"),
-            store.get("sales:trainings"), store.get("sales:worklogs"), store.get("sales:knowledge"),
-            store.get("sales:expenses"), store.get("sales:gates"),
-            store.get("sales:scrums"), store.get("sales:memory"),
-          ]);
-          if (!alive) return;
-          // Migration: older workspaces seeded users without email/pwHash (or
-          // pre-date these fields). Backfill the demo users' sign-in credentials
-          // by id so the known logins always work, without touching real data.
-          const { merged, changed } = ensureCredentials(u || []);
-          setUsers(merged);
-          if (changed) store.set("sales:users", merged);
-          setCompanies(c || []); setDeals(d || []); setKpis(k || {});
-          setTrainings(t || []); setWorklogs(w || []); setKnowledge(kn || []);
-          setExpenses(e || []); setGates(g || {});
-          setScrums(sc || []); setMemory(mem || []);
+        let ws = await loadWorkspace();
+        if (ws.users.length === 0) {
+          await bootstrapFirstAdmin();
+          ws = await loadWorkspace();
         }
-      } catch (e) { console.error(e); }
+        if (!alive) return;
+        setUsers(ws.users); setCompanies(ws.companies); setDeals(ws.deals); setKpis(ws.kpis);
+        setTrainings(ws.trainings); setWorklogs(ws.worklogs); setKnowledge(ws.knowledge);
+        setExpenses(ws.expenses); setGates(ws.gates); setScrums(ws.scrums); setMemory(ws.memory);
+      } catch (e) { console.error("loadWorkspace failed", e); }
       if (alive) setLoading(false);
     })();
     return () => { alive = false; };
-  }, []);
+  }, [authReady, authEmail]);
 
-  const persist = (key, val) => { store.set(key, val).then((ok) => { if (!ok) setSaveErr(true); }); };
-  const saveUsers = (v) => { setUsers(v); persist("sales:users", v); };
-  const saveCompanies = (v) => { setCompanies(v); persist("sales:companies", v); };
-  const saveDeals = (v) => { setDeals(v); persist("sales:deals", v); };
-  const saveKpis = (v) => { setKpis(v); persist("sales:kpis", v); };
-  const saveTrainings = (v) => { setTrainings(v); persist("sales:trainings", v); };
-  const saveWorklogs = (v) => { setWorklogs(v); persist("sales:worklogs", v); };
-  const saveKnowledge = (v) => { setKnowledge(v); persist("sales:knowledge", v); };
-  const saveExpenses = (v) => { setExpenses(v); persist("sales:expenses", v); };
-  const saveGates = (v) => { setGates(v); persist("sales:gates", v); };
-  const saveScrums = (v) => { setScrums(v); persist("sales:scrums", v); };
-  const saveMemory = (v) => { setMemory(v); persist("sales:memory", v); };
+  // Save wrappers: state updates immediately; the sync persists to the
+  // relational schema and flags the toast on failure.
+  const flag = (p) => { p.then((okd) => { if (!okd) setSaveErr(true); }); };
+  const saveUsers = (v) => { setUsers(v); flag(syncUsers(v)); };
+  const saveCompanies = (v) => { setCompanies(v); flag(syncCompanies(v)); };
+  const saveDeals = (v) => { setDeals(v); flag(syncDeals(v)); };
+  const saveKpis = (v) => { setKpis(v); flag(syncKpis(v)); };
+  const saveTrainings = (v) => { setTrainings(v); flag(syncTrainings(v)); };
+  const saveWorklogs = (v) => { setWorklogs(v); flag(syncWorklogs(v)); };
+  const saveKnowledge = (v) => { setKnowledge(v); flag(syncKnowledge(v)); };
+  const saveExpenses = (v) => { setExpenses(v); flag(syncExpenses(v)); };
+  const saveGates = (v) => { setGates(v); flag(syncGates(v)); };
+  const saveScrums = (v) => { setScrums(v); flag(syncScrums(v)); };
+  const saveMemory = (v) => { setMemory(v); flag(syncMemory(v)); };
 
-  const me = users.find((u) => u.id === sessionId && u.active !== false) || null;
+  const me = (authEmail && users.find((u) => (u.email || "").toLowerCase() === authEmail && u.active !== false)) || null;
   const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
-  const login = (userId) => { setSessionId(userId); try { localStorage.setItem("sales:session", JSON.stringify({ userId })); } catch (e) { /* ignore */ } };
-  const logout = () => { setSessionId(null); try { localStorage.removeItem("sales:session"); } catch (e) { /* ignore */ } };
+  const logout = () => { signOut(); };
 
-  const resetDemo = async () => {
-    const seed = seedData();
-    saveUsers(seed.users); saveCompanies(seed.companies); saveDeals(seed.deals); saveKpis(seed.kpis);
-    saveTrainings(seed.trainings); saveWorklogs(seed.worklogs); saveKnowledge(seed.knowledge); saveExpenses(seed.expenses); saveGates(seed.gates);
-    saveScrums(seed.scrums); saveMemory(seed.memory);
-  };
-
+  if (!authReady) return <Splash />;
+  if (!authEmail) return <Login />;
   if (loading) return <Splash />;
-  if (!me) return <Login users={users} onLogin={login} />;
+  if (!me) return <NoProfile email={authEmail} onLogout={logout} />;
 
   const goFix = (item) => { setTab(item.tab); if (item.type === "company") setFocusCompanyId(item.id); };
 
@@ -778,7 +615,7 @@ export default function App() {
           {tab === "scrum" && <DailyScrumView me={me} data={data} saveScrums={saveScrums} />}
           {tab === "assistant" && me.role === "admin" && <AssistantView me={me} data={data} />}
           {tab === "memory" && me.role === "admin" && <SystemMemoryView me={me} data={data} saveMemory={saveMemory} />}
-          {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} resetDemo={resetDemo} />}
+          {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} />}
         </main>
         {saveErr && (
           <div className="fixed bottom-3 left-3 z-50 bg-red-600 text-white text-xs px-3 py-2 rounded-md shadow-lg flex items-center gap-2">
@@ -803,7 +640,27 @@ function Splash() {
   );
 }
 
-function Login({ users, onLogin }) {
+/* Signed in, but this email has no active roster row in the Sales workspace. */
+function NoProfile({ email, onLogout }) {
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
+      <div className="w-full max-w-md fade text-center">
+        <div className="flex items-center justify-center mb-4"><Logo height={34} /></div>
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+          <AlertTriangle size={26} className="text-amber-500 mx-auto mb-3" />
+          <p className="font-semibold text-slate-900">No workspace access</p>
+          <p className="text-sm text-slate-500 mt-1.5">
+            You're signed in as <span className="font-mono text-slate-700">{email}</span>, but this
+            email isn't on the Sales OS roster. Ask an admin to add you (Admin → Add user), then sign in again.
+          </p>
+          <div className="mt-5"><Btn kind="ghost" onClick={onLogout}><LogOut size={14} /> Sign out</Btn></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -814,16 +671,11 @@ function Login({ users, onLogin }) {
     if (e) e.preventDefault();
     if (busy || !email.trim() || !password) return;
     setBusy(true); setErr("");
-    const em = email.trim().toLowerCase();
-    const u = (users || []).find((x) => String(x.email || "").toLowerCase() === em);
-    if (!u || u.active === false) { setErr("No active account for that email."); setBusy(false); return; }
-    const h = await hashPw(password);
-    if (u.pwHash && h === u.pwHash) {
-      onLogin(u.id);
-    } else {
-      setErr("Invalid email or password.");
-      setBusy(false);
-    }
+    // First sign-in with a roster email creates the account (the typed
+    // password becomes theirs); after that it must match.
+    const { ok, error } = await signInOrUp(email, password);
+    if (!ok) { setErr(error || "Sign in failed."); setBusy(false); }
+    // On success onAuthStateChange moves the app into the workspace.
   };
 
   return (
@@ -836,7 +688,7 @@ function Login({ users, onLogin }) {
         <form onSubmit={submit} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
           <div>
             <p className="text-lg font-semibold text-slate-900">Sign in</p>
-            <p className="text-xs text-slate-500 mt-0.5">Use your Elecbits work email and password.</p>
+            <p className="text-xs text-slate-500 mt-0.5">Use your Elecbits work email. First sign-in sets your password.</p>
           </div>
           <Field label="Email">
             <Input type="email" autoFocus autoComplete="username" value={email}
@@ -2596,13 +2448,12 @@ function MemoryModal({ entry, me, onClose, onSave }) {
    ADMIN
    ============================================================ */
 
-function AdminView({ me, data, saveUsers, saveGates, resetDemo }) {
+function AdminView({ me, data, saveUsers, saveGates }) {
   const { users, gates } = data;
   const [editUser, setEditUser] = useState(null); // user | "new"
   const [gateStage, setGateStage] = useState("rfq");
   const [gateText, setGateText] = useState(() => ((gates["rfq"] && gates["rfq"].length ? gates["rfq"] : DEFAULT_GATES["rfq"]) || []).join("\n"));
   const [gateSaved, setGateSaved] = useState(false);
-  const [confirmReset, setConfirmReset] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const pickStage = (k) => {
@@ -2675,17 +2526,9 @@ function AdminView({ me, data, saveUsers, saveGates, resetDemo }) {
 
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <SectionTitle>Workspace data</SectionTitle>
-        <p className="text-xs text-slate-500 mb-3 flex items-start gap-1.5"><FileText size={13} className="mt-0.5 flex-none" /> This is a shared workspace — everyone who opens the app sees and edits the same data. Copy a backup before big changes.</p>
+        <p className="text-xs text-slate-500 mb-3 flex items-start gap-1.5"><FileText size={13} className="mt-0.5 flex-none" /> Shared relational workspace in eb-core-database-1 (schemas <span className="font-mono">core</span> + <span className="font-mono">sales</span>). Backups and restores live in Supabase — this copies a JSON snapshot for quick reference.</p>
         <div className="flex flex-wrap gap-2">
           <Btn onClick={backup}><Copy size={14} /> {copied ? "Copied" : "Copy backup JSON"}</Btn>
-          {!confirmReset ? (
-            <Btn kind="danger" onClick={() => setConfirmReset(true)}><Trash2 size={14} /> Reset to demo data</Btn>
-          ) : (
-            <>
-              <Btn kind="danger" onClick={() => { resetDemo(); setConfirmReset(false); }}><AlertTriangle size={14} /> Yes, wipe everything</Btn>
-              <Btn onClick={() => setConfirmReset(false)}>Cancel</Btn>
-            </>
-          )}
         </div>
       </div>
 
@@ -2696,38 +2539,24 @@ function AdminView({ me, data, saveUsers, saveGates, resetDemo }) {
 
 function UserModal({ user, me, onClose, onSave }) {
   const [f, setF] = useState(() => user || { id: uid(), name: "", email: "", role: "agent", dept: "Sales", active: true });
-  const [password, setPassword] = useState("");
-  const [resetPw, setResetPw] = useState(""); // optional new password for an existing user
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [warn, setWarn] = useState("");
   const isSelf = user && user.id === me.id;
   const isNew = !user;
 
-  const save = async () => {
-    setErr(""); setWarn("");
+  const save = () => {
+    setErr("");
     const email = String(f.email || "").trim().toLowerCase();
     if (!f.name.trim()) { setErr("Name is required."); return; }
     if (!email) { setErr("Email is required — it's how they sign in."); return; }
-    if (isNew && password.length < 6) { setErr("Set a password of at least 6 characters for the new login."); return; }
-    if (resetPw && resetPw.length < 6) { setErr("New password must be at least 6 characters."); return; }
-    setBusy(true);
-    // The login lives entirely in the users table: store a salted hash of the
-    // password (on create, or when resetting it), never the plain text.
-    const next = { ...f, email };
-    if (isNew) next.pwHash = await hashPw(password);
-    else if (resetPw) next.pwHash = await hashPw(resetPw);
-    onSave(next);
-    setBusy(false);
+    onSave({ ...f, email });
   };
 
   return (
     <Modal title={user ? "Edit " + user.name : "Add user"} onClose={onClose}
       footer={<>
-        {warn && <span className="mr-auto text-xs text-amber-600">{warn}</span>}
         {err && <span className="mr-auto text-xs text-red-600">{err}</span>}
         <Btn onClick={onClose}>Cancel</Btn>
-        <Btn kind="primary" disabled={busy || !f.name.trim()} onClick={save}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save user</Btn>
+        <Btn kind="primary" disabled={!f.name.trim()} onClick={save}><Check size={15} /> Save user</Btn>
       </>}>
       <div className="space-y-3">
         <Field label="Name" req><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
@@ -2735,14 +2564,10 @@ function UserModal({ user, me, onClose, onSave }) {
           <Input type="email" value={f.email || ""} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="name@elecbits.in" />
         </Field>
         {isNew && (
-          <Field label="Password" req hint="min 6 characters">
-            <Input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Temporary password to share with them" />
-          </Field>
-        )}
-        {!isNew && (
-          <Field label="Reset password" hint="optional — leave blank to keep current">
-            <Input type="text" value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="New password (min 6 characters)" />
-          </Field>
+          <p className="text-xs text-slate-500 bg-slate-100 rounded-lg px-3 py-2">
+            No password to set here — their <span className="font-medium">first sign-in with this
+            email creates the account</span>, and whatever password they type then becomes theirs.
+          </p>
         )}
         <Field label="Role">
           <Sel value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })} disabled={!!isSelf}>
