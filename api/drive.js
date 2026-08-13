@@ -88,7 +88,23 @@ export default async function handler(req, res) {
   const action = (req.query.action || "status").toString();
 
   if (action === "status") {
-    return res.status(200).json({ connected: !!(sa && root), email: sa ? sa.client_email : null });
+    // Spell out which half is missing so nobody has to guess from `false`.
+    const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    let jsonState = "missing";
+    if (raw) {
+      jsonState = "unparseable";
+      try {
+        const text = raw.trim().startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
+        const j = JSON.parse(text);
+        jsonState = j.client_email && j.private_key ? "ok" : "missing client_email/private_key";
+      } catch (e) { /* stays unparseable */ }
+    }
+    return res.status(200).json({
+      connected: !!(sa && root),
+      email: sa ? sa.client_email : null,
+      service_account_json: jsonState,
+      root_folder_id: root ? "set" : "missing",
+    });
   }
   if (!sa || !root) {
     return res.status(501).json({ error: "Drive not configured. Set GOOGLE_SERVICE_ACCOUNT_JSON and DRIVE_ROOT_FOLDER_ID in Vercel." });
