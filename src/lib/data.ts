@@ -511,6 +511,23 @@ export async function syncGates(gates: Record<string, string[]>): Promise<boolea
   return ok(e2, "syncGates.prune") && allOk;
 }
 
+// Assistant chat threads — one per person per day (date-wise history).
+export async function loadChat(personId: string, date: string): Promise<any[]> {
+  const { data } = await supabase.from("chats").select("messages")
+    .eq("person_id", personId).eq("on_date", date).maybeSingle();
+  return (data && data.messages) || [];
+}
+export async function loadChatDates(personId: string): Promise<string[]> {
+  const { data } = await supabase.from("chats").select("on_date")
+    .eq("person_id", personId).order("on_date", { ascending: false }).limit(60);
+  return (data || []).map((r: any) => r.on_date);
+}
+export async function saveChat(personId: string, date: string, messages: any[]): Promise<boolean> {
+  const { error } = await supabase.from("chats")
+    .upsert({ person_id: personId, on_date: date, messages }, { onConflict: "person_id,on_date" });
+  return ok(error, "saveChat");
+}
+
 /* ---------- auth ---------- */
 
 // Onboarding pattern shared with the PMS: sign in; if the account does not
