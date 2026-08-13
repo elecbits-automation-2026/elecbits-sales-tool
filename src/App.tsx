@@ -190,11 +190,17 @@ const STALE_RED = 8;
 // Routes through our own serverless proxy (/api/claude), which holds the
 // ANTHROPIC_API_KEY server-side and picks the model. The browser never sees the
 // key. The proxy accepts { system, messages, maxTokens }.
+// System memory rides on EVERY AI call (gates, scrum, plans, scorers, chats)
+// — the PMS pattern. Set by the workspace loader, refreshed on memory edits.
+let MEMORY_TEXT = "";
 async function askClaude(system, messages) {
+  const sys = MEMORY_TEXT
+    ? system + "\n\nSYSTEM MEMORY (durable company facts & rules — always respect these):\n" + MEMORY_TEXT
+    : system;
   const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system, messages, maxTokens: 1000 }),
+    body: JSON.stringify({ system: sys, messages, maxTokens: 1000 }),
   });
   if (!res.ok) throw new Error("AI request failed (" + res.status + ")");
   const data = await res.json();
@@ -619,6 +625,7 @@ export default function App() {
         setExpenses(ws.expenses); setGates(ws.gates); setScrums(ws.scrums); setMemory(ws.memory);
         setTasks(ws.tasks || []); setLlds(ws.llds || []);
         setQuestionSets(ws.questionSets || {}); setRequests(ws.requests || []);
+        MEMORY_TEXT = (ws.memory || []).map((m) => "• " + m.title + ": " + m.text).join("\n");
       } catch (e) { console.error("loadWorkspace failed", e); }
       if (alive) setLoading(false);
     })();
@@ -638,7 +645,7 @@ export default function App() {
   const saveExpenses = (v) => { setExpenses(v); flag(syncExpenses(v)); };
   const saveGates = (v) => { setGates(v); flag(syncGates(v)); };
   const saveScrums = (v) => { setScrums(v); flag(syncScrums(v)); };
-  const saveMemory = (v) => { setMemory(v); flag(syncMemory(v)); };
+  const saveMemory = (v) => { setMemory(v); MEMORY_TEXT = v.map((m) => "• " + m.title + ": " + m.text).join("\n"); flag(syncMemory(v)); };
   const saveTasks = (v) => { setTasks(v); flag(syncTasks(v)); };
   const saveLlds = (v) => { setLlds(v); flag(syncLlds(v)); };
   const saveQuestionSet = (key, title, questions) => {
@@ -695,7 +702,7 @@ export default function App() {
           {tab === "knowledge" && <KnowledgeView me={me} data={data} saveKnowledge={saveKnowledge} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
           {tab === "scrum" && <DailyScrumView me={me} data={data} saveScrums={saveScrums} saveTasks={saveTasks} />}
-          {tab === "assistant" && me.role === "admin" && <AssistantView me={me} data={data} />}
+          {tab === "assistant" && me.role === "admin" && <AssistantView me={me} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies} saveDeals={saveDeals} saveMemory={saveMemory} saveScrums={saveScrums} />}
           {tab === "memory" && me.role === "admin" && <SystemMemoryView me={me} data={data} saveMemory={saveMemory} />}
           {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} saveQuestionSet={saveQuestionSet} />}
         </main>
@@ -2658,8 +2665,8 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
    ASSISTANT (admin) — chat over the workspace + system memory
    ============================================================ */
 
-function AssistantView({ me, data }) {
-  const { users, companies, deals, kpis, memory } = data;
+function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemory, saveScrums }) {
+  const { users, companies, deals, kpis, memory, tasks, scrums } = data;
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2698,6 +2705,9 @@ function AssistantView({ me, data }) {
       "COMPANIES: " + JSON.stringify(compSnap),
       "DEALS: " + JSON.stringify(dealSnap),
       "TEAM: " + JSON.stringify(users.map((u) => ({ name: u.name, role: roleLabel(u.role), dept: u.dept }))),
+      "YOU RUN THE WHOLE TOOL. When the user asks you to DO something, do it by ending your reply with one line: ACTIONS_JSON [ ... ] where each action is one of:",
+      "{\"type\":\"task\",\"title\":\"...\",\"company\":\"name or empty\",\"assignee\":\"name or empty\",\"due\":\"YYYY-MM-DD or empty\"} · {\"type\":\"company\",\"name\":\"...\",\"industry\":\"\",\"city\":\"\",\"contact\":\"\"} · {\"type\":\"deal\",\"company\":\"existing company name\",\"value\":0,\"owner\":\"name or empty\"} · {\"type\":\"memory\",\"title\":\"...\",\"text\":\"...\"} · {\"type\":\"scrum\",\"text\":\"the scrum note to file for today\"}",
+      "Confirm in plain words what you did BEFORE the ACTIONS_JSON line. Never invent companies for tasks — leave company empty if unsure.",
       "GOOGLE DRIVE: you CAN read the sales Drive (folders and file listings — names, dates, links; not file contents yet).",
       "To look something up, reply with ONLY one line and nothing else: DRIVE_JSON {\"action\":\"root\"} to list the top-level folders · DRIVE_JSON {\"action\":\"list\",\"name\":\"<exact folder name>\"} for a folder's files · DRIVE_JSON {\"action\":\"search\",\"q\":\"<term>\"} to find files by name.",
       "You'll get the listing back as data and can then answer, citing file names and links. Company folders are named '<client-ID> — <company name>'.",
@@ -2731,15 +2741,58 @@ function AssistantView({ me, data }) {
         convo.push({ role: "user", content: "DRIVE_RESULT " + result + "\n\nNow answer the original question from this listing (or make one more DRIVE_JSON request if you must drill deeper)." });
         reply = await askClaude(buildSystem(), convo);
       }
-      persist([...next, { role: "assistant", content: reply, at: nowTS() }]);
+      // Agentic: execute any actions the model returned, then confirm.
+      const actions = extractMarkedJSON(reply, "ACTIONS_JSON");
+      let doneNote = "";
+      if (Array.isArray(actions) && actions.length) {
+        const byName = (n, list, key = "name") => list.find((x) => n && String(x[key] || "").toLowerCase().startsWith(String(n).trim().toLowerCase().split(" ")[0]));
+        const results = [];
+        let nextTasks = [...tasks], nextCompanies = [...companies], nextDeals = [...deals], nextMemory = [...memory], nextScrums = [...scrums];
+        for (const a of actions) {
+          try {
+            if (a.type === "task" && a.title) {
+              const comp = byName(a.company, nextCompanies);
+              const who = byName(a.assignee, users) || me;
+              nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: "", assignee: who.id, author: me.id, title: a.title, details: "Via Assistant", due: a.due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
+              results.push("✓ task: " + a.title + (who ? " → " + who.name : ""));
+            } else if (a.type === "company" && a.name && !byName(a.name, nextCompanies)) {
+              nextCompanies = [{ id: uid(), cid: nextSeq(nextCompanies, "cid", "EB-C-"), name: a.name, contactPerson: a.contact || "", designation: "", phone: "", email: "", city: a.city || "", industry: a.industry || "", whatTheyDo: "", source: "Assistant", potential: 0, website: "", address: "", accountOwner: me.id, createdBy: me.id, createdAt: nowTS(), custom: [], activity: [{ at: nowTS(), by: me.id, text: "Company created via Assistant." }] }, ...nextCompanies];
+              results.push("✓ company: " + a.name);
+            } else if (a.type === "deal" && a.company) {
+              const comp = byName(a.company, nextCompanies);
+              if (comp) {
+                const owner = byName(a.owner, users) || me;
+                nextDeals = [{ id: uid(), did: nextSeq(nextDeals, "did", "EB-D-"), companyId: comp.id, ownerId: owner.id, value: Number(a.value || 0), stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false, history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created via Assistant." }] }, ...nextDeals];
+                results.push("✓ deal on " + comp.name);
+              }
+            } else if (a.type === "memory" && a.text) {
+              nextMemory = [{ id: uid(), title: a.title || "Note", text: a.text, updatedAt: nowTS(), by: me.id }, ...nextMemory];
+              results.push("✓ remembered: " + (a.title || a.text.slice(0, 40)));
+            } else if (a.type === "scrum" && a.text) {
+              nextScrums = [{ id: uid(), userId: me.id, date: todayStr(), raw: a.text, tasks: [], summary: "", tasked: false, createdAt: nowTS() }, ...nextScrums];
+              results.push("✓ scrum note filed for today");
+            }
+          } catch (e) { /* skip bad action */ }
+        }
+        if (nextTasks !== tasks) saveTasks(nextTasks);
+        if (nextCompanies !== companies) saveCompanies(nextCompanies);
+        if (nextDeals !== deals) saveDeals(nextDeals);
+        if (nextMemory !== memory) saveMemory(nextMemory);
+        if (nextScrums !== scrums) saveScrums(nextScrums);
+        doneNote = results.length ? "\n\n" + results.join("\n") : "";
+      }
+      const shown = reply.replace(/ACTIONS_JSON[\s\S]*$/, "").trim() + doneNote;
+      persist([...next, { role: "assistant", content: shown, at: nowTS() }]);
     } catch (e) { setErr("AI call failed — try again."); setInput(text); setMsgs(msgs); }
     setBusy(false);
   };
 
   const suggestions = [
+    "Create a task: follow up with Sunrise Retail tomorrow about the pilot",
+    "Add company Acme Devices, Bengaluru, consumer IoT",
+    "What files are in the Sunrise Retail folder?",
+    "Remember: quotes are valid 30 days, 50% advance with PO",
     "Which deals are stuck the longest?",
-    "Summarise the pipeline by stage and value.",
-    "Which companies have the weakest data?",
     "Who on the team is behind and why?",
   ];
 
@@ -2747,6 +2800,7 @@ function AssistantView({ me, data }) {
     <div className="max-w-4xl mx-auto">
       <div className="flex items-center gap-2 mb-1">
         <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Bot size={18} className="text-blue-600" /> Assistant</h1>
+        <Chip color="blue"><Sparkles size={11} /> Runs the whole tool</Chip>
         <Chip color="green"><Database size={11} /> Reads the workspace</Chip>
         <Chip color="blue"><FolderOpen size={11} /> Reads Google Drive</Chip>
         <Sel className="w-auto text-xs" value={date} onChange={(e) => setDate(e.target.value)} title="Chats are saved per day — browse any earlier day">
@@ -2755,16 +2809,16 @@ function AssistantView({ me, data }) {
           ))}
         </Sel>
       </div>
-      <p className="text-sm text-slate-500 mb-4">Ask about the pipeline, companies, team and KPIs — it answers from live workspace data and your system memory.</p>
+      <p className="text-sm text-slate-500 mb-4">Say it in plain words — it adds companies, raises tasks, starts deals, files the scrum, remembers, and reads the Drive. Answers come from live workspace data and system memory.</p>
 
       <div className="bg-white border border-slate-200 rounded-xl flex flex-col">
         <div ref={bodyRef} className="h-[28rem] overflow-y-auto p-4 space-y-3">
           {msgs.length === 0 && (
-            <div className="text-sm text-slate-400">
-              <p className="font-medium text-slate-500 mb-2">Try:</p>
-              <div className="flex flex-wrap gap-1.5">
+            <div className="text-sm">
+              <p className="text-slate-700 leading-relaxed max-w-2xl">Hi {me.name.split(" ")[0]} — write it the way you'd say it out loud. I'll add companies, raise tasks, start deals, file today's scrum, remember what you tell me, and read the sales Drive. Everything we say here is kept day by day.</p>
+              <div className="flex flex-col items-start gap-1.5 mt-4">
                 {suggestions.map((s) => (
-                  <button key={s} onClick={() => setInput(s)} className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 text-xs hover:bg-blue-50 hover:text-blue-700 transition-colors">{s}</button>
+                  <button key={s} onClick={() => setInput(s)} className="px-3 py-1.5 rounded-full border border-slate-200 bg-white text-slate-700 text-xs font-medium hover:border-blue-400 hover:text-blue-700 transition-colors">{s}</button>
                 ))}
               </div>
             </div>
