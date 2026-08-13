@@ -208,6 +208,9 @@ export async function loadWorkspace() {
     assignee: t.assignee_id, author: t.author_id,
     title: t.title, details: t.details || "", due: t.due || "",
     status: t.status, source: t.source, createdAt: t.created_at, doneAt: t.done_at,
+    windowStart: t.window_start || "", windowEnd: t.window_end || "",
+    work: t.work || {}, ai: t.ai || {}, escalated: !!t.escalated,
+    branchedFrom: t.branched_from || "",
   }));
 
   const lldsOut = llds.map((l: any) => ({
@@ -244,6 +247,9 @@ export async function syncTasks(tasks: any[]): Promise<boolean> {
     title: t.title, details: t.details || null, due: t.due || null,
     status: t.status, source: t.source || "manual",
     done_at: t.status === "done" ? (t.doneAt || new Date().toISOString()) : null,
+    window_start: t.windowStart || null, window_end: t.windowEnd || null,
+    work: t.work || {}, ai: t.ai || {}, escalated: !!t.escalated,
+    branched_from: t.branchedFrom || null,
   }));
   return upsertAndPrune("tasks", rowsIn, tasks.map((t) => t.id), "syncTasks");
 }
