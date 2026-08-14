@@ -99,7 +99,21 @@ export default async function handler(req, res) {
       .join("\n")
       .trim();
 
-    res.status(200).json({ text: text || "(No response generated.)" });
+    if (!text) {
+      // An empty answer is a real failure, not an answer. Say why, so it is
+      // diagnosable from the browser instead of reading "(No response)".
+      console.error("Anthropic returned no text:", JSON.stringify({
+        stop_reason: data.stop_reason, blocks: (data.content || []).map((b) => b.type),
+      }));
+      res.status(200).json({
+        text: data.stop_reason === "max_tokens"
+          ? "(The answer was cut off before any text came back — ask for less at once.)"
+          : "(The AI returned an empty answer" + (data.stop_reason ? " — stop reason: " + data.stop_reason : "") + ". Try again, or re-attach a smaller image.)",
+      });
+      return;
+    }
+
+    res.status(200).json({ text });
   } catch (e) {
     console.error("Claude proxy threw:", e);
     res.status(500).json({ error: "AI request failed." });
