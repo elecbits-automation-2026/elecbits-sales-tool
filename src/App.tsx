@@ -340,12 +340,17 @@ const TALK_KINDS = [
   ["send", /\b(send|share|mail|email|forward|submit|circulate)\b/i],
   ["price", /\b(price|pricing|negotiat|discount|rate)\b/i],
 ];
+// A meeting that HAPPENED leaves minutes or a transcript; one that is merely
+// being arranged leaves nothing.
+const ATTENDED_RE = /\b(attend|had a|had the|did the|conduct|held|hosted|after the|debrief|wrap ?up|took place|went to)/i;
+const MEETINGISH_RE = /\b(meeting|call|demo|review|discussion|presentation|session|visit)\b/i;
 const classifyTask = (s) => {
   const talk = TALK_KINDS.find(([, re]) => re.test(s));
-  if (PRODUCE_VERB.test(s) && ARTIFACT_NOUN.test(s)) return ["produce", true];
-  if (talk) return [talk[0], false];              // talking never needs a file
-  if (ARTIFACT_NOUN.test(s)) return ["produce", true];
-  return ["generic", false];
+  if (PRODUCE_VERB.test(s) && ARTIFACT_NOUN.test(s)) return ["produce", "file"];
+  if (ATTENDED_RE.test(s) && MEETINGISH_RE.test(s)) return ["attended", "link"];
+  if (talk) return [talk[0], "none"];             // arranging/chasing leaves nothing
+  if (ARTIFACT_NOUN.test(s)) return ["produce", "file"];
+  return ["generic", "none"];
 };
 const QUESTION_BANK = {
   produce: { prep: ["What exactly are you producing, and who is it for?", "What numbers or inputs do you need before you start?", "Where will you save it when it's done?"],
@@ -362,12 +367,18 @@ const QUESTION_BANK = {
           close: ["What did you send, and to whom?", "When did it go out?", "What response are you expecting, and by when?"] },
   price: { prep: ["What is your target number, and your walk-away?", "How will you justify it?", "What can you trade instead of a discount?"],
            close: ["What number was discussed, and how did they react?", "What did you concede or hold?", "What is the next step, and by when?"] },
+  attended: { prep: ["What must you walk out of this with?", "Who from their side will be in the room?", "What will you show or take in?"],
+              close: ["Who attended, from both sides?", "What was agreed, and what was pushed back on?", "What is the next step, and by when?"] },
   generic: { prep: ["What does 'done' look like for this?", "What do you need before you can start?", "Who else is involved?"],
              close: ["What exactly did you do?", "What was the outcome?", "What happens next, and by when?"] },
 };
+const EVIDENCE_WHAT = {
+  file: "the document you produced",
+  link: "the minutes (MoM) in the company folder, or a Fireflies / Meet / recording link",
+};
 const fallbackBrief = (t) => {
-  const [kind, needsFile] = classifyTask((t.title || "") + " " + (t.details || ""));
-  return { kind, artifact: { required: needsFile, what: "" },
+  const [kind, ev] = classifyTask((t.title || "") + " " + (t.details || ""));
+  return { kind, evidence: { kind: ev, what: EVIDENCE_WHAT[ev] || "" },
            prep: QUESTION_BANK[kind].prep, close: QUESTION_BANK[kind].close,
            tip: "", source: "fallback", at: nowTS() };
 };
@@ -375,8 +386,10 @@ const cleanBrief = (b) => {
   const arr = (x) => (Array.isArray(x) ? x : []).map((q) => String(q || "").trim()).filter(Boolean).slice(0, 4);
   const prep = arr(b && b.prep), close = arr(b && b.close);
   if (prep.length < 2 || close.length < 2) return null;
+  const raw = (b && b.evidence && b.evidence.kind) || (b && b.artifact && b.artifact.required ? "file" : "none");
+  const kind = ["file", "link", "none"].includes(raw) ? raw : "none";
   return { kind: String((b && b.kind) || "").slice(0, 40),
-           artifact: { required: !!(b && b.artifact && b.artifact.required), what: String((b && b.artifact && b.artifact.what) || "") },
+           evidence: { kind, what: String((b && b.evidence && b.evidence.what) || (b && b.artifact && b.artifact.what) || EVIDENCE_WHAT[kind] || "").slice(0, 140) },
            prep, close, tip: String((b && b.tip) || "").slice(0, 160), source: "ai", at: nowTS() };
 };
 
@@ -389,10 +402,12 @@ const briefSystem = (t, comp, who) => [
   comp ? "Company: " + comp.name + (comp.industry ? " — " + comp.industry : "") : "Company: (not linked)",
   "Owner: " + (who ? who.name : "unknown") + " · due " + (t.due || "no date") + " · today is " + todayStr(),
   "",
-  "JOB 1 — decide whether finishing this task genuinely creates a file.",
-  "TRUE only if a document exists afterwards that did not exist before: a quote, proposal, LLD, BOM, costing sheet, report, deck, MoM, invoice, PO, contract, NDA, drawing, spec sheet.",
-  "FALSE for asking, calling, meeting, visiting, following up, chasing, confirming, reminding, negotiating, scheduling. These produce an outcome, not a file.",
-  "Forcing someone to type a file name for a task that has no file is the single worst thing you can do here. When unsure, answer false.",
+  "JOB 1 — decide what EVIDENCE this task leaves behind, if any.",
+  "  kind 'file'  — the work creates a document: a quote, proposal, LLD, BOM, costing sheet, report, deck, invoice, PO, contract, NDA, drawing, spec.",
+  "  kind 'link'  — the work HAPPENS and is recorded elsewhere: a meeting or call that took place, a demo, a client review. Ask for the minutes (MoM) saved in the company's Drive folder, OR a link — a Fireflies transcript, a Google Meet recording, a calendar invite.",
+  "  kind 'none'  — nothing is produced: asking for a meeting, scheduling, chasing, a reminder, a quick confirmation.",
+  "The distinction that matters: ARRANGING a meeting leaves nothing ('none'); ATTENDING one leaves minutes or a transcript ('link').",
+  "Forcing someone to type a file name for a task that produced no document is the single worst thing you can do here. When unsure between file and none, choose none.",
   "",
   "JOB 2 — write the questions, about THIS task, in the salesperson's own language.",
   "prep: 2 to 4 questions asked BEFORE the work, that make them think about what they are walking into. Specific to this task and this company — never generic process questions.",
@@ -401,28 +416,35 @@ const briefSystem = (t, comp, who) => [
   "  good prep: What is this meeting actually about? · What agenda will you take in? · What will you show or present? · What outcome do you want to walk out with?",
   "  good close: Did they agree, and on what date? · What did you tell them it was about? · What did you commit to send before it?",
   "  bad, never do this: What file did you produce? · Where is it stored?",
-  "Rules: one sentence each, 14 words maximum, plain English, no numbering, no jargon. Never ask for a file name or a Drive path unless artifact.required is true.",
+  "Rules: one sentence each, 14 words maximum, plain English, no numbering, no jargon. Never ask for a file name or a Drive path in your questions — the form collects those itself.",
   "",
   "Reply with ONLY this line and nothing else:",
-  "BRIEF_JSON {\"kind\":\"two-word label, e.g. meeting request / quote / site visit\",\"artifact\":{\"required\":true,\"what\":\"name of the document, empty when not required\"},\"prep\":[\"...\"],\"close\":[\"...\"],\"tip\":\"one blunt sentence of advice, or empty\"}",
+  "BRIEF_JSON {\"kind\":\"two-word label, e.g. meeting request / quote / client meeting\",\"evidence\":{\"kind\":\"file|link|none\",\"what\":\"what to hand over, e.g. the MoM or a Fireflies transcript link\"},\"prep\":[\"...\"],\"close\":[\"...\"],\"tip\":\"one blunt sentence of advice, or empty\"}",
 ].filter(Boolean).join("\n");
 
-const verdictSystem = (t, comp, brief, qa, file, path) => [
+const verdictSystem = (t, comp, brief, qa, file, path, link, driveCheck) => [
   "You are the closure gate on the Elecbits Sales OS. Judge whether this task was really done. Be strict about substance and relaxed about paperwork.",
   "",
   "TASK: " + t.title + (t.details ? " — " + t.details : ""),
   comp ? "COMPANY: " + comp.name : "COMPANY: (not linked)",
-  "DOES THIS TASK PRODUCE A FILE: " + (brief.artifact.required ? "yes — " + (brief.artifact.what || "a document") : "no"),
+  "EVIDENCE THIS TASK SHOULD LEAVE: " + (brief.evidence.kind === "none" ? "none — it produces an outcome, not a document"
+    : brief.evidence.kind === "file" ? "a document — " + (brief.evidence.what || "the file produced")
+    : "the minutes or a recording — " + (brief.evidence.what || "MoM in the folder, or a transcript link")),
   "",
   "THEIR ANSWERS",
   qa.map((x, i) => "Q" + (i + 1) + ": " + x.q + "\nA" + (i + 1) + ": " + (String(x.a || "").trim() || "(blank)")).join("\n"),
-  brief.artifact.required ? "File produced: " + (file.trim() || "(none given)") + "\nStored at: " + (path.trim() || "(none given)") : "",
+  brief.evidence.kind !== "none"
+    ? "WHAT THEY HANDED OVER\nFile: " + (file.trim() || "(none)") + "\nStored at: " + (path.trim() || "(none)") + "\nLink: " + (link.trim() || "(none)")
+      + (driveCheck ? "\nDRIVE CHECK: " + driveCheck : "")
+    : "",
   "",
   "HOW TO JUDGE",
   "PASS when the answers name real things — a person, a date, a number, a decision, a next step. A single specific line is a pass; length is not the test.",
   "FAIL when answers are blank, evasive, or could have been written without doing the work: 'done', 'ok', 'hello', 'yes', 'spoke to them', 'as discussed'.",
-  "FAIL a file-producing task with no file name or no storage path.",
-  "NEVER fail a task for a missing file when DOES THIS TASK PRODUCE A FILE is 'no'. Never ask for documentation the task never needed.",
+  "FAIL when the evidence is 'a document' and neither a file name nor a link was given.",
+  "FAIL when the evidence is minutes/recording and they gave neither a MoM in the folder nor any link — a meeting that left no trace did not happen as far as this tool is concerned.",
+  "When a DRIVE CHECK line says NOT FOUND, say so plainly and fail: the file they named is not in the folder they named. When it says FOUND, treat the artifact as real.",
+  "NEVER fail a task for a missing document when the evidence is 'none'. Never ask for paperwork the task never needed.",
   "Do not demand more rigour than the task deserves. A five-minute phone task closes on two short lines.",
   "reasons: at most two sentences, second person, blunt. If you fail it, name the ONE thing that would fix it.",
   "",
@@ -3720,6 +3742,8 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
   });
   const [file, setFile] = useState(W.file || "");
   const [path, setPath] = useState(W.path || (comp ? "/Eb-07-Sales/" + driveFolderName(comp) + "/" : ""));
+  const [link, setLink] = useState(W.link || "");
+  const [checking, setChecking] = useState("");
   const [busy, setBusy] = useState(false);
   const [verdict, setVerdict] = useState(null);
   const [escalate, setEscalate] = useState(!!t.escalated);
@@ -3744,17 +3768,31 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
 
   const qList = brief ? brief.close : [];
   const qa = qList.map((q, i) => ({ q, a: answers[i] || "" }));
-  const needsArtifact = !!(brief && brief.artifact && brief.artifact.required);
+  const evKind = (brief && brief.evidence && brief.evidence.kind) || "none";
+  const needsEvidence = evKind !== "none";
   const allAnswered = qList.length > 0 && qList.every((_, i) => String(answers[i] || "").trim());
 
   const closeTask = async () => {
     if (!brief) return;
     setBusy(true);
-    const workOut = { ...W, prepAnswers: W.prepAnswers || {}, file: needsArtifact ? file : "", path: needsArtifact ? path : "",
-      what: qa.map((x) => x.q + " — " + x.a).join(" · ") };
+    const workOut = { ...W, prepAnswers: W.prepAnswers || {}, file: needsEvidence ? file : "", path: needsEvidence ? path : "",
+      link: needsEvidence ? link : "", what: qa.map((x) => x.q + " — " + x.a).join(" · ") };
+    // Claiming a file is not the same as saving one — look in the folder.
+    let driveCheck = "";
+    if (needsEvidence && file.trim() && comp) {
+      setChecking("Looking for “" + file.trim() + "” in the Drive folder…");
+      try {
+        const r = await withTimeout(fetch("/api/drive?action=verify&name=" + encodeURIComponent(driveFolderName(comp)) + "&file=" + encodeURIComponent(file.trim())).then((x) => x.json()), 12000);
+        driveCheck = r && r.found
+          ? "FOUND — " + r.matches.map((m) => m.name + " (in " + m.where + ")").join("; ")
+          : "NOT FOUND — nothing matching that name in " + (r && r.folderFound ? "the company folder or its sub-folders" : "Drive (the folder itself is not shared with this tool)");
+        workOut.driveCheck = driveCheck;
+      } catch (e) { driveCheck = ""; }
+      setChecking("");
+    }
     try {
       const reply = await withTimeout(
-        askClaude(verdictSystem(t, comp, brief, qa, file, path), [{ role: "user", content: "Judge this closure." }]), 20000);
+        askClaude(verdictSystem(t, comp, brief, qa, file, path, link, driveCheck), [{ role: "user", content: "Judge this closure." }]), 20000);
       const v = extractMarkedJSON(reply, "VERDICT_JSON");
       if (!v || typeof v.pass !== "boolean") throw new Error("unparseable");
       const out = { pass: !!v.pass, score: Number(v.score) || (v.pass ? 7 : 3), reasons: String(v.reasons || ""), offline: false };
@@ -3763,7 +3801,7 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
         work: workOut, ai: { ...A, brief, qa, ...out } });
     } catch (e) {
       // AI unreachable: judge locally so nobody is trapped with finished work.
-      const artOk = !needsArtifact || (file.trim() && path.trim());
+      const artOk = !needsEvidence || (file.trim() && path.trim()) || link.trim();
       const solid = qa.every((x) => x.a.trim().length >= 12) && artOk;
       const out = { pass: solid, score: solid ? 6 : 3, offline: true,
         reasons: solid
@@ -3822,6 +3860,7 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
         <button onClick={() => setShowEsc(!showEsc)} className="text-xs text-slate-500 hover:text-slate-800 ml-3 mr-auto">
           Escalate to {deptHead ? deptHead.name : "dept head"}
         </button>
+        {checking && <span className="text-[11px] text-slate-400 mr-2 self-center">{checking}</span>}
         <Btn kind="primary" disabled={busy || !brief || !allAnswered} onClick={closeTask}>
           {busy ? <><Loader2 size={14} className="animate-spin" /> Checking…</> : <><CheckCircle2 size={14} /> Close task</>}
         </Btn>
@@ -3847,16 +3886,35 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
                 <TA className="min-h-14" value={answers[i] || ""} onChange={(e) => setAnswers({ ...answers, [i]: e.target.value })} />
               </div>
             ))}
-            {needsArtifact && (
+            {needsEvidence && (
               <div className="border-t border-slate-200 pt-3 space-y-3">
+                <Lbl>{evKind === "link" ? "Minutes or recording" : "The document"}</Lbl>
+                <p className="text-[11px] text-slate-400 -mt-1.5">
+                  {evKind === "link"
+                    ? "Save the MoM in the company's Drive folder and name it below, or paste a link — Fireflies transcript, Meet recording, or the doc itself."
+                    : "Name the file and where you saved it. The gate looks for it in the Drive folder."}
+                </p>
                 <div>
-                  <p className="text-[12.5px] text-slate-700 mb-1.5">File produced (name) <span className="text-red-500">*</span></p>
-                  <Input value={file} onChange={(e) => setFile(e.target.value)} placeholder="e.g. 2026-08-14_quote_FMS-200.pdf" />
+                  <p className="text-[12.5px] text-slate-700 mb-1.5">{evKind === "link" ? "MoM / file name in Drive" : "File produced (name)"}</p>
+                  <Input value={file} onChange={(e) => setFile(e.target.value)}
+                    placeholder={evKind === "link" ? "e.g. 2026-08-14_MoM_Sunrise-pricing.docx" : "e.g. 2026-08-14_quote_FMS-200.pdf"} />
                 </div>
+                {file.trim() && (
+                  <div>
+                    <p className="text-[12.5px] text-slate-700 mb-1.5">Stored at (Drive path)</p>
+                    <Input value={path} onChange={(e) => setPath(e.target.value)} />
+                  </div>
+                )}
                 <div>
-                  <p className="text-[12.5px] text-slate-700 mb-1.5">Stored at (Drive path) <span className="text-red-500">*</span></p>
-                  <Input value={path} onChange={(e) => setPath(e.target.value)} />
+                  <p className="text-[12.5px] text-slate-700 mb-1.5">
+                    {evKind === "link" ? "…or paste a link" : "…or a link, if it lives outside Drive"}
+                  </p>
+                  <Input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https:// — Fireflies, Meet recording, Drive link" />
                 </div>
+                <p className="text-[11px] text-slate-400 flex items-start gap-1.5">
+                  <Search size={12} className="mt-0.5 flex-none" />
+                  Name a file and the gate will go into the Drive folder and check it is really there.
+                </p>
               </div>
             )}
             {EscBlock}
@@ -3949,9 +4007,12 @@ function TaskScopeCard({ task: t, comp, brief }) {
       <div className="bg-blue-50/60 border border-blue-100 rounded-md px-3 py-2.5">
         <p className="text-[11px] text-slate-600 leading-relaxed">
           <span className="font-semibold text-slate-700">Task quality bar:</span>{" "}
-          {brief && brief.artifact && brief.artifact.required
-            ? <>this one produces {brief.artifact.what || "a document"} — name the file and where you saved it. A task without its artifact is not a finished task.</>
-            : <>this one produces an outcome, not a file. Name the person, the date and what was agreed — that is the artifact.</>}
+          {(() => {
+            const k = (brief && brief.evidence && brief.evidence.kind) || "none";
+            if (k === "file") return <>this one produces {(brief.evidence.what) || "a document"} — name the file and where you saved it, and the gate will check the folder. A task without its artifact is not a finished task.</>;
+            if (k === "link") return <>this one leaves minutes. Save the MoM in the company folder, or paste a Fireflies / Meet link. A meeting with no record did not happen.</>;
+            return <>this one produces an outcome, not a document. Name the person, the date and what was agreed — that is the artifact.</>;
+          })()}
         </p>
       </div>
       <p className="text-[11px] text-slate-400">
