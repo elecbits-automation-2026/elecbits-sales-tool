@@ -193,14 +193,14 @@ const STALE_RED = 8;
 // System memory rides on EVERY AI call (gates, scrum, plans, scorers, chats)
 // — the PMS pattern. Set by the workspace loader, refreshed on memory edits.
 let MEMORY_TEXT = "";
-async function askClaude(system, messages) {
+async function askClaude(system, messages, opts = {}) {
   const sys = MEMORY_TEXT
     ? system + "\n\nSYSTEM MEMORY (durable company facts & rules — always respect these):\n" + MEMORY_TEXT
     : system;
   const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system: sys, messages, maxTokens: 1000 }),
+    body: JSON.stringify({ system: sys, messages, maxTokens: opts.maxTokens || 1000 }),
   });
   if (!res.ok) throw new Error("AI request failed (" + res.status + ")");
   const data = await res.json();
@@ -2776,7 +2776,8 @@ function DailyScrumView({ me, data, saveScrums, saveTasks }) {
         details: t.condition || "", due: s.date || todayStr(),
         windowStart: win.start, windowEnd: win.end,
         work: {}, ai: {}, escalated: false, branchedFrom: "",
-        status: "open", source: "scrum", createdAt: nowTS(),
+        status: "open", source: s.source === "transcript" ? "transcript" : "scrum",
+        scrumNoteId: s.id, createdAt: nowTS(),
       };
     });
     if (fresh.length) saveTasks([...fresh, ...tasks]);
@@ -2792,6 +2793,20 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [pending, setPending] = useState(null); // AI-organised note awaiting review
+  const [mode, setMode] = useState("write");    // write | transcript
+  const [link, setLink] = useState(() => (scrums.find((s) => s.link) || {}).link || "");
+  const [present, setPresent] = useState({});   // personId -> true
+  const [guests, setGuests] = useState([]);
+  const [guestName, setGuestName] = useState("");
+  const [tr, setTr] = useState("");             // raw transcript
+  const [trUrl, setTrUrl] = useState("");
+  const trFileRef = useRef(null);
+  const norm = useMemo(() => normaliseTranscript(tr), [tr]);
+  const attendanceObj = () => ({
+    present: Object.keys(present).filter((k) => present[k]),
+    absent: users.filter((u) => u.active !== false && !present[u.id]).map((u) => u.id),
+    guests, markedBy: me.id, markedAt: nowTS(),
+  });
   const setPendingTask = (i, patch) => setPending({ ...pending, tasks: pending.tasks.map((t, j) => (j === i ? { ...t, ...patch } : t)) });
   const savePending = (withTasks) => {
     const note = { ...pending };
@@ -2809,7 +2824,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
   const organise = async () => {
-    const text = raw.trim();
+    const text = mode === "transcript" ? norm.text : raw.trim();
     if (!text || busy) return;
     setBusy(true); setErr("");
     const { users, companies } = data;
@@ -2824,10 +2839,14 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
       "Valid JSON. No markdown.",
     ].join("\n");
     try {
-      const reply = await askClaude(system, [{ role: "user", content: text }]);
+      const isTr = mode === "transcript";
+      const sys = isTr ? scrumTranscriptSystem(date, users, companies,
+        Object.keys(present).filter((k) => present[k]).map((id) => (users.find((u) => u.id === id) || {}).name).filter(Boolean).join(", ")) : system;
+      const reply = await askClaude(sys, [{ role: "user", content: text }], { maxTokens: isTr ? 4000 : 1500 });
       const parsed = extractMarkedJSON(reply, "SCRUM_JSON") || {};
       const note = {
-        id: uid(), userId: me.id, date, raw: text,
+        id: uid(), userId: me.id, date,
+        raw: mode === "transcript" ? (parsed.summary || "Read from the call transcript.") : text,
         tasks: (Array.isArray(parsed.tasks) ? parsed.tasks : []).map((t) => {
           const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
           const comp = matchCompany(t.company, companies) || matchCompany(t.task, companies);
@@ -2839,6 +2858,13 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           return { ...t, assigneeId: owner ? owner.id : (compOwner ? compOwner.id : me.id), companyId: comp ? comp.id : "", start: win.start, end: win.end };
         }),
         summary: parsed.summary || "", createdAt: nowTS(),
+        blockers: Array.isArray(parsed.blockers) ? parsed.blockers : [],
+        decisions: Array.isArray(parsed.decisions) ? parsed.decisions : [],
+        ignored: parsed.ignored || "",
+        link, attendance: attendanceObj(),
+        source: mode === "transcript" ? "transcript" : "typed",
+        transcript: mode === "transcript" ? norm.text : "",
+        transcriptUrl: mode === "transcript" ? trUrl : "",
       };
       // The PMS preview: adjust assignee + time windows before anything saves.
       setPending(note);
@@ -2848,7 +2874,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   };
 
   const saveRawOnly = () => {
-    const text = raw.trim();
+    const text = mode === "transcript" ? norm.text : raw.trim();
     if (!text) return;
     saveScrums([{ id: uid(), userId: me.id, date, raw: text, tasks: [], summary: "", createdAt: nowTS() }, ...scrums]);
     setRaw("");
@@ -2863,19 +2889,96 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
       </div>
       <p className="text-sm text-slate-500 mb-4">Write it as it comes — the AI turns it into assigned, time-boxed, if/else-aware tasks.</p>
 
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <CalendarCheck2 size={16} className="text-blue-600" />
-          <p className="text-sm font-semibold text-slate-800">Daily scrum — write it as it comes</p>
+      {/* the call itself — link, who was on it */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4">
+        <Lbl>The scrum call</Lbl>
+        <div className="flex flex-wrap items-end gap-2 mt-2">
+          <div className="flex-1 min-w-[260px]">
+            <p className="text-[12.5px] text-slate-700 mb-1.5">Meet link</p>
+            <Input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://meet.google.com/xxx-xxxx-xxx" />
+          </div>
+          {/^https?:\/\//.test(link) && <Btn onClick={() => window.open(link, "_blank")}><ExternalLink size={13} /> Join</Btn>}
         </div>
+        <p className="text-[11px] text-slate-400 mt-1">Remembered from the last note — same link every morning.</p>
+        <div className="mt-3">
+          <p className="text-[12.5px] text-slate-700 mb-1.5">Who was on it</p>
+          <div className="flex flex-wrap gap-1.5">
+            {users.filter((u) => u.active !== false).map((u) => (
+              <button key={u.id} onClick={() => setPresent({ ...present, [u.id]: !present[u.id] })}
+                className={cls("px-2.5 py-1 rounded-full text-xs font-medium border transition-colors",
+                  present[u.id] ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-500 border-slate-300 hover:border-blue-400")}>
+                {present[u.id] ? "✓ " : ""}{u.name}
+              </button>
+            ))}
+            {guests.map((g, i) => (
+              <span key={i} className="px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200 inline-flex items-center gap-1">
+                {g}<button onClick={() => setGuests(guests.filter((_, j) => j !== i))} className="hover:text-red-500"><X size={10} /></button>
+              </span>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            <Input className="w-52" value={guestName} onChange={(e) => setGuestName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && guestName.trim()) { setGuests([...guests, guestName.trim()]); setGuestName(""); } }}
+              placeholder="guest — client, PMS…" />
+            <Btn size="sm" disabled={!guestName.trim()} onClick={() => { setGuests([...guests, guestName.trim()]); setGuestName(""); }}>Add</Btn>
+            <button onClick={() => { const all = {}; users.filter((u) => u.active !== false).forEach((u) => (all[u.id] = true)); setPresent(all); }}
+              className="text-xs text-blue-600 hover:underline ml-auto">Mark everyone present</button>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-1.5">
+            {Object.values(present).filter(Boolean).length} of {users.filter((u) => u.active !== false).length} present
+            {users.filter((u) => u.active !== false && !present[u.id]).length > 0 &&
+              " · absent: " + users.filter((u) => u.active !== false && !present[u.id]).map((u) => u.name).join(", ")}
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <CalendarCheck2 size={16} className="text-blue-600" />
+          <p className="text-sm font-semibold text-slate-800 mr-auto">{mode === "write" ? "Daily scrum — write it as it comes" : "Read the call"}</p>
+          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+            {[["write", "Write the note"], ["transcript", "Paste the call transcript"]].map(([k, l]) => (
+              <button key={k} onClick={() => setMode(k)} className={cls("px-3 py-1.5 font-medium", mode === k ? "bg-blue-600 text-white" : "bg-white text-slate-600")}>{l}</button>
+            ))}
+          </div>
+        </div>
+        {mode === "transcript" ? (
+          <div className="space-y-2">
+            <input ref={trFileRef} type="file" hidden accept=".txt,.vtt,.srt,.md,.json,.csv"
+              onChange={(e) => { const f = e.target.files[0]; if (f) { const r = new FileReader(); r.onload = () => setTr(String(r.result)); r.readAsText(f); } e.target.value = ""; }} />
+            <div className="flex items-center gap-2">
+              <Btn size="sm" onClick={() => trFileRef.current?.click()}><Paperclip size={12} /> Upload a file</Btn>
+              <Btn size="sm" disabled title="Needs a Fireflies API key — see SETUP.md"><Sparkles size={12} /> Pull from Fireflies</Btn>
+              {tr && <button onClick={() => setTr("")} className="text-xs text-slate-400 hover:text-red-500 ml-auto">clear</button>}
+            </div>
+            <TA value={tr} onChange={(e) => setTr(e.target.value)} className="min-h-40 font-mono text-xs"
+              placeholder="Paste the transcript — Fireflies, Meet captions, a .vtt/.srt file's contents, or what someone typed up. Speaker names help but are not required." />
+            <div>
+              <p className="text-[12.5px] text-slate-700 mb-1.5">Where it came from</p>
+              <Input value={trUrl} onChange={(e) => setTrUrl(e.target.value)} placeholder="https://app.fireflies.ai/view/… — kept as the source of record" />
+              <p className="text-[11px] text-slate-400 mt-1">The link alone is not readable by the tool — paste or upload the text as well.</p>
+            </div>
+            {tr && (
+              <p className="text-[11px] text-slate-500 font-mono">
+                {norm.words.toLocaleString()} words · {norm.speakers.length || "no"} speaker{norm.speakers.length === 1 ? "" : "s"}
+                {norm.speakers.length > 0 && " (" + norm.speakers.slice(0, 6).join(", ") + ")"}
+                {norm.chars > 60000 && <span className="text-amber-600"> · very long — the reader may miss the tail</span>}
+              </p>
+            )}
+          </div>
+        ) : (
         <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-32"
           placeholder={speech.on ? "Listening… speak the scrum" : "e.g. — Sunrise Retail quote goes out by 2pm, Akash. Ankit calls Nevon about the pilot PO 12 to 1. If Greenline shares the BOM today, price it by evening; if not, chase their SPOC. I'll do the Escorts follow-up mail before lunch."} />
+        )}
         <div className="flex flex-wrap items-center gap-2 mt-3">
-          <Btn kind="primary" disabled={busy || !raw.trim()} onClick={organise}>
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Organise with AI
+          <Btn kind="primary" disabled={busy || !(mode === "transcript" ? tr.trim() : raw.trim())} onClick={organise}>
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            {mode === "transcript" ? " Read the call and pull out the tasks" : " Organise with AI"}
           </Btn>
           {speech.supported && <Btn kind={speech.on ? "danger" : "ghost"} onClick={speech.toggle}>{speech.on ? <MicOff size={14} /> : <Mic size={14} />}</Btn>}
-          <Btn kind="ghost" disabled={busy || !raw.trim()} onClick={saveRawOnly}>Save raw note</Btn>
+          <Btn kind="ghost" disabled={busy || !(mode === "transcript" ? tr.trim() : raw.trim())} onClick={saveRawOnly}>
+            {mode === "transcript" ? "Save transcript only" : "Save raw note"}
+          </Btn>
           <span className="text-xs text-slate-400 ml-auto">Mention project ID, people, time windows and any if/else.</span>
         </div>
         {err && <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
@@ -2883,10 +2986,17 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         {pending && (
           <div className="mt-4 border-t border-dashed border-slate-200 pt-4">
             <p className="text-xs mb-2"><Chip color="purple">AI organised</Chip> <span className="text-slate-500 italic ml-1">{pending.summary}</span></p>
+            {pending.ignored && <p className="text-[11px] text-slate-400 mb-2">Left out: {pending.ignored}</p>}
+            {(pending.blockers || []).length > 0 && (
+              <p className="text-[11px] text-red-600 mb-2">Blockers raised: {pending.blockers.map((b) => b.what + (b.who ? " (" + b.who + ")" : "")).join(" · ")}</p>
+            )}
             <div className="space-y-2">
               {pending.tasks.map((t, i) => (
                 <div key={i} className="border border-slate-200 rounded-lg p-3">
-                  <p className="text-sm text-slate-800 mb-2">{t.task}{t.condition && <span className="text-xs text-amber-700 ml-2">({t.condition})</span>}</p>
+                  <p className="text-sm text-slate-800 mb-1">{t.task}
+                    {t.condition && <span className="text-xs text-amber-700 ml-2">({t.condition})</span>}
+                    {t.agreed === false && <span className="text-[10px] text-amber-600 uppercase ml-1.5">not accepted</span>}</p>
+                  {t.said && <p className="text-[11px] text-slate-400 italic mb-2 border-l-2 border-slate-200 pl-2">“{t.said}”</p>}
                   <div className="flex flex-wrap items-center gap-2">
                     <Sel className="w-40" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
                       {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
@@ -2929,6 +3039,11 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
                   <span className="font-semibold text-sm text-slate-900">{by ? by.name : "?"}</span>
                   <span className="font-mono text-xs text-slate-400">{new Date(s.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
                   {s.tasks && s.tasks.length > 0 ? <Chip color="blue">{s.tasks.length} task{s.tasks.length === 1 ? "" : "s"}</Chip> : <Chip color="slate">raw note</Chip>}
+                  {s.source === "transcript" && <Chip color="purple">from the call</Chip>}
+                  {s.attendance && (s.attendance.present || []).length > 0 && (
+                    <span className="text-[11px] text-slate-400">{s.attendance.present.length} on the call</span>
+                  )}
+                  {s.transcriptUrl && <a href={s.transcriptUrl} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline">transcript ↗</a>}
                   {(me.role === "admin" || s.userId === me.id) && (
                     <button onClick={() => remove(s.id)} className="ml-auto text-slate-400 hover:text-red-600" title="Delete"><Trash2 size={13} /></button>
                   )}
@@ -3723,6 +3838,74 @@ const parseWin = (w) => {
   if (d) return { start: "", end: p(h(d[1], d[3], "")) + ":" + (d[2] || "00") };
   return { start: "", end: "" };
 };
+// Normalise any transcript flavour into "Speaker: text" lines. Meet's live
+// captions repeat rolling text; VTT/SRT carry cue numbers and timecodes. Left
+// raw, all of it triples the token bill and confuses the reader.
+function normaliseTranscript(input) {
+  let raw = String(input || "").trim();
+  if (raw.startsWith("{") || raw.startsWith("[")) {
+    try {
+      const j = JSON.parse(raw);
+      const sents = j.sentences || (j.transcript && j.transcript.sentences) || (Array.isArray(j) ? j : null);
+      if (sents) raw = sents.map((x) => (x.speaker_name || x.speaker || "Speaker") + ": " + (x.text || x.raw_text || "")).join("\n");
+    } catch (e) { /* not JSON after all */ }
+  }
+  const out = [];
+  for (let l of raw.split(/\r?\n/)) {
+    l = l.trim();
+    if (!l) continue;
+    if (/^WEBVTT/i.test(l) || /^NOTE\b/.test(l)) continue;
+    if (/^\d+$/.test(l)) continue;                                      // SRT cue number
+    if (/\d{1,2}:\d{2}(:\d{2})?[.,]?\d*\s*-->\s*/.test(l)) continue;    // timecode
+    l = l.replace(/^\[?\d{1,2}:\d{2}(:\d{2})?\]?\s*/, "");
+    l = l.replace(/^(.{1,40}?)\s*\(\d{1,2}:\d{2}(:\d{2})?\)\s*:?\s*/, "$1: ");
+    l = l.replace(/<[^>]+>/g, "");
+    if (!l.trim()) continue;
+    const prev = out[out.length - 1];
+    if (prev === l) continue;
+    if (prev && (prev.endsWith(l) || l.startsWith(prev))) { out[out.length - 1] = l.length > prev.length ? l : prev; continue; }
+    out.push(l);
+  }
+  const merged = [];
+  for (const l of out) {
+    const m = l.match(/^([A-Z][\w .'-]{1,38}):\s*(.*)$/);
+    const last = merged[merged.length - 1];
+    if (m && last && last.speaker === m[1]) { last.text += " " + m[2]; continue; }
+    merged.push(m ? { speaker: m[1], text: m[2] } : { speaker: "", text: l });
+  }
+  const speakers = [...new Set(merged.map((x) => x.speaker).filter(Boolean))];
+  const text = merged.map((x) => (x.speaker ? x.speaker + ": " : "") + x.text).join("\n");
+  return { text, speakers, words: text ? text.split(/\s+/).length : 0, chars: text.length };
+}
+
+// Reading a real call is a different job from reading a typed note: most of a
+// transcript is chatter, and only the commitments matter.
+const scrumTranscriptSystem = (date, users, companies, attendance) => [
+  "You are the Elecbits Sales OS scrum-call reader. You are given the RAW, UNEDITED transcript of the 'Eb - Daily scrum' Google Meet: speech-to-text, no punctuation discipline, people talking over each other, names misspelt by the transcriber. Your job is to return the day's COMMITTED WORK — not a summary of the conversation.",
+  "DATE OF THE CALL: " + date,
+  "TEAM ROSTER (every owner must be one of these people; transcriber spellings vary — 'Akash', 'akash s', 'Aakash' are the same person): " + users.filter((u) => u.active !== false).map((u) => u.name).join(", "),
+  "COMPANIES with their account owners (match a client mentioned even loosely — 'Sunrise Company' means 'Sunrise Retail Tech'): " + companies.map((c) => { const o = users.find((u) => u.id === c.accountOwner); return c.name + (o ? " (owner: " + o.name + ")" : ""); }).join(", "),
+  attendance ? "MARKED PRESENT BEFORE THE CALL WAS READ: " + attendance : "",
+  "",
+  "WHAT COUNTS AS A TASK — extract it only if a human will DO something after this call:",
+  "  · an explicit commitment ('I'll send Sunrise the quote by 2')",
+  "  · an instruction that was accepted ('Ankit, call Nevon today' — 'ok, done by 1')",
+  "  · a promise made to a client, repeated in the call ('I told them Friday')",
+  "  · a decision that requires an action to become real",
+  "  · an if/else contingency ('if Greenline shares the BOM, price it; if not, chase the SPOC')",
+  "",
+  "WHAT TO THROW AWAY — greetings, roll-call, 'can you hear me', screen-share fumbling, small talk, jokes, opinions with no action, someone restating another person's point, and STATUS REPORTS ABOUT WORK ALREADY FINISHED. A 5,000-word scrum contains 6 to 15 real tasks. If you return 40 you have transcribed chatter; if you return 2 you have missed commitments.",
+  "NEVER INVENT. If a time, a company or an owner was not said, leave the field empty. An empty field is correct; a guessed field is a lie the team will act on.",
+  "AGREEMENT: if work was assigned but nobody accepted it, still extract it and set agreed=false. If something was raised and explicitly dropped in the call, do not extract it at all.",
+  "OWNERS: 'I' and 'me' mean the person speaking that line. 'the account owner' means that company's owner from the list above — put the roster NAME, never the phrase. If genuinely unattributed, leave owner empty rather than defaulting it to anyone.",
+  "TIME WINDOWS: 24h HH:MM only. 'by 2' → end 14:00, start empty. '12 to 1' → 12:00–13:00. 'first thing' / 'morning' → empty. 'end of day' → end 18:30.",
+  "EVIDENCE: every task carries \"said\" — the verbatim fragment of the transcript it came from, 140 characters maximum, copied exactly, so a human can check you in two seconds. A task with no quotable line is a task you invented: drop it.",
+  "TASK TEXT: action-first and short — 'Send Sunrise Retail the pilot quote', not 'Akash mentioned that he would probably try to send'. Keep IDs, part numbers and figures verbatim.",
+  "",
+  "Reply with ONLY one line, valid JSON, no markdown, no preamble:",
+  "SCRUM_JSON {\"summary\":\"one line on what this call actually committed to\",\"speakers\":[{\"heard\":\"label as it appears\",\"name\":\"roster name or empty\",\"guest\":false}],\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name or empty\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"condition\":\"if/else or empty\",\"agreed\":true,\"said\":\"verbatim quote, max 140 chars\"}],\"blockers\":[{\"what\":\"...\",\"who\":\"roster name or empty\"}],\"decisions\":[\"...\"],\"ignored\":\"one line naming what you deliberately left out\"}",
+].filter(Boolean).join("\n");
+
 const overdueSecs = (t) => {
   if (!t.due || t.status === "done") return 0;
   const end = new Date(t.due + "T" + (t.windowEnd || "23:59") + ":00");

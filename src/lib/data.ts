@@ -195,6 +195,13 @@ export async function loadWorkspace() {
     tasks: (s.organized && s.organized.tasks) || [],
     summary: (s.organized && s.organized.summary) || "",
     tasked: !!(s.organized && s.organized.tasked),
+    blockers: (s.organized && s.organized.blockers) || [],
+    decisions: (s.organized && s.organized.decisions) || [],
+    ignored: (s.organized && s.organized.ignored) || "",
+    link: s.meet_link || "", attendance: s.attendance || {},
+    source: s.source || "typed", transcript: s.transcript || "",
+    transcriptUrl: s.transcript_url || "",
+    _transcriptSynced: !!s.transcript,
     createdAt: s.created_at,
   }));
 
@@ -211,6 +218,7 @@ export async function loadWorkspace() {
     title: t.title, details: t.details || "", due: t.due || "",
     status: t.status, source: t.source, createdAt: t.created_at, doneAt: t.done_at,
     windowStart: t.window_start || "", windowEnd: t.window_end || "",
+    scrumNoteId: t.scrum_note_id || "",
     work: t.work || {}, ai: t.ai || {}, escalated: !!t.escalated,
     branchedFrom: t.branched_from || "",
   }));
@@ -250,6 +258,7 @@ export async function syncTasks(tasks: any[]): Promise<boolean> {
     status: t.status, source: t.source || "manual",
     done_at: t.status === "done" ? (t.doneAt || new Date().toISOString()) : null,
     window_start: t.windowStart || null, window_end: t.windowEnd || null,
+    scrum_note_id: t.scrumNoteId || null,
     work: t.work || {}, ai: t.ai || {}, escalated: !!t.escalated,
     branched_from: t.branchedFrom || null,
   }));
@@ -484,11 +493,20 @@ export async function syncExpenses(expenses: any[]): Promise<boolean> {
 }
 
 export async function syncScrums(scrums: any[]): Promise<boolean> {
-  const rowsIn = scrums.map((s) => ({
-    id: s.id, on_date: s.date, raw: s.raw,
-    organized: { tasks: s.tasks || [], summary: s.summary || "", tasked: !!s.tasked },
-    author_id: s.userId || null, created_at: s.createdAt,
-  }));
+  const rowsIn = scrums.map((s) => {
+    const row: any = {
+      id: s.id, on_date: s.date, raw: s.raw,
+      organized: { tasks: s.tasks || [], summary: s.summary || "", tasked: !!s.tasked,
+                   blockers: s.blockers || [], decisions: s.decisions || [], ignored: s.ignored || "" },
+      meet_link: s.link || null, attendance: s.attendance || {},
+      source: s.source || "typed", transcript_url: s.transcriptUrl || null,
+      author_id: s.userId || null, created_at: s.createdAt,
+    };
+    // A transcript is written once. Re-sending 40k characters on every scrum
+    // save would make an ordinary edit cost megabytes.
+    if (!s._transcriptSynced) row.transcript = s.transcript || null;
+    return row;
+  });
   return upsertAndPrune("scrum_notes", rowsIn, scrums.map((s) => s.id), "syncScrums");
 }
 
