@@ -2621,7 +2621,8 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
     const system = [
       "You organise a typed/spoken daily sales scrum at Elecbits into clear, assigned, time-boxed tasks. Extract EVERY actionable item — a scrum line with no task extracted is a failure.",
       "TEAM ROSTER (match owners to these people; default owner = the note's author): " + users.filter((u) => u.active !== false).map((u) => u.name).join(", "),
-      "COMPANIES (match any client mentioned, even loosely — 'Sunrise Company' means 'Sunrise Retail Tech'): " + companies.map((c) => c.name).join(", "),
+      "COMPANIES with their account owners (match any client mentioned, even loosely — 'Sunrise Company' means 'Sunrise Retail Tech'): " + companies.map((c) => { const o = users.find((u) => u.id === c.accountOwner); return c.name + (o ? " (owner: " + o.name + ")" : ""); }).join(", "),
+      "ROLE REFERENCES: 'the account owner' / 'the owner' of a company means that company's owner from the list above — put their actual roster NAME in owner, never the phrase.",
       "TIME WINDOWS: normalise everything to 24h HH:MM. 'by 2pm' / 'before 2' → end 14:00 with empty start. '12 to 1pm' → 12:00–13:00. 'today' with no time → empty window.",
       "Keep task text short and action-first ('Send Sunrise Retail the pilot quote'). Put any if/else in condition. Preserve IDs verbatim.",
       "Reply with ONLY one line: SCRUM_JSON {\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name from the list or empty\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"condition\":\"if/else or empty\"}],\"summary\":\"one-line summary\"}",
@@ -2635,8 +2636,12 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         tasks: (Array.isArray(parsed.tasks) ? parsed.tasks : []).map((t) => {
           const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
           const comp = companies.find((c) => t.company && c.name.toLowerCase() === String(t.company).trim().toLowerCase());
+          // "the account owner" without a name resolves to the matched
+          // company's owner — never to the note's author by accident.
+          const compOwner = comp && !owner && /owner/i.test(String(t.owner || "") + " " + String(t.task || ""))
+            ? users.find((u) => u.id === comp.accountOwner) : null;
           const win = t.start || t.end ? { start: t.start || "", end: t.end || "" } : parseWin(t.window);
-          return { ...t, assigneeId: owner ? owner.id : me.id, companyId: comp ? comp.id : "", start: win.start, end: win.end };
+          return { ...t, assigneeId: owner ? owner.id : (compOwner ? compOwner.id : me.id), companyId: comp ? comp.id : "", start: win.start, end: win.end };
         }),
         summary: parsed.summary || "", createdAt: nowTS(),
       };
