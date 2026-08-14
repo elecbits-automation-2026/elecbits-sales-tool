@@ -3829,31 +3829,40 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
 
       {step === "close" && (!brief ? (
         <p className="text-sm text-slate-400 flex items-center gap-2 py-6"><Loader2 size={15} className="animate-spin" /> Reading the task…</p>
-      ) : (
-        <div className="space-y-3">
-          <div>
-            <p className="text-sm font-semibold text-slate-800">How did it go?</p>
-            <p className="text-xs text-slate-500">Short answers are fine — name the person, the date, the number.</p>
-          </div>
-          {qList.map((q, i) => (
-            <Field key={i} label={q}>
-              <TA className="min-h-14" value={answers[i] || ""} onChange={(e) => setAnswers({ ...answers, [i]: e.target.value })} />
-            </Field>
-          ))}
-          {needsArtifact && (
-            <div className="border-t border-slate-100 pt-3 space-y-3">
-              <Field label="File produced (name)" req>
-                <Input value={file} onChange={(e) => setFile(e.target.value)} placeholder="e.g. 2026-08-14_quote_FMS-200.pdf" />
-              </Field>
-              <Field label="Stored at (Drive path)" req>
-                <Input value={path} onChange={(e) => setPath(e.target.value)} />
-              </Field>
-              <p className="text-xs text-slate-400">This task produces {brief.artifact.what || "a document"}, so the gate needs it.</p>
+      ) : (<>
+        <p className="text-xs text-slate-400 -mt-2 mb-4">
+          {[comp && comp.name, who && who.name].filter(Boolean).join(" · ")}
+          {(comp || who) ? " · " : ""}the gate protects closure quality
+        </p>
+        <div className="grid md:grid-cols-2 gap-4">
+          <TaskScopeCard task={t} comp={comp} brief={brief} />
+          <div className="space-y-3">
+            <div>
+              <Lbl>How did it go?</Lbl>
+              <p className="text-[11px] text-slate-400 mt-1">Short answers are fine — name the person, the date, the number.</p>
             </div>
-          )}
-          {EscBlock}
+            {qList.map((q, i) => (
+              <div key={i}>
+                <p className="text-[12.5px] text-slate-700 mb-1.5">{q}</p>
+                <TA className="min-h-14" value={answers[i] || ""} onChange={(e) => setAnswers({ ...answers, [i]: e.target.value })} />
+              </div>
+            ))}
+            {needsArtifact && (
+              <div className="border-t border-slate-200 pt-3 space-y-3">
+                <div>
+                  <p className="text-[12.5px] text-slate-700 mb-1.5">File produced (name) <span className="text-red-500">*</span></p>
+                  <Input value={file} onChange={(e) => setFile(e.target.value)} placeholder="e.g. 2026-08-14_quote_FMS-200.pdf" />
+                </div>
+                <div>
+                  <p className="text-[12.5px] text-slate-700 mb-1.5">Stored at (Drive path) <span className="text-red-500">*</span></p>
+                  <Input value={path} onChange={(e) => setPath(e.target.value)} />
+                </div>
+              </div>
+            )}
+            {EscBlock}
+          </div>
         </div>
-      ))}
+      </>))}
 
       {step === "verdict" && verdict && (
         <div className="space-y-3">
@@ -3904,8 +3913,59 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
   );
 }
 
-/* The inline brief panel — the "work window", as an expander under the row. */
-function TaskBrief({ task: t, data, saveTasks, onComplete, onHide }) {
+/* Small-caps section label — the PMS's typographic signature. */
+function Lbl({ children, className }) {
+  return <p className={cls("text-[10.5px] font-bold text-slate-400 uppercase tracking-[0.06em]", className)}>{children}</p>;
+}
+
+/* The scope card that sits on the left of both task modals, exactly as the
+   ODM PMS lays it out: what the task is, where its files live, the quality
+   bar, and the deadline with a live overdue counter. */
+function TaskScopeCard({ task: t, comp, brief }) {
+  const secs = overdueSecs(t);
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3.5">
+      <div>
+        <Lbl>Scope &amp; guidance</Lbl>
+        <p className="text-sm text-slate-800 mt-1.5">{t.title}</p>
+        {t.details && <p className="text-xs text-slate-500 mt-1 whitespace-pre-wrap">{t.details}</p>}
+        {brief && (brief.kind || brief.tip) && (
+          <div className="flex items-start gap-2 mt-2 flex-wrap">
+            {brief.kind && <Chip color="blue">{brief.kind}</Chip>}
+            {brief.tip && <span className="text-xs text-slate-600 flex-1">{brief.tip}</span>}
+          </div>
+        )}
+      </div>
+      {comp && (
+        <div className="border-t border-slate-200 pt-3">
+          <Lbl>Where things live</Lbl>
+          <p className="text-xs text-blue-700 font-mono mt-1.5 break-all">/Eb-07-Sales/{driveFolderName(comp)}/</p>
+          <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
+            Everything for {comp.name} — RFQs, quotes, drawings, mails worth keeping — belongs in that folder.
+            File names are not consistent, so look at what is actually in there rather than expecting a name.
+          </p>
+        </div>
+      )}
+      <div className="bg-blue-50/60 border border-blue-100 rounded-md px-3 py-2.5">
+        <p className="text-[11px] text-slate-600 leading-relaxed">
+          <span className="font-semibold text-slate-700">Task quality bar:</span>{" "}
+          {brief && brief.artifact && brief.artifact.required
+            ? <>this one produces {brief.artifact.what || "a document"} — name the file and where you saved it. A task without its artifact is not a finished task.</>
+            : <>this one produces an outcome, not a file. Name the person, the date and what was agreed — that is the artifact.</>}
+        </p>
+      </div>
+      <p className="text-[11px] text-slate-400">
+        Due {t.due ? fmtDate(t.due) : "—"}
+        {(t.windowStart || t.windowEnd) && <span className="font-mono"> · {t.windowStart || "…"}–{t.windowEnd || "…"}</span>}
+        {secs > 0 && <span className="ml-2 text-red-600 font-mono font-semibold">OVERDUE {fmtDur(secs)}</span>}
+      </p>
+    </div>
+  );
+}
+
+/* WORK WINDOW — the PMS layout: full scope on the left, your prep on the
+   right. Opened from the row while a task is in progress. */
+function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
   const { users, companies, tasks } = data;
   const comp = companies.find((c) => c.id === t.companyId);
   const who = users.find((u) => u.id === t.assignee);
@@ -3922,35 +3982,41 @@ function TaskBrief({ task: t, data, saveTasks, onComplete, onHide }) {
     return () => { alive = false; };
   }, [t.id]);
 
-  const persist = () => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, work: { ...(x.work || {}), prepAnswers: ans } } : x)));
+  const save = () => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, work: { ...(x.work || {}), prepAnswers: ans } } : x)));
 
   return (
-    <div className="border border-t-0 border-slate-200 rounded-b-md bg-slate-50 px-3 py-3 space-y-2">
-      {!brief ? (
-        <p className="text-xs text-slate-400 flex items-center gap-2"><Loader2 size={13} className="animate-spin" /> Working out what this task needs…</p>
-      ) : (<>
-        <div className="flex items-center gap-2 flex-wrap">
-          {brief.kind && <Chip color="blue">{brief.kind}</Chip>}
-          {brief.tip && <span className="text-xs text-slate-600">{brief.tip}</span>}
-          {brief.source === "fallback" && <span className="text-[11px] text-slate-400 ml-auto">offline brief</span>}
-        </div>
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Before you start</p>
-        <div className="space-y-2">
-          {brief.prep.map((q, i) => (
-            <div key={i}>
-              <p className="text-xs text-slate-600 mb-1">{q}</p>
-              <Input value={ans[i] || ""} onChange={(e) => setAns({ ...ans, [i]: e.target.value })} onBlur={persist} placeholder="one line — optional" />
+    <Modal title={t.title} onClose={onClose} wide
+      footer={<>
+        <Btn onClick={() => { save(); onClose(); }}>Save progress</Btn>
+        <Btn kind="primary" onClick={() => { save(); onComplete(); }}><CheckCircle2 size={14} /> Complete Now</Btn>
+      </>}>
+      <p className="text-xs text-slate-400 -mt-2 mb-4">
+        {[comp && comp.name, who && who.name, (t.windowStart || t.windowEnd) ? (t.windowStart || "…") + "–" + (t.windowEnd || "…") : null]
+          .filter(Boolean).join(" · ")} · full scope on the left, your prep on the right
+      </p>
+      <div className="grid md:grid-cols-2 gap-4">
+        <TaskScopeCard task={t} comp={comp} brief={brief} />
+        <div className="space-y-3">
+          {!brief ? (
+            <p className="text-sm text-slate-400 flex items-center gap-2 py-4"><Loader2 size={14} className="animate-spin" /> Working out what this task needs…</p>
+          ) : (<>
+            <div className="flex items-center gap-2">
+              <Lbl className="mr-auto">Before you start</Lbl>
+              {brief.source === "fallback" && <span className="text-[10.5px] text-slate-400">offline brief</span>}
             </div>
-          ))}
+            {brief.prep.map((q, i) => (
+              <div key={i}>
+                <p className="text-[12.5px] text-slate-700 mb-1.5">{q}</p>
+                <Input value={ans[i] || ""} onChange={(e) => setAns({ ...ans, [i]: e.target.value })} onBlur={save} placeholder="one line — optional" />
+              </div>
+            ))}
+            <p className="text-[11px] text-slate-400 pt-1">
+              Optional, and nobody grades these. Answering now makes closing this a ten-second job.
+            </p>
+          </>)}
         </div>
-        <p className="text-[11px] text-slate-400">Optional. Answering now makes closing this a ten-second job.</p>
-        {comp && <p className="text-[11px] text-blue-700 font-mono">Files live in /Eb-07-Sales/{driveFolderName(comp)}/</p>}
-        <div className="flex gap-2 pt-1">
-          <Btn size="sm" onClick={onHide}>Hide</Btn>
-          <Btn size="sm" kind="primary" onClick={onComplete}><CheckCircle2 size={12} /> Complete Now</Btn>
-        </div>
-      </>)}
-    </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -3988,13 +4054,13 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
   };
 
   const [closing, setClosing] = useState(null);   // the task being closed
-  const [expanded, setExpanded] = useState(null); // task id whose brief is open
+  const [working, setWorking] = useState(null);   // task whose Work window is open
   // Start is instant: the row flips to "doing" with no modal and no AI wait.
   const startTask = (t) => {
     saveTasks(tasks.map((x) => (x.id === t.id
       ? { ...x, status: "doing", work: { ...(x.work || {}), startedAt: (x.work || {}).startedAt || nowTS() } }
       : x)));
-    setExpanded(t.id);
+    setWorking({ ...t, status: "doing" });
   };
 
   const TaskRow = ({ t }) => {
@@ -4004,8 +4070,7 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
     const W = t.work || {}, A = t.ai || {};
     return (
       <div>
-        <div className={cls("flex items-center gap-2.5 border border-slate-200 px-3 py-2 bg-white",
-          expanded === t.id && t.status === "doing" ? "rounded-t-md" : "rounded-md")}>
+        <div className="flex items-center gap-2.5 border border-slate-200 rounded-md px-3 py-2 bg-white">
           {t.status === "open" && <span className="w-4 h-4 rounded-full border border-slate-300 flex-none" />}
           {t.status === "doing" && (
             <button title="Complete this task" onClick={() => setClosing(t)} className="w-4 h-4 rounded-full border-2 border-blue-500 flex-none hover:bg-blue-50" />
@@ -4033,15 +4098,11 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
           </div>
           {t.status === "open" && <Btn size="sm" kind="primary" onClick={() => startTask(t)}><Play size={12} /> Start</Btn>}
           {t.status === "doing" && <>
-            <Btn size="sm" onClick={() => setExpanded(expanded === t.id ? null : t.id)}><FileText size={12} /> Work window</Btn>
+            <Btn size="sm" onClick={() => setWorking(t)}><FileText size={12} /> Work window</Btn>
             <Btn size="sm" kind="primary" onClick={() => setClosing(t)}><CheckCircle2 size={12} /> Complete Now</Btn>
           </>}
           <button onClick={() => remove(t)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
         </div>
-        {t.status === "doing" && expanded === t.id && (
-          <TaskBrief task={t} data={data} saveTasks={saveTasks}
-            onComplete={() => setClosing(t)} onHide={() => setExpanded(null)} />
-        )}
       </div>
     );
   };
@@ -4110,6 +4171,8 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
           ))}
         </div>
       )}
+      {working && !closing && <WorkWindow task={tasks.find((x) => x.id === working.id) || working} data={data} saveTasks={saveTasks}
+        onClose={() => setWorking(null)} onComplete={() => { const t = tasks.find((x) => x.id === working.id) || working; setWorking(null); setClosing(t); }} />}
       {closing && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closing.id) || closing} onClose={() => setClosing(null)} saveTasks={saveTasks} />}
       {adding && (
         <Modal title="New task" onClose={() => setAdding(false)}
