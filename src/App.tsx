@@ -4068,11 +4068,11 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
             {brief.prep.map((q, i) => (
               <div key={i}>
                 <p className="text-[12.5px] text-slate-700 mb-1.5">{q}</p>
-                <Input value={ans[i] || ""} onChange={(e) => setAns({ ...ans, [i]: e.target.value })} onBlur={save} placeholder="one line — optional" />
+                <Input value={ans[i] || ""} onChange={(e) => setAns({ ...ans, [i]: e.target.value })} onBlur={save} />
               </div>
             ))}
             <p className="text-[11px] text-slate-400 pt-1">
-              Optional, and nobody grades these. Answering now makes closing this a ten-second job.
+              Optional — answering now makes closing this a ten-second job.
             </p>
           </>)}
         </div>
