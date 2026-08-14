@@ -516,9 +516,12 @@ function Field({ label, children, hint, req }) {
 }
 
 const inputCls = "w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500";
-function Input(props) { return <input {...props} className={cls(inputCls, props.className)} />; }
-function TA(props) { return <textarea {...props} className={cls(inputCls, "min-h-16", props.className)} />; }
-function Sel(props) { return <select {...props} className={cls(inputCls, props.className)} />; }
+// A width utility passed by the caller must actually win: the base style's
+// w-full is dropped whenever the caller sets its own w-*.
+const inputBase = (extra) => /(^|\s)w-/.test(extra || "") ? inputCls.replace("w-full ", "") : inputCls;
+function Input(props) { return <input {...props} className={cls(inputBase(props.className), props.className)} />; }
+function TA(props) { return <textarea {...props} className={cls(inputBase(props.className), "min-h-16", props.className)} />; }
+function Sel(props) { return <select {...props} className={cls(inputBase(props.className), props.className)} />; }
 
 function Avatar({ name, size = "md" }) {
   const initials = (name || "?").split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
@@ -1003,33 +1006,30 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
         <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={15} /> Add company</Btn>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-2.5">
-        <Sel className="w-40" value={ownerF} onChange={(e) => setOwnerF(e.target.value)}>
-          <option value="all">All owners</option>
-          {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </Sel>
-        <Sel className="w-44" value={indF} onChange={(e) => setIndF(e.target.value)}>
-          <option value="all">All industries</option>
-          {industries.map((i) => <option key={i} value={i}>{i}</option>)}
-        </Sel>
-        <Sel className="w-40" value={compF} onChange={(e) => setCompF(e.target.value)}>
-          <option value="all">Any data quality</option>
-          <option value="red">Red — below 70%</option>
-          <option value="amber">Amber — 70–89%</option>
-          <option value="green">Green — 90%+</option>
-        </Sel>
-        <Sel className="w-40" value={dealF} onChange={(e) => setDealF(e.target.value)}>
-          <option value="all">Deals: any</option>
-          <option value="with">With open deals</option>
-          <option value="without">No open deals</option>
-        </Sel>
-        <Sel className="w-44 ml-auto" value={sort} onChange={(e) => setSort(e.target.value)}>
-          <option value="attention">Sort: needs attention</option>
-          <option value="potential">Sort: potential ₹</option>
-          <option value="name">Sort: name</option>
-          <option value="recent">Sort: newest</option>
-        </Sel>
-        <span className="text-xs text-slate-500"><b className="text-slate-800 font-mono tabular-nums">{visible.length}</b> compan{visible.length === 1 ? "y" : "ies"}</span>
+      <div className="bg-white border border-slate-200 rounded-xl p-3.5 mb-4 flex flex-wrap items-end gap-3">
+        {[
+          ["Owner", ownerF, setOwnerF, [["all", "All owners"], ...users.filter((u) => u.active !== false).map((u) => [u.id, u.name])], "w-40"],
+          ["Industry", indF, setIndF, [["all", "All industries"], ...industries.map((i) => [i, i])], "w-44"],
+          ["Data quality", compF, setCompF, [["all", "Any"], ["red", "Red — below 70%"], ["amber", "Amber — 70–89%"], ["green", "Green — 90%+"]], "w-40"],
+          ["Open deals", dealF, setDealF, [["all", "Any"], ["with", "With open deals"], ["without", "No open deals"]], "w-40"],
+        ].map(([label, val, set, opts, w]) => (
+          <div key={label}>
+            <p className="text-[11px] font-medium text-slate-400 mb-1">{label}</p>
+            <Sel className={w} value={val} onChange={(e) => set(e.target.value)}>
+              {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </Sel>
+          </div>
+        ))}
+        <div className="ml-auto">
+          <p className="text-[11px] font-medium text-slate-400 mb-1">Sort</p>
+          <Sel className="w-44" value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="attention">Needs attention</option>
+            <option value="potential">Potential ₹</option>
+            <option value="name">Name</option>
+            <option value="recent">Newest</option>
+          </Sel>
+        </div>
+        <span className="text-xs text-slate-500 pb-2"><b className="text-slate-800 font-mono tabular-nums">{visible.length}</b> compan{visible.length === 1 ? "y" : "ies"}</span>
       </div>
 
       {visible.length === 0 ? (
