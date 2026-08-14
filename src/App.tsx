@@ -2801,6 +2801,25 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   const [tr, setTr] = useState("");             // raw transcript
   const [trUrl, setTrUrl] = useState("");
   const trFileRef = useRef(null);
+  const [ff, setFf] = useState({ on: false });     // Fireflies connection + list
+  const [ffBusy, setFfBusy] = useState(false);
+  useEffect(() => { fetch("/api/fireflies?action=status").then((r) => r.json()).then((j) => setFf({ on: !!j.connected, why: j.reason })).catch(() => {}); }, []);
+  const pullFireflies = async () => {
+    setFfBusy(true);
+    try {
+      const from = date + "T00:00:00+05:30", to = date + "T23:59:59+05:30";
+      const j = await fetch("/api/fireflies?action=list&from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to)).then((r) => r.json());
+      const items = j.items || [];
+      if (!items.length) { setErr("Fireflies has no meeting recorded for " + fmtDate(date) + "."); setFfBusy(false); return; }
+      // The scrum is the one that looks like a scrum, else the day's longest.
+      const pick = items.find((x) => /scrum|stand[- ]?up|daily/i.test(x.title || "")) || items[0];
+      const t = await fetch("/api/fireflies?action=get&id=" + encodeURIComponent(pick.id)).then((r) => r.json());
+      if (t.error) { setErr("Fireflies: " + t.error); setFfBusy(false); return; }
+      setTr(t.text || ""); setTrUrl(t.url || "");
+      setErr("");
+    } catch (e) { setErr("Could not reach Fireflies."); }
+    setFfBusy(false);
+  };
   const norm = useMemo(() => normaliseTranscript(tr), [tr]);
   const attendanceObj = () => ({
     present: Object.keys(present).filter((k) => present[k]),
@@ -2948,7 +2967,11 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
               onChange={(e) => { const f = e.target.files[0]; if (f) { const r = new FileReader(); r.onload = () => setTr(String(r.result)); r.readAsText(f); } e.target.value = ""; }} />
             <div className="flex items-center gap-2">
               <Btn size="sm" onClick={() => trFileRef.current?.click()}><Paperclip size={12} /> Upload a file</Btn>
-              <Btn size="sm" disabled title="Needs a Fireflies API key — see SETUP.md"><Sparkles size={12} /> Pull from Fireflies</Btn>
+              <Btn size="sm" disabled={!ff.on || ffBusy} onClick={pullFireflies}
+                title={ff.on ? "Fetch this date's meeting from Fireflies" : "Not connected — set FIREFLIES_API_KEY in Vercel (paid Fireflies plan)"}>
+                {ffBusy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Pull from Fireflies
+              </Btn>
+              {!ff.on && <span className="text-[11px] text-slate-400">Fireflies not connected</span>}
               {tr && <button onClick={() => setTr("")} className="text-xs text-slate-400 hover:text-red-500 ml-auto">clear</button>}
             </div>
             <TA value={tr} onChange={(e) => setTr(e.target.value)} className="min-h-40 font-mono text-xs"
