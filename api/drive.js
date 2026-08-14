@@ -93,17 +93,43 @@ async function gapi(token, path, params, init = {}) {
 // Folder names carry user text — escape for the Drive query language.
 const esc = (s) => String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
-async function findOrCreateFolder(token, root, name, create) {
-  const q = `'${esc(root)}' in parents and name = '${esc(name)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-  const found = await gapi(token, "files", {
-    q, fields: "files(id,name,webViewLink)", supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+const FOLDER_MIME = "application/vnd.google-apps.folder";
+
+// Finding a folder to READ must not be limited to the root's direct children —
+// real Drives nest, and a folder two levels down was reported "empty" simply
+// because the lookup never found it. Creating still happens under the root.
+async function findFolder(token, root, name) {
+  const byName = `name = '${esc(name)}' and mimeType = '${FOLDER_MIME}' and trashed = false`;
+  const under = await gapi(token, "files", {
+    q: `'${esc(root)}' in parents and ` + byName,
+    fields: "files(id,name,webViewLink)", supportsAllDrives: "true", includeItemsFromAllDrives: "true",
   });
-  if (found.files && found.files.length) return found.files[0];
-  if (!create) return null;
+  if (under.files && under.files.length) return under.files[0];
+  const anywhere = await gapi(token, "files", {
+    q: byName, fields: "files(id,name,webViewLink)", pageSize: "10",
+    supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+  });
+  return (anywhere.files && anywhere.files[0]) || null;
+}
+
+async function createFolder(token, root, name) {
   return gapi(token, "files", { fields: "id,name,webViewLink", supportsAllDrives: "true" }, {
     method: "POST",
-    body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: [root] }),
+    body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [root] }),
   });
+}
+
+async function childrenOf(token, id, pageSize = 100) {
+  const l = await gapi(token, "files", {
+    q: `'${esc(id)}' in parents and trashed = false`,
+    fields: "files(id,name,mimeType,modifiedTime,webViewLink,size)",
+    orderBy: "folder,modifiedTime desc", pageSize: String(pageSize),
+    supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+  });
+  return (l.files || []).map((x) => ({
+    id: x.id, name: x.name, mime: x.mimeType, folder: x.mimeType === FOLDER_MIME,
+    modified: x.modifiedTime, link: x.webViewLink, size: x.size ? Number(x.size) : null,
+  }));
 }
 
 export default async function handler(req, res) {
@@ -156,25 +182,38 @@ export default async function handler(req, res) {
 
     const name = (req.query.name || "").toString().trim();
     if (!name) return res.status(400).json({ error: "name required" });
+
+    // deep: the folder, plus what is inside each of its sub-folders. This is
+    // what "check inside all these folders" needs — one call, not ten.
+    if (action === "deep") {
+      const f = await findFolder(token, root, name);
+      if (!f) return res.status(200).json({ found: false, name, files: [], folders: [] });
+      const kids = await childrenOf(token, f.id);
+      const subs = kids.filter((k) => k.folder).slice(0, 12);
+      const inside = [];
+      for (const s of subs) {
+        const c = await childrenOf(token, s.id, 40);
+        inside.push({ folder: s.name, link: s.link, count: c.length, files: c.map((x) => ({ name: x.name, folder: x.folder, modified: x.modified, link: x.link })) });
+      }
+      return res.status(200).json({
+        found: true, name: f.name, link: f.webViewLink,
+        files: kids.filter((k) => !k.folder), folders: kids.filter((k) => k.folder).map((k) => k.name),
+        inside,
+      });
+    }
     if (action === "open") {
-      const f = await findOrCreateFolder(token, root, name, true);
+      const f = (await findFolder(token, root, name)) || (await createFolder(token, root, name));
       return res.status(200).json({ id: f.id, link: f.webViewLink || ("https://drive.google.com/drive/folders/" + f.id) });
     }
     if (action === "list") {
-      const f = await findOrCreateFolder(token, root, name, false);
-      if (!f) return res.status(200).json({ id: null, link: null, files: [] });
-      const l = await gapi(token, "files", {
-        q: `'${esc(f.id)}' in parents and trashed = false`,
-        fields: "files(id,name,mimeType,modifiedTime,webViewLink,iconLink,size)",
-        orderBy: "modifiedTime desc", pageSize: "50",
-        supportsAllDrives: "true", includeItemsFromAllDrives: "true",
-      });
+      const f = await findFolder(token, root, name);
+      if (!f) return res.status(200).json({ found: false, id: null, link: null, files: [], folders: [] });
+      const kids = await childrenOf(token, f.id);
       return res.status(200).json({
-        id: f.id, link: f.webViewLink || ("https://drive.google.com/drive/folders/" + f.id),
-        files: (l.files || []).map((x) => ({
-          id: x.id, name: x.name, mime: x.mimeType, modified: x.modifiedTime,
-          link: x.webViewLink, icon: x.iconLink, size: x.size ? Number(x.size) : null,
-        })),
+        found: true, id: f.id, name: f.name,
+        link: f.webViewLink || ("https://drive.google.com/drive/folders/" + f.id),
+        files: kids.filter((k) => !k.folder),
+        folders: kids.filter((k) => k.folder).map((k) => ({ name: k.name, link: k.link })),
       });
     }
     return res.status(400).json({ error: "unknown action" });

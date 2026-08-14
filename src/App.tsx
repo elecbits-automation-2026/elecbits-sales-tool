@@ -209,16 +209,39 @@ async function askClaude(system, messages) {
 
 // ── chat attachments + tools, shared by every AI chat ──
 // A pasted screenshot or attached file becomes an Anthropic content block.
+// Images are downscaled to a 1568px long edge before upload — a raw retina
+// screenshot is several MB of base64, which blows the serverless body limit
+// and returns an empty answer. 1568px is the size the vision model resizes to
+// anyway, so nothing legible is lost and the call is far cheaper.
+const IMG_MAX_EDGE = 1568;
 const fileToBlock = (file) => new Promise((resolve) => {
-  const r = new FileReader();
-  r.onload = () => {
-    const data = String(r.result).split(",")[1];
-    if (file.type === "application/pdf") resolve({ type: "document", source: { type: "base64", media_type: "application/pdf", data }, _name: file.name || "document.pdf" });
-    else if (file.type && file.type.startsWith("image/")) resolve({ type: "image", source: { type: "base64", media_type: file.type, data }, _name: file.name || "pasted image" });
-    else resolve(null);
+  if (file.type === "application/pdf") {
+    if (file.size > 4 * 1024 * 1024) return resolve(null); // too big to post
+    const r = new FileReader();
+    r.onload = () => resolve({ type: "document", source: { type: "base64", media_type: "application/pdf", data: String(r.result).split(",")[1] }, _name: file.name || "document.pdf" });
+    r.onerror = () => resolve(null);
+    r.readAsDataURL(file);
+    return;
+  }
+  if (!file.type || !file.type.startsWith("image/")) return resolve(null);
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const scale = Math.min(1, IMG_MAX_EDGE / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
+      const cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); // flatten transparency for JPEG
+      ctx.drawImage(img, 0, 0, w, h);
+      const data = cv.toDataURL("image/jpeg", 0.85).split(",")[1];
+      URL.revokeObjectURL(url);
+      resolve(data ? { type: "image", source: { type: "base64", media_type: "image/jpeg", data }, _name: file.name || "pasted image" } : null);
+    } catch (e) { URL.revokeObjectURL(url); resolve(null); }
   };
-  r.onerror = () => resolve(null);
-  r.readAsDataURL(file);
+  img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+  img.src = url;
 });
 const contentText = (c) => typeof c === "string" ? c : (c || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
 // Tool protocol lines must never reach the user's eyes.
@@ -229,12 +252,17 @@ async function runDriveTool(spec) {
   if (spec.name) p.set("name", spec.name);
   if (spec.q) p.set("q", spec.q);
   const r = await fetch("/api/drive?" + p.toString()).then((x) => x.json());
-  return JSON.stringify(r).slice(0, 6000);
+  return JSON.stringify(r).slice(0, 12000);
 }
 const DRIVE_TOOL_PROMPT = [
-  "GOOGLE DRIVE: you CAN read the sales Drive (folder and file listings — names, dates, links; not file contents yet).",
-  "To look something up, reply with ONLY one line and nothing else: DRIVE_JSON {\"action\":\"root\"} for the top-level folders · DRIVE_JSON {\"action\":\"list\",\"name\":\"<exact folder name>\"} for a folder's files · DRIVE_JSON {\"action\":\"search\",\"q\":\"<term>\"} to find files by name.",
-  "You'll get the listing back as data, then answer citing file names and links. Never show raw DRIVE_JSON to the user in a final answer.",
+  "GOOGLE DRIVE: you CAN read the sales Drive (folder and file listings — names, dates, links; not the contents of files).",
+  "To look something up, reply with ONLY one line and nothing else:",
+  "  DRIVE_JSON {\"action\":\"root\"}                        top-level folders",
+  "  DRIVE_JSON {\"action\":\"list\",\"name\":\"<folder>\"}   that folder's files AND sub-folders",
+  "  DRIVE_JSON {\"action\":\"deep\",\"name\":\"<folder>\"}   that folder PLUS what is inside each sub-folder — use this when asked what is inside a set of folders",
+  "  DRIVE_JSON {\"action\":\"search\",\"q\":\"<term>\"}       find files by name anywhere",
+  "Reading the result: `found:false` means no folder of that name is shared with this tool — say exactly that, do not call it empty. `folders` lists sub-folders; if `files` is empty but `folders` is not, the contents are one level deeper — run `deep` before concluding anything.",
+  "NEVER report a folder as empty until you have looked inside its sub-folders. Never show raw DRIVE_JSON in a final answer.",
 ].join("\n");
 
 // Runs a chat turn with the Drive tool loop: feeds listings back until the
@@ -245,7 +273,9 @@ async function askWithDrive(system, convo, maxHops = 4) {
   for (let hop = 0; hop < maxHops; hop++) {
     const spec = extractMarkedJSON(reply, "DRIVE_JSON");
     if (!spec) break;
-    notes.push(spec.action === "search" ? "searched Drive for “" + spec.q + "”" : "checked Drive: " + (spec.name || "top-level folders"));
+    notes.push(spec.action === "search" ? "searched Drive for “" + spec.q + "”"
+      : spec.action === "deep" ? "read inside " + spec.name
+      : "checked Drive: " + (spec.name || "top-level folders"));
     const result = await runDriveTool(spec);
     convo.push({ role: "assistant", content: reply });
     convo.push({ role: "user", content: "DRIVE_RESULT " + result + "\n\nAnswer the original question from this listing (or make one more DRIVE_JSON request if you must drill deeper). Never show raw DRIVE_JSON in the final answer." });
