@@ -29,20 +29,35 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Cheapest-capable default: Haiku 4.5 ($1/$5 per Mtok) — plenty for the short
-  // stage-intake Q&A and knowledge lookups this app makes, ~5x cheaper than Opus.
-  // Override with ANTHROPIC_MODEL (e.g. claude-sonnet-5 for sharper gates).
-  const model = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5";
-  // Cap output tokens hard so a single call can never run away. 1200 covers a
-  // gate question + compiled summary comfortably.
-  const max_tokens = Math.min(Math.max(parseInt(maxTokens, 10) || 700, 1), 1200);
+  // The extraction quality of the whole tool (scrum → tasks, gates, plans)
+  // rides on this model. Sonnet 5 is the floor for reliable structured output;
+  // override with ANTHROPIC_MODEL if needed.
+  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
+  // Cap output tokens hard so a single call can never run away.
+  const max_tokens = Math.min(Math.max(parseInt(maxTokens, 10) || 700, 1), 2048);
 
-  // The client may not send a model (or an outdated one) — the server always
-  // decides the model, so client input is ignored here on purpose.
+  // Content may be a plain string or Anthropic content blocks (text / image /
+  // document) — the latter carries pasted screenshots and attached files.
+  const cleanBlocks = (content) => {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return null;
+    const blocks = content.filter((b) => b && (
+      (b.type === "text" && typeof b.text === "string") ||
+      ((b.type === "image" || b.type === "document") &&
+        b.source && b.source.type === "base64" &&
+        typeof b.source.media_type === "string" && typeof b.source.data === "string")
+    )).map((b) => b.type === "text"
+      ? { type: "text", text: b.text }
+      : { type: b.type, source: { type: "base64", media_type: b.source.media_type, data: b.source.data } });
+    return blocks.length ? blocks : null;
+  };
+
+  // The server always decides the model; client model input is ignored.
   const chatMessages = hasMessages
     ? messages
-        .filter((m) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant"))
-        .map((m) => ({ role: m.role, content: m.content }))
+        .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+        .map((m) => ({ role: m.role, content: cleanBlocks(m.content) }))
+        .filter((m) => m.content)
     : [{ role: "user", content: prompt }];
 
   const body = { model, max_tokens, messages: chatMessages };
