@@ -376,6 +376,29 @@ const EVIDENCE_WHAT = {
   file: "the document you produced",
   link: "the minutes (MoM) in the company folder, or a Fireflies / Meet / recording link",
 };
+// Finds the company a piece of text is about — "Sunrise Company" resolves to
+// "Sunrise Retail Tech", an Eb- ID resolves too. Ambiguity yields nothing:
+// two companies sharing a first word is not a match.
+const GENERIC_WORD = /^(the|a|an|our|for|and|of|to|company|client|customer|ltd|limited|pvt|private|inc|llp|technologies|tech|solutions|industries|india)$/i;
+function matchCompany(text, companies) {
+  const hay = " " + String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
+  if (!hay.trim() || !companies || !companies.length) return null;
+  const norm = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  // 1. an ID mentioned outright
+  const byId = companies.find((c) => (c.cid && hay.includes(" " + norm(c.cid) + " ")) || (c.legacyCid && hay.includes(" " + norm(c.legacyCid) + " ")));
+  if (byId) return byId;
+  // 2. the full name appears
+  const byName = companies.filter((c) => norm(c.name) && hay.includes(" " + norm(c.name) + " "));
+  if (byName.length === 1) return byName[0];
+  if (byName.length > 1) return byName.sort((a, b) => norm(b.name).length - norm(a.name).length)[0];
+  // 3. a distinctive leading word ("Sunrise", "Greenline")
+  const byWord = companies.filter((c) => {
+    const w = norm(c.name).split(" ").filter((x) => x.length > 3 && !GENERIC_WORD.test(x))[0];
+    return w && hay.includes(" " + w + " ");
+  });
+  return byWord.length === 1 ? byWord[0] : null;
+}
+
 const fallbackBrief = (t) => {
   const [kind, ev] = classifyTask((t.title || "") + " " + (t.details || ""));
   return { kind, evidence: { kind: ev, what: EVIDENCE_WHAT[ev] || "" },
@@ -2807,7 +2830,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         id: uid(), userId: me.id, date, raw: text,
         tasks: (Array.isArray(parsed.tasks) ? parsed.tasks : []).map((t) => {
           const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
-          const comp = companies.find((c) => t.company && c.name.toLowerCase() === String(t.company).trim().toLowerCase());
+          const comp = matchCompany(t.company, companies) || matchCompany(t.task, companies);
           // "the account owner" without a name resolves to the matched
           // company's owner — never to the note's author by accident.
           const compOwner = comp && !owner && /owner/i.test(String(t.owner || "") + " " + String(t.task || ""))
@@ -3033,7 +3056,7 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
         for (const a of actions) {
           try {
             if (a.type === "task" && a.title) {
-              const comp = byName(a.company, nextCompanies);
+              const comp = byName(a.company, nextCompanies) || matchCompany(a.title, nextCompanies);
               const who = byName(a.assignee, users) || me;
               nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: "", assignee: who.id, author: me.id, title: a.title, details: "Via Assistant", due: a.due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
               results.push("✓ task: " + a.title + (who ? " → " + who.name : ""));
@@ -3833,7 +3856,8 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
 
   const createSubs = () => {
     const fresh = subs.filter((s) => s.title.trim()).map((s) => ({
-      id: uid(), companyId: t.companyId, dealId: t.dealId, assignee: s.assignee || t.assignee, author: me.id,
+      id: uid(), companyId: t.companyId || (matchCompany(s.title + " " + t.title + " " + blocker, companies) || {}).id || "",
+      dealId: t.dealId, assignee: s.assignee || t.assignee, author: me.id,
       title: s.title.trim(), details: blocker ? "From blocker: " + blocker : "", due: todayStr(),
       status: "open", source: "system", createdAt: nowTS(), windowStart: "", windowEnd: "",
       work: {}, ai: {}, escalated: false, branchedFrom: t.id,
@@ -3874,7 +3898,8 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
           {(comp || who) ? " · " : ""}the gate protects closure quality
         </p>
         <div className="grid md:grid-cols-2 gap-4">
-          <TaskScopeCard task={t} comp={comp} brief={brief} />
+          <TaskScopeCard task={t} comp={comp} brief={brief} companies={companies}
+            onLink={(id) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, companyId: id } : x)))} />
           <div className="space-y-3">
             <div>
               <Lbl>How did it go?</Lbl>
@@ -3979,8 +4004,9 @@ function Lbl({ children, className }) {
 /* The scope card that sits on the left of both task modals, exactly as the
    ODM PMS lays it out: what the task is, where its files live, the quality
    bar, and the deadline with a live overdue counter. */
-function TaskScopeCard({ task: t, comp, brief }) {
+function TaskScopeCard({ task: t, comp, brief, companies, onLink }) {
   const secs = overdueSecs(t);
+  const suggestion = !comp && companies ? matchCompany(t.title + " " + (t.details || ""), companies) : null;
   return (
     <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3.5">
       <div>
@@ -3994,6 +4020,22 @@ function TaskScopeCard({ task: t, comp, brief }) {
           </div>
         )}
       </div>
+      {!comp && onLink && (
+        <div className="border-t border-slate-200 pt-3">
+          <Lbl>Company</Lbl>
+          <p className="text-[11px] text-slate-400 mt-1 mb-1.5">
+            Not linked to a company, so it will not show up on any client's record.
+            {suggestion ? " This looks like " + suggestion.name + "." : ""}
+          </p>
+          <div className="flex gap-2">
+            <Sel className="flex-1" value="" onChange={(e) => e.target.value && onLink(e.target.value)}>
+              <option value="">— pick a company —</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Sel>
+            {suggestion && <Btn size="sm" onClick={() => onLink(suggestion.id)}>Link {suggestion.name.split(" ")[0]}</Btn>}
+          </div>
+        </div>
+      )}
       {comp && (
         <div className="border-t border-slate-200 pt-3">
           <Lbl>Where things live</Lbl>
@@ -4056,7 +4098,8 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
           .filter(Boolean).join(" · ")} · full scope on the left, your prep on the right
       </p>
       <div className="grid md:grid-cols-2 gap-4">
-        <TaskScopeCard task={t} comp={comp} brief={brief} />
+        <TaskScopeCard task={t} comp={comp} brief={brief} companies={companies}
+          onLink={(id) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, companyId: id } : x)))} />
         <div className="space-y-3">
           {!brief ? (
             <p className="text-sm text-slate-400 flex items-center gap-2 py-4"><Loader2 size={14} className="animate-spin" /> Working out what this task needs…</p>
