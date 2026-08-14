@@ -5,7 +5,7 @@ import {
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
   Bot, Database, CalendarCheck2, Sun, Moon, ListTodo, FolderOpen, PencilRuler,
-  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip
+  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
@@ -269,15 +269,125 @@ function AttachChips({ atts, setAtts }) {
   );
 }
 
+// Reads the JSON that follows a marker. Handles BOTH object and array
+// payloads — taking only {…} silently mangled every array contract
+// (`[{a},{b}]` sliced to `{a},{b}` → parse error → feature looked broken).
 function extractMarkedJSON(text, marker) {
-  const i = text.indexOf(marker);
+  const i = String(text || "").indexOf(marker);
   if (i < 0) return null;
-  const rest = text.slice(i + marker.length);
-  const s = rest.indexOf("{");
-  const e = rest.lastIndexOf("}");
-  if (s < 0 || e < 0) return null;
+  const rest = String(text).slice(i + marker.length);
+  const oS = rest.indexOf("{"), aS = rest.indexOf("[");
+  const useArr = aS >= 0 && (oS < 0 || aS < oS);
+  const s = useArr ? aS : oS;
+  const e = useArr ? rest.lastIndexOf("]") : rest.lastIndexOf("}");
+  if (s < 0 || e < 0 || e < s) return null;
   try { return JSON.parse(rest.slice(s, e + 1)); } catch (err) { return null; }
 }
+
+// askClaude has no timeout of its own; a hung call must never strand a user
+// inside a modal.
+const withTimeout = (p, ms) => Promise.race([
+  p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms)),
+]);
+const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+
+/* ── Task briefs: what to ask before the work, and after it ────────────────
+   The AI writes these once, at Start. When it is unreachable the local bank
+   below answers instead — same shape, no network, so the flow never stalls.
+   Ordering matters: `produce` is tested first, so "prepare the deck for the
+   meeting" needs a file while "ask for a meeting" does not.               */
+const ARTIFACT_RE = /\b(quote|quotation|proposal|costing|lld|bom|report|deck|presentation|slides|mom|minutes|invoice|purchase order|\bpo\b|contract|nda|agreement|datasheet|drawing|schematic|spec|specification|sheet|document|draft|write ?up)\b/i;
+const TASK_KINDS = [
+  ["produce", ARTIFACT_RE],
+  ["visit", /\b(visit|site|factory|plant|onsite|on-site)\b/i],
+  ["meeting", /\b(meeting|meet\b|catch ?up|appointment|schedule|book a|slot)\b/i],
+  ["call", /\b(call|phone|ring|dial|speak to|talk to)\b/i],
+  ["followup", /\b(follow[ -]?up|chase|remind|nudge|check in|revert)\b/i],
+  ["send", /\b(send|share|mail|email|forward|submit|circulate)\b/i],
+  ["price", /\b(price|pricing|negotiat|discount|rate|cost)\b/i],
+];
+const QUESTION_BANK = {
+  produce: { prep: ["What exactly are you producing, and who is it for?", "What numbers or inputs do you need before you start?", "Where will you save it when it's done?"],
+             close: ["What did you produce, and what is it called?", "What are the key numbers in it?", "Who has it now, and what do they do next?"] },
+  visit: { prep: ["What is the purpose of this visit?", "Who are you meeting, and what are you carrying?", "What must you walk out with?"],
+           close: ["Who did you meet, and what did you see?", "What came out of it?", "What is the next step, and by when?"] },
+  meeting: { prep: ["What is this meeting actually about?", "What agenda or material will you take in?", "What outcome do you want to walk out with?"],
+             close: ["Did they agree — what date and time?", "What did you tell them the meeting is about?", "What did you commit to before it?"] },
+  call: { prep: ["What is the one thing you need out of this call?", "What will they push back on, and what's your answer?", "What do you need in front of you before you dial?"],
+          close: ["Who did you speak to, and what did they say?", "What was agreed, or refused?", "What is the next step, and by when?"] },
+  followup: { prep: ["What are you chasing, and when did you last ask?", "What deadline will you put on it?", "What happens if they don't respond this time?"],
+              close: ["What did they come back with?", "Has the thing you were chasing moved?", "What is the next step, and by when?"] },
+  send: { prep: ["What exactly are you sending, and to whom?", "Does anyone need to approve it first?", "What do you want them to do after reading it?"],
+          close: ["What did you send, and to whom?", "When did it go out?", "What response are you expecting, and by when?"] },
+  price: { prep: ["What is your target number, and your walk-away?", "How will you justify it?", "What can you trade instead of a discount?"],
+           close: ["What number was discussed, and how did they react?", "What did you concede or hold?", "What is the next step, and by when?"] },
+  generic: { prep: ["What does 'done' look like for this?", "What do you need before you can start?", "Who else is involved?"],
+             close: ["What exactly did you do?", "What was the outcome?", "What happens next, and by when?"] },
+};
+const fallbackBrief = (t) => {
+  const s = (t.title || "") + " " + (t.details || "");
+  const kind = (TASK_KINDS.find(([, re]) => re.test(s)) || ["generic"])[0];
+  return { kind, artifact: { required: ARTIFACT_RE.test(s), what: "" },
+           prep: QUESTION_BANK[kind].prep, close: QUESTION_BANK[kind].close,
+           tip: "", source: "fallback", at: nowTS() };
+};
+const cleanBrief = (b) => {
+  const arr = (x) => (Array.isArray(x) ? x : []).map((q) => String(q || "").trim()).filter(Boolean).slice(0, 4);
+  const prep = arr(b && b.prep), close = arr(b && b.close);
+  if (prep.length < 2 || close.length < 2) return null;
+  return { kind: String((b && b.kind) || "").slice(0, 40),
+           artifact: { required: !!(b && b.artifact && b.artifact.required), what: String((b && b.artifact && b.artifact.what) || "") },
+           prep, close, tip: String((b && b.tip) || "").slice(0, 160), source: "ai", at: nowTS() };
+};
+
+const briefSystem = (t, comp, who) => [
+  "You are the task coach on the Elecbits Sales OS. A salesperson has just pressed Start on a task. You do two jobs, both in one reply.",
+  "",
+  "THE TASK",
+  "Title: " + t.title,
+  "Details: " + (t.details || "(none)"),
+  comp ? "Company: " + comp.name + (comp.industry ? " — " + comp.industry : "") : "Company: (not linked)",
+  "Owner: " + (who ? who.name : "unknown") + " · due " + (t.due || "no date") + " · today is " + todayStr(),
+  "",
+  "JOB 1 — decide whether finishing this task genuinely creates a file.",
+  "TRUE only if a document exists afterwards that did not exist before: a quote, proposal, LLD, BOM, costing sheet, report, deck, MoM, invoice, PO, contract, NDA, drawing, spec sheet.",
+  "FALSE for asking, calling, meeting, visiting, following up, chasing, confirming, reminding, negotiating, scheduling. These produce an outcome, not a file.",
+  "Forcing someone to type a file name for a task that has no file is the single worst thing you can do here. When unsure, answer false.",
+  "",
+  "JOB 2 — write the questions, about THIS task, in the salesperson's own language.",
+  "prep: 2 to 4 questions asked BEFORE the work, that make them think about what they are walking into. Specific to this task and this company — never generic process questions.",
+  "close: 2 to 4 questions asked AFTER, that prove the work actually happened. Ask for outcomes, names, dates, numbers, commitments.",
+  "Worked example. Task: 'Ask the account owner for a meeting to discuss price.'",
+  "  good prep: What is this meeting actually about? · What agenda will you take in? · What will you show or present? · What outcome do you want to walk out with?",
+  "  good close: Did they agree, and on what date? · What did you tell them it was about? · What did you commit to send before it?",
+  "  bad, never do this: What file did you produce? · Where is it stored?",
+  "Rules: one sentence each, 14 words maximum, plain English, no numbering, no jargon. Never ask for a file name or a Drive path unless artifact.required is true.",
+  "",
+  "Reply with ONLY this line and nothing else:",
+  "BRIEF_JSON {\"kind\":\"two-word label, e.g. meeting request / quote / site visit\",\"artifact\":{\"required\":true,\"what\":\"name of the document, empty when not required\"},\"prep\":[\"...\"],\"close\":[\"...\"],\"tip\":\"one blunt sentence of advice, or empty\"}",
+].filter(Boolean).join("\n");
+
+const verdictSystem = (t, comp, brief, qa, file, path) => [
+  "You are the closure gate on the Elecbits Sales OS. Judge whether this task was really done. Be strict about substance and relaxed about paperwork.",
+  "",
+  "TASK: " + t.title + (t.details ? " — " + t.details : ""),
+  comp ? "COMPANY: " + comp.name : "COMPANY: (not linked)",
+  "DOES THIS TASK PRODUCE A FILE: " + (brief.artifact.required ? "yes — " + (brief.artifact.what || "a document") : "no"),
+  "",
+  "THEIR ANSWERS",
+  qa.map((x, i) => "Q" + (i + 1) + ": " + x.q + "\nA" + (i + 1) + ": " + (String(x.a || "").trim() || "(blank)")).join("\n"),
+  brief.artifact.required ? "File produced: " + (file.trim() || "(none given)") + "\nStored at: " + (path.trim() || "(none given)") : "",
+  "",
+  "HOW TO JUDGE",
+  "PASS when the answers name real things — a person, a date, a number, a decision, a next step. A single specific line is a pass; length is not the test.",
+  "FAIL when answers are blank, evasive, or could have been written without doing the work: 'done', 'ok', 'hello', 'yes', 'spoke to them', 'as discussed'.",
+  "FAIL a file-producing task with no file name or no storage path.",
+  "NEVER fail a task for a missing file when DOES THIS TASK PRODUCE A FILE is 'no'. Never ask for documentation the task never needed.",
+  "Do not demand more rigour than the task deserves. A five-minute phone task closes on two short lines.",
+  "reasons: at most two sentences, second person, blunt. If you fail it, name the ONE thing that would fix it.",
+  "",
+  "Reply with ONLY: VERDICT_JSON {\"pass\":true,\"score\":7,\"reasons\":\"...\"}",
+].filter(Boolean).join("\n");
 
 /* ---------- speech ---------- */
 
@@ -1022,7 +1132,7 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
     const ids = new Set();
     if (c.accountOwner) ids.add(c.accountOwner);
     deals.forEach((d) => { if (d.companyId === c.id && !d.lost && d.ownerId) ids.add(d.ownerId); });
-    (data.tasks || []).forEach((t) => { if (t.companyId === c.id && t.status === "open" && t.assignee) ids.add(t.assignee); });
+    (data.tasks || []).forEach((t) => { if (t.companyId === c.id && t.status !== "done" && t.assignee) ids.add(t.assignee); });
     return [...ids].map((id) => users.find((u) => u.id === id)).filter(Boolean);
   };
   const visible = companies.filter((c) => {
@@ -1205,7 +1315,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
   const cc = comp >= 90 ? "green" : comp >= 70 ? "amber" : "red";
   const owner = users.find((u) => u.id === c.accountOwner);
   const myDeals = deals.filter((d) => d.companyId === c.id);
-  const myTasks = (tasks || []).filter((t) => t.companyId === c.id && t.status === "open");
+  const myTasks = (tasks || []).filter((t) => t.companyId === c.id && t.status !== "done");
   const myRequests = (requests || []).filter((r) => r.companyId === c.id);
   const [note, setNote] = useState("");
   const [newDeal, setNewDeal] = useState(false);
@@ -3117,7 +3227,7 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
     saveCompanies(next);
   };
   const addTask = (title, due) => {
-    saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title, details: "", due: due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS() }, ...tasks]);
+    saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title, details: "", due: due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
   };
 
   const [atts, setAtts] = useState([]);
@@ -3218,7 +3328,7 @@ function PlanTab({ me, company: c, data, saveCompanies, saveTasks }) {
         "You are the account strategist on the Elecbits Sales OS. Build a staged ACCOUNT PLAN that takes this company from where it is today to a closed PO — the sales equivalent of a project plan.",
         "COMPANY: " + JSON.stringify({ name: c.name, industry: c.industry, city: c.city, whatTheyDo: c.whatTheyDo, potential: c.potential, source: c.source, contact: c.contactPerson }),
         "DEALS: " + JSON.stringify(myDeals.map((d) => ({ stage: d.lost ? "lost" : d.stage, value: d.value }))),
-        "OPEN TASKS: " + JSON.stringify(myTasks.filter((t) => t.status === "open").map((t) => t.title)),
+        "OPEN TASKS: " + JSON.stringify(myTasks.filter((t) => t.status !== "done").map((t) => t.title)),
         "RECENT ACTIVITY: " + JSON.stringify((c.activity || []).slice(-8).map((a) => a.text)),
         "5-8 stages, each: name, status (done|now|next|later|blocked), why (one factual sentence tied to THIS company's data), actions (1-3 concrete next moves). Statuses must reflect the actual deal stage and activity — never mark 'done' without evidence.",
         "Reply ONLY: PLAN_JSON {\"summary\":\"2-3 sentences on where this account stands and the play\",\"stages\":[{\"name\":\"...\",\"status\":\"now\",\"why\":\"...\",\"actions\":[\"...\"]}]}",
@@ -3539,56 +3649,107 @@ const fmtDur = (s) => { const p = (n) => String(n).padStart(2, "0"); return p(Ma
    TASK CLOSE FLOW — work window → honesty gate → AI verdict /
    branch sub-tasks. The PMS closure pattern, on sales tasks.
    ============================================================ */
-function TaskCloseFlow({ me, data, task: t, startAt, onClose, saveTasks }) {
+/* Fetch (or recall) the brief for a task. Never throws, never blocks the UI:
+   a dead network yields the local brief instead. */
+async function getBrief(t, comp, who) {
+  const cached = (t.ai || {}).brief;
+  if (cached && Array.isArray(cached.close) && cached.close.length) return cached;
+  try {
+    const reply = await withTimeout(
+      askClaude(briefSystem(t, comp, who), [{ role: "user", content: "Brief me on this task." }]), 12000);
+    return cleanBrief(extractMarkedJSON(reply, "BRIEF_JSON")) || fallbackBrief(t);
+  } catch (e) { return fallbackBrief(t); }
+}
+
+function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
   const { users, companies, tasks } = data;
+  const W = t.work || {}, A = t.ai || {};
   const comp = companies.find((c) => c.id === t.companyId);
+  const who = users.find((u) => u.id === t.assignee);
   const deptHead = users.find((u) => u.role === "dept_head" && u.active !== false);
-  const [step, setStep] = useState(startAt); // work | gate | verdict | branch
-  const [what, setWhat] = useState(t.work.what || "");
-  const [file, setFile] = useState(t.work.file || "");
-  const [path, setPath] = useState(t.work.path || (comp ? "/Eb-07-Sales/" + driveFolderName(comp) + "/" : ""));
+  const [brief, setBrief] = useState(A.brief || null);
+  const [step, setStep] = useState("close"); // close | verdict | branch
+  const [answers, setAnswers] = useState(() => {
+    const seed = {};
+    (A.brief && A.brief.close || []).forEach((q, i) => {
+      const prior = (A.qa || []).find((x) => x.q === q);
+      if (prior && prior.a) seed[i] = prior.a;
+      else if ((W.prepAnswers || {})[i] && String(W.prepAnswers[i]).length > 12 && A.brief.prep.length === A.brief.close.length) seed[i] = W.prepAnswers[i];
+    });
+    return seed;
+  });
+  const [file, setFile] = useState(W.file || "");
+  const [path, setPath] = useState(W.path || (comp ? "/Eb-07-Sales/" + driveFolderName(comp) + "/" : ""));
   const [busy, setBusy] = useState(false);
-  const [verdict, setVerdict] = useState(t.ai.score != null ? t.ai : null);
+  const [verdict, setVerdict] = useState(null);
   const [escalate, setEscalate] = useState(!!t.escalated);
+  const [showEsc, setShowEsc] = useState(false);
   const [blocker, setBlocker] = useState("");
   const [subs, setSubs] = useState([]);
-  const secs = overdueSecs(t);
+
+  // A task started before this flow existed has no brief — fetch on open.
+  useEffect(() => {
+    let alive = true;
+    if (!brief) getBrief(t, comp, who).then((b) => { if (alive) setBrief(b); });
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    if (verdict && verdict.pass) { const h = setTimeout(onClose, 1500); return () => clearTimeout(h); }
+  }, [verdict]);
 
   const patch = (fields) => {
     const next = { ...t, ...fields, escalated: escalate || fields.escalated || false };
     saveTasks(tasks.map((x) => (x.id === t.id ? next : x)));
-    return next;
   };
-  const saveProgress = () => { patch({ work: { ...t.work, what, file, path } }); onClose(); };
 
-  const verify = async () => {
+  const qList = brief ? brief.close : [];
+  const qa = qList.map((q, i) => ({ q, a: answers[i] || "" }));
+  const needsArtifact = !!(brief && brief.artifact && brief.artifact.required);
+  const allAnswered = qList.length > 0 && qList.every((_, i) => String(answers[i] || "").trim());
+
+  const closeTask = async () => {
+    if (!brief) return;
     setBusy(true);
+    const workOut = { ...W, prepAnswers: W.prepAnswers || {}, file: needsArtifact ? file : "", path: needsArtifact ? path : "",
+      what: qa.map((x) => x.q + " — " + x.a).join(" · ") };
     try {
-      const sys = [
-        "You are the closure gate on the Elecbits Sales OS. A task is being closed as fully done — judge the evidence like a strict but fair reviewer.",
-        "TASK: " + t.title + (t.details ? " — " + t.details : "") + (comp ? " (company: " + comp.name + ")" : ""),
-        "EVIDENCE — what they did: " + what, "File produced: " + (file || "(none)"), "Stored at: " + (path || "(none)"),
-        "Score 0-10. Fail (below 7) vague evidence, missing artifacts for tasks that clearly produce one (a quote, a report, an MoM), or claims with no specifics. A call/follow-up task can pass without a file if the outcome is concrete.",
-        "Reply with ONLY: VERDICT_JSON {\"score\":0-10,\"pass\":true|false,\"reasons\":\"one or two blunt sentences\"}",
-      ].join("\n");
-      const reply = await askClaude(sys, [{ role: "user", content: "Judge this closure." }]);
-      const v = extractMarkedJSON(reply, "VERDICT_JSON") || { score: 0, pass: false, reasons: "The gate could not parse a verdict — try again." };
-      setVerdict(v);
-      if (v.pass) { patch({ status: "done", doneAt: nowTS(), work: { ...t.work, what, file, path }, ai: v }); setStep("verdict"); }
-      else { patch({ work: { ...t.work, what, file, path }, ai: v }); setStep("verdict"); }
-    } catch (e) { setVerdict({ score: 0, pass: false, reasons: "AI unreachable — closure not judged. Try again." }); setStep("verdict"); }
+      const reply = await withTimeout(
+        askClaude(verdictSystem(t, comp, brief, qa, file, path), [{ role: "user", content: "Judge this closure." }]), 20000);
+      const v = extractMarkedJSON(reply, "VERDICT_JSON");
+      if (!v || typeof v.pass !== "boolean") throw new Error("unparseable");
+      const out = { pass: !!v.pass, score: Number(v.score) || (v.pass ? 7 : 3), reasons: String(v.reasons || ""), offline: false };
+      setVerdict(out);
+      patch({ status: out.pass ? "done" : t.status, doneAt: out.pass ? nowTS() : null,
+        work: workOut, ai: { ...A, brief, qa, ...out } });
+    } catch (e) {
+      // AI unreachable: judge locally so nobody is trapped with finished work.
+      const artOk = !needsArtifact || (file.trim() && path.trim());
+      const solid = qa.every((x) => x.a.trim().length >= 12) && artOk;
+      const out = { pass: solid, score: solid ? 6 : 3, offline: true,
+        reasons: solid
+          ? "Checked offline — the AI was unreachable, so this closed on your answers alone. Substance not verified."
+          : (artOk ? "Checked offline — your answers are too thin to stand on their own. Add the who, the when, and the number."
+                   : "Checked offline — this task produces a document, so it needs the file name and where you saved it.") };
+      setVerdict(out);
+      patch({ status: out.pass ? "done" : t.status, doneAt: out.pass ? nowTS() : null,
+        work: workOut, ai: { ...A, brief, qa, ...out } });
+    }
     setBusy(false);
+    setStep("verdict");
   };
 
   const suggestSubs = async () => {
     setBusy(true);
     try {
-      const sys = "Break the remaining/blocked work into 2-4 concrete sub-tasks. TASK: " + t.title + ". BLOCKER/REMAINS: " + (blocker || what || "(unstated)") +
-        ". Reply ONLY: SUBTASKS_JSON [{\"title\":\"...\",\"mins\":30}]";
-      const reply = await askClaude(sys, [{ role: "user", content: "Propose sub-tasks." }]);
-      const list = extractMarkedJSON(reply, "SUBTASKS_JSON");
-      if (Array.isArray(list)) setSubs(list.map((s) => ({ title: s.title || "", mins: s.mins || 30, assignee: t.assignee })));
-    } catch (e) { /* rows stay manual */ }
+      const sys = "Break the remaining or blocked work on this task into 2 to 4 concrete next actions. Imperative titles, realistic minutes."
+        + "\nTASK: " + t.title + (comp ? " (company: " + comp.name + ")" : "")
+        + "\nWHAT REMAINS / BLOCKER: " + (blocker || "(unstated)")
+        + "\nReply with ONLY: BRANCH_JSON {\"subtasks\":[{\"title\":\"...\",\"mins\":30}]}";
+      const reply = await withTimeout(askClaude(sys, [{ role: "user", content: "Propose the next actions." }]), 15000);
+      const out = extractMarkedJSON(reply, "BRANCH_JSON");
+      const list = out && Array.isArray(out.subtasks) ? out.subtasks : null;
+      if (list && list.length) setSubs(list.slice(0, 4).map((s) => ({ title: String(s.title || ""), mins: Number(s.mins) || 30, assignee: t.assignee })));
+    } catch (e) { /* manual rows remain */ }
     setBusy(false);
   };
 
@@ -3600,88 +3761,92 @@ function TaskCloseFlow({ me, data, task: t, startAt, onClose, saveTasks }) {
       work: {}, ai: {}, escalated: false, branchedFrom: t.id,
     }));
     const closed = { ...t, status: "done", doneAt: nowTS(), escalated: escalate,
-      work: { ...t.work, what, blocker }, ai: { ...t.ai, verdict: "branched", reasons: blocker } };
+      work: { ...W, blocker }, ai: { ...A, brief, verdict: "branched", reasons: blocker } };
     saveTasks([...fresh, ...tasks.map((x) => (x.id === t.id ? closed : x))]);
     onClose();
   };
 
-  const Esc = (
+  const EscBlock = showEsc ? (
     <label className="flex items-start gap-2 border border-dashed border-slate-300 rounded-lg p-3 cursor-pointer mt-3">
       <input type="checkbox" checked={escalate} onChange={(e) => setEscalate(e.target.checked)} className="mt-0.5" />
       <span className="text-sm text-slate-700">Shall I escalate this to {deptHead ? deptHead.name : "the dept head"}?
         <span className="block text-xs text-slate-400">Escalations are tracked in the KPI block — fewer is better, but a needed escalation beats a silently stuck task.</span></span>
     </label>
-  );
+  ) : null;
 
   return (
-    <Modal title={(step === "work" ? "" : "Close: ") + t.title} onClose={onClose} wide
-      footer={step === "work" ? <>
-        <Btn onClick={saveProgress}>Save progress</Btn>
-        <Btn kind="primary" onClick={() => setStep("gate")}><CheckCircle2 size={14} /> Complete Now</Btn>
+    <Modal title={"Close: " + t.title} onClose={onClose} wide
+      footer={step === "close" ? <>
+        <button onClick={() => { setSubs([{ title: "", mins: 30, assignee: t.assignee }]); setStep("branch"); suggestSubs(); }}
+          className="text-xs text-slate-500 hover:text-slate-800">Not finished? Split what's left →</button>
+        <button onClick={() => setShowEsc(!showEsc)} className="text-xs text-slate-500 hover:text-slate-800 ml-3 mr-auto">
+          Escalate to {deptHead ? deptHead.name : "dept head"}
+        </button>
+        <Btn kind="primary" disabled={busy || !brief || !allAnswered} onClick={closeTask}>
+          {busy ? <><Loader2 size={14} className="animate-spin" /> Checking…</> : <><CheckCircle2 size={14} /> Close task</>}
+        </Btn>
       </> : null}>
-      {step === "work" && (
-        <div className="grid md:grid-cols-2 gap-4">
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Scope & guidance</p>
-            <p className="text-sm text-slate-800">{t.title}</p>
-            {t.details && <p className="text-xs text-slate-500 whitespace-pre-wrap">{t.details}</p>}
-            {comp && <p className="text-xs text-blue-700 font-mono">Where things live: /Eb-07-Sales/{driveFolderName(comp)}/</p>}
-            <p className="text-xs text-slate-500"><b>Task quality bar:</b> a closed task names what was done and, when it produces an artifact (quote, MoM, report), the exact file and its Drive path. A task without its artifact is not a finished task.</p>
-            <p className="text-xs text-slate-500">Due {t.due ? fmtDate(t.due) : "—"}{secs > 0 && <span className="text-red-600 font-mono font-semibold ml-2">OVERDUE {fmtDur(secs)}</span>}</p>
-          </div>
-          <div className="space-y-3">
-            <Field label="What did you do?" req><TA value={what} onChange={(e) => setWhat(e.target.value)} className="min-h-24" placeholder="I called / sent / prepared … — be concrete, the AI gate reads this" /></Field>
-            <Field label="File produced (name)"><Input value={file} onChange={(e) => setFile(e.target.value)} placeholder="e.g. 2026-08-13_quote_FMS-200.pdf" /></Field>
-            <Field label="Stored at (Drive path)"><Input value={path} onChange={(e) => setPath(e.target.value)} /></Field>
-            <p className="text-xs text-slate-400">Closing runs the AI gate: it asks whether this is really done and fails vague closures. Full clarity in, quality out.</p>
-          </div>
-        </div>
-      )}
-      {step === "gate" && (
+
+      {step === "close" && (!brief ? (
+        <p className="text-sm text-slate-400 flex items-center gap-2 py-6"><Loader2 size={15} className="animate-spin" /> Reading the task…</p>
+      ) : (
         <div className="space-y-3">
-          <p className="text-sm font-semibold text-slate-800">Did you actually finish this task?</p>
-          <p className="text-xs text-slate-500">Straight answers keep the chain honest — branching an unfinished task is respected, fake-closing it is not.</p>
-          <button onClick={verify} disabled={busy} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-green-500">
-            <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><CheckCircle2 size={15} className="text-green-600" /> Yes — fully done {busy && <Loader2 size={13} className="animate-spin" />}</span>
-            <span className="block text-xs text-slate-400 mt-0.5">Run the AI verification and close it properly</span>
-          </button>
-          <button onClick={() => { setBlocker(""); setSubs([{ title: "", mins: 30, assignee: t.assignee }]); setStep("branch"); suggestSubs(); }} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-amber-500">
-            <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><ArrowRight size={15} className="text-amber-600" /> Partially — some of it remains</span>
-            <span className="block text-xs text-slate-400 mt-0.5">AI proposes sub-tasks for the rest</span>
-          </button>
-          <button onClick={() => { setBlocker(""); setSubs([{ title: "", mins: 30, assignee: t.assignee }]); setStep("branch"); suggestSubs(); }} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-red-500">
-            <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><AlertTriangle size={15} className="text-red-600" /> Blocked — can't proceed</span>
-            <span className="block text-xs text-slate-400 mt-0.5">Describe the blocker; branch it and/or escalate</span>
-          </button>
-          {Esc}
+          <div>
+            <p className="text-sm font-semibold text-slate-800">How did it go?</p>
+            <p className="text-xs text-slate-500">Short answers are fine — name the person, the date, the number.</p>
+          </div>
+          {qList.map((q, i) => (
+            <Field key={i} label={q}>
+              <TA className="min-h-14" value={answers[i] || ""} onChange={(e) => setAnswers({ ...answers, [i]: e.target.value })} />
+            </Field>
+          ))}
+          {needsArtifact && (
+            <div className="border-t border-slate-100 pt-3 space-y-3">
+              <Field label="File produced (name)" req>
+                <Input value={file} onChange={(e) => setFile(e.target.value)} placeholder="e.g. 2026-08-14_quote_FMS-200.pdf" />
+              </Field>
+              <Field label="Stored at (Drive path)" req>
+                <Input value={path} onChange={(e) => setPath(e.target.value)} />
+              </Field>
+              <p className="text-xs text-slate-400">This task produces {brief.artifact.what || "a document"}, so the gate needs it.</p>
+            </div>
+          )}
+          {EscBlock}
         </div>
-      )}
+      ))}
+
       {step === "verdict" && verdict && (
         <div className="space-y-3">
           <div className={cls("rounded-xl border p-4", verdict.pass ? "bg-green-50 border-green-300" : "bg-red-50 border-red-300")}>
             <p className={cls("text-sm font-bold flex items-center gap-2", verdict.pass ? "text-green-700" : "text-red-700")}>
               {verdict.pass ? <CheckCircle2 size={16} /> : <XCircle size={16} />} {verdict.pass ? "CLOSED" : "NOT YET"} · {verdict.score}/10
+              {verdict.offline && <Chip color="amber">checked offline</Chip>}
             </p>
             <p className="text-sm text-slate-700 mt-1">{verdict.reasons}</p>
           </div>
           {verdict.pass
             ? <div className="flex justify-end"><Btn kind="primary" onClick={onClose}><Check size={14} /> Done</Btn></div>
-            : <><div className="flex gap-2">
-                <Btn onClick={onClose}>Keep open · revise work</Btn>
-                <Btn kind="primary" onClick={() => { setStep("branch"); suggestSubs(); }}>Branch sub-tasks</Btn>
-              </div>{Esc}</>}
+            : <div className="flex gap-2">
+                <Btn onClick={() => { setVerdict(null); setStep("close"); }}>Fix my answers</Btn>
+                <Btn kind="primary" onClick={() => { setSubs([{ title: "", mins: 30, assignee: t.assignee }]); setStep("branch"); suggestSubs(); }}>Split what's left</Btn>
+              </div>}
         </div>
       )}
+
       {step === "branch" && (
         <div className="space-y-3">
-          <Field label="What's the blocker / what remains?"><TA value={blocker} onChange={(e) => setBlocker(e.target.value)} className="min-h-16" placeholder="e.g. client hasn't shared the BOM — quote can't be finalised" /></Field>
+          <Field label="What's the blocker / what remains?">
+            <TA value={blocker} onChange={(e) => setBlocker(e.target.value)} className="min-h-16" placeholder="e.g. client hasn't shared the BOM — quote can't be finalised" />
+          </Field>
           <div className="flex items-center gap-2">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Sub-tasks</p>
-            <button onClick={suggestSubs} disabled={busy} className="text-xs text-blue-600 hover:underline flex items-center gap-1">{busy ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} AI re-suggest from blocker</button>
+            <button onClick={suggestSubs} disabled={busy} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+              {busy ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} AI re-suggest from blocker
+            </button>
           </div>
           {subs.map((s, i) => (
             <div key={i} className="flex gap-2 items-center">
-              <Input value={s.title} onChange={(e) => setSubs(subs.map((x, j) => j === i ? { ...x, title: e.target.value } : x))} />
+              <Input value={s.title} onChange={(e) => setSubs(subs.map((x, j) => j === i ? { ...x, title: e.target.value } : x))} placeholder="next action" />
               <Sel className="w-40" value={s.assignee} onChange={(e) => setSubs(subs.map((x, j) => j === i ? { ...x, assignee: e.target.value } : x))}>
                 {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
               </Sel>
@@ -3691,11 +3856,61 @@ function TaskCloseFlow({ me, data, task: t, startAt, onClose, saveTasks }) {
             </div>
           ))}
           <button onClick={() => setSubs([...subs, { title: "", mins: 30, assignee: t.assignee }])} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Plus size={11} /> add row</button>
-          <Btn kind="primary" disabled={!subs.some((s) => s.title.trim())} onClick={createSubs}><ArrowRight size={14} /> Create sub-tasks & close this as branched</Btn>
-          {Esc}
+          <Btn kind="primary" disabled={!subs.some((s) => s.title.trim())} onClick={createSubs}><ArrowRight size={14} /> Create sub-tasks &amp; close this as branched</Btn>
+          {EscBlock}
         </div>
       )}
     </Modal>
+  );
+}
+
+/* The inline brief panel — the "work window", as an expander under the row. */
+function TaskBrief({ task: t, data, saveTasks, onComplete, onHide }) {
+  const { users, companies, tasks } = data;
+  const comp = companies.find((c) => c.id === t.companyId);
+  const who = users.find((u) => u.id === t.assignee);
+  const [brief, setBrief] = useState((t.ai || {}).brief || null);
+  const [ans, setAns] = useState((t.work || {}).prepAnswers || {});
+
+  useEffect(() => {
+    let alive = true;
+    if (!brief) getBrief(t, comp, who).then((b) => {
+      if (!alive) return;
+      setBrief(b);
+      saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, ai: { ...(x.ai || {}), brief: b } } : x)));
+    });
+    return () => { alive = false; };
+  }, [t.id]);
+
+  const persist = () => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, work: { ...(x.work || {}), prepAnswers: ans } } : x)));
+
+  return (
+    <div className="border border-t-0 border-slate-200 rounded-b-md bg-slate-50 px-3 py-3 space-y-2">
+      {!brief ? (
+        <p className="text-xs text-slate-400 flex items-center gap-2"><Loader2 size={13} className="animate-spin" /> Working out what this task needs…</p>
+      ) : (<>
+        <div className="flex items-center gap-2 flex-wrap">
+          {brief.kind && <Chip color="blue">{brief.kind}</Chip>}
+          {brief.tip && <span className="text-xs text-slate-600">{brief.tip}</span>}
+          {brief.source === "fallback" && <span className="text-[11px] text-slate-400 ml-auto">offline brief</span>}
+        </div>
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Before you start</p>
+        <div className="space-y-2">
+          {brief.prep.map((q, i) => (
+            <div key={i}>
+              <p className="text-xs text-slate-600 mb-1">{q}</p>
+              <Input value={ans[i] || ""} onChange={(e) => setAns({ ...ans, [i]: e.target.value })} onBlur={persist} placeholder="one line — optional" />
+            </div>
+          ))}
+        </div>
+        <p className="text-[11px] text-slate-400">Optional. Answering now makes closing this a ten-second job.</p>
+        {comp && <p className="text-[11px] text-blue-700 font-mono">Files live in /Eb-07-Sales/{driveFolderName(comp)}/</p>}
+        <div className="flex gap-2 pt-1">
+          <Btn size="sm" onClick={onHide}>Hide</Btn>
+          <Btn size="sm" kind="primary" onClick={onComplete}><CheckCircle2 size={12} /> Complete Now</Btn>
+        </div>
+      </>)}
+    </div>
   );
 }
 
@@ -3716,52 +3931,77 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
     (scope === "mine" ? t.assignee === me.id : true) &&
     (personF === "all" || t.assignee === personF) &&
     (companyF === "all" || t.companyId === companyF) &&
-    (showDone ? true : t.status === "open"));
+    (showDone ? true : t.status !== "done"));
   const buckets = [
-    ["Overdue", mine.filter((t) => t.status === "open" && t.due && t.due < today)],
+    ["Overdue", mine.filter((t) => t.status !== "done" && t.due && t.due < today)],
     ["Today", mine.filter((t) => t.due === today)],
     ["Tomorrow", mine.filter((t) => t.due === tomorrow)],
-    ["Later / no date", mine.filter((t) => (!t.due || t.due > tomorrow) && !(t.status === "open" && t.due && t.due < today))],
+    ["Later / no date", mine.filter((t) => (!t.due || t.due > tomorrow) && !(t.status !== "done" && t.due && t.due < today))],
   ];
 
-  const toggle = (t) => saveTasks(tasks.map((x) => x.id === t.id ? { ...x, status: x.status === "done" ? "open" : "done", doneAt: x.status === "done" ? null : nowTS() } : x));
+  const toggle = (t) => saveTasks(tasks.map((x) => x.id === t.id ? { ...x, status: "open", doneAt: null } : x));
   const remove = (t) => saveTasks(tasks.filter((x) => x.id !== t.id));
   const add = () => {
     if (!f.title.trim()) return;
-    saveTasks([{ id: uid(), companyId: f.companyId || "", dealId: "", assignee: f.assignee, author: me.id, title: f.title.trim(), details: "", due: f.due || "", status: "open", source: "manual", createdAt: nowTS() }, ...tasks]);
+    saveTasks([{ id: uid(), companyId: f.companyId || "", dealId: "", assignee: f.assignee, author: me.id, title: f.title.trim(), details: "", due: f.due || "", status: "open", source: "manual", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
     setAdding(false); setF({ ...f, title: "" });
   };
 
-  const [closing, setClosing] = useState(null); // {task, startAt}
+  const [closing, setClosing] = useState(null);   // the task being closed
+  const [expanded, setExpanded] = useState(null); // task id whose brief is open
+  // Start is instant: the row flips to "doing" with no modal and no AI wait.
+  const startTask = (t) => {
+    saveTasks(tasks.map((x) => (x.id === t.id
+      ? { ...x, status: "doing", work: { ...(x.work || {}), startedAt: (x.work || {}).startedAt || nowTS() } }
+      : x)));
+    setExpanded(t.id);
+  };
+
   const TaskRow = ({ t }) => {
     const comp = companies.find((c) => c.id === t.companyId);
     const who = users.find((u) => u.id === t.assignee);
     const secs = overdueSecs(t);
+    const W = t.work || {}, A = t.ai || {};
     return (
-      <div className="flex items-center gap-2.5 border border-slate-200 rounded-md px-3 py-2 bg-white">
-        <button onClick={() => t.status === "done" ? toggle(t) : setClosing({ task: t, startAt: "gate" })}
-          className={cls("w-4 h-4 rounded border flex-none flex items-center justify-center", t.status === "done" ? "bg-green-600 border-green-600 text-white" : "border-slate-300 hover:border-blue-500")}>
-          {t.status === "done" && <Check size={11} />}
-        </button>
-        <div className="min-w-0 mr-auto">
-          <p className={cls("text-sm", t.status === "done" ? "line-through text-slate-400" : "text-slate-800")}>{t.title}
-            {t.branchedFrom && <span className="ml-1.5 text-[10px] text-purple-600 uppercase">branch</span>}
-            {t.escalated && <span className="ml-1.5 text-[10px] text-red-600 uppercase">escalated</span>}</p>
-          <p className="text-xs text-slate-400 flex items-center gap-1.5 flex-wrap">
-            {comp && <button className="text-blue-600 hover:underline" onClick={() => openCompany(comp.id)}>{comp.name}</button>}
-            {who && scope === "team" && <span>{who.name}</span>}
-            {(t.windowStart || t.windowEnd) && <span className="font-mono">{t.windowStart || "…"}–{t.windowEnd || "…"}</span>}
-            {t.due && <span>due {fmtDate(t.due)}</span>}
-            {secs > 0 && <span className="text-red-600 font-mono font-semibold flex items-center gap-0.5"><Clock size={10} /> OVERDUE {fmtDur(secs)}</span>}
-            <span className="uppercase text-[10px] tracking-wide">{t.source}</span>
-            {t.status === "done" && t.ai && t.ai.score != null && <span className="text-green-600 font-mono">gate {t.ai.score}/10</span>}
-          </p>
+      <div>
+        <div className={cls("flex items-center gap-2.5 border border-slate-200 px-3 py-2 bg-white",
+          expanded === t.id && t.status === "doing" ? "rounded-t-md" : "rounded-md")}>
+          {t.status === "open" && <span className="w-4 h-4 rounded-full border border-slate-300 flex-none" />}
+          {t.status === "doing" && (
+            <button title="Complete this task" onClick={() => setClosing(t)} className="w-4 h-4 rounded-full border-2 border-blue-500 flex-none hover:bg-blue-50" />
+          )}
+          {t.status === "done" && (
+            <button title="Reopen" onClick={() => toggle(t)} className="w-4 h-4 rounded border bg-green-600 border-green-600 text-white flex-none flex items-center justify-center"><Check size={11} /></button>
+          )}
+          <div className="min-w-0 mr-auto">
+            <p className={cls("text-sm", t.status === "done" ? "line-through text-slate-400" : "text-slate-800")}>{t.title}
+              {t.status === "doing" && <span className="ml-1.5 text-[10px] text-blue-600 uppercase">in progress</span>}
+              {t.branchedFrom && <span className="ml-1.5 text-[10px] text-purple-600 uppercase">branch</span>}
+              {t.escalated && <span className="ml-1.5 text-[10px] text-red-600 uppercase">escalated</span>}</p>
+            <p className="text-xs text-slate-400 flex items-center gap-1.5 flex-wrap">
+              {comp && <button className="text-blue-600 hover:underline" onClick={() => openCompany(comp.id)}>{comp.name}</button>}
+              {who && scope === "team" && <span>{who.name}</span>}
+              {(t.windowStart || t.windowEnd) && <span className="font-mono">{t.windowStart || "…"}–{t.windowEnd || "…"}</span>}
+              {t.due && <span>due {fmtDate(t.due)}</span>}
+              {secs > 0 && <span className="text-red-600 font-mono font-semibold flex items-center gap-0.5"><Clock size={10} /> OVERDUE {fmtDur(secs)}</span>}
+              {t.status === "doing" && W.startedAt && <span>started {fmtTime(W.startedAt)}</span>}
+              <span className="uppercase text-[10px] tracking-wide">{t.source}</span>
+              {t.status === "done" && A.score != null && <span className="text-green-600 font-mono">gate {A.score}/10</span>}
+              {t.status === "done" && A.offline && <span className="text-amber-600">checked offline</span>}
+              {t.status === "done" && A.verdict === "branched" && <span className="text-purple-600">branched</span>}
+            </p>
+          </div>
+          {t.status === "open" && <Btn size="sm" kind="primary" onClick={() => startTask(t)}><Play size={12} /> Start</Btn>}
+          {t.status === "doing" && <>
+            <Btn size="sm" onClick={() => setExpanded(expanded === t.id ? null : t.id)}><FileText size={12} /> Work window</Btn>
+            <Btn size="sm" kind="primary" onClick={() => setClosing(t)}><CheckCircle2 size={12} /> Complete Now</Btn>
+          </>}
+          <button onClick={() => remove(t)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
         </div>
-        {t.status !== "done" && <>
-          <Btn size="sm" onClick={() => setClosing({ task: t, startAt: "work" })}><FileText size={12} /> Work window</Btn>
-          <Btn size="sm" kind="primary" onClick={() => setClosing({ task: t, startAt: "gate" })}><CheckCircle2 size={12} /> Complete Now</Btn>
-        </>}
-        <button onClick={() => remove(t)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+        {t.status === "doing" && expanded === t.id && (
+          <TaskBrief task={t} data={data} saveTasks={saveTasks}
+            onComplete={() => setClosing(t)} onHide={() => setExpanded(null)} />
+        )}
       </div>
     );
   };
@@ -3823,14 +4063,14 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
               <p className="text-sm font-semibold text-slate-800 mb-2 flex items-center gap-2">
                 {group === "person" ? <Avatar name={label} size="sm" /> : <Building2 size={14} className="text-slate-400" />}
                 {label}
-                <Chip color="blue">{list.filter((t) => t.status === "open").length} open</Chip>
+                <Chip color="blue">{list.filter((t) => t.status !== "done").length} open</Chip>
               </p>
               <div className="space-y-1.5">{list.sort((a, b) => (a.due || "9999") < (b.due || "9999") ? -1 : 1).map((t) => <TaskRow key={t.id} t={t} />)}</div>
             </div>
           ))}
         </div>
       )}
-      {closing && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closing.task.id) || closing.task} startAt={closing.startAt} onClose={() => setClosing(null)} saveTasks={saveTasks} />}
+      {closing && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closing.id) || closing} onClose={() => setClosing(null)} saveTasks={saveTasks} />}
       {adding && (
         <Modal title="New task" onClose={() => setAdding(false)}
           footer={<><Btn onClick={() => setAdding(false)}>Cancel</Btn><Btn kind="primary" disabled={!f.title.trim()} onClick={add}><Check size={14} /> Add</Btn></>}>
@@ -3871,9 +4111,9 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
   const filtered = users.filter((u) => (roleF === "all" || u.role === roleF) && (deptF === "all" || u.dept === deptF) && matchesQ(u));
 
   const openDealsOf = (id) => deals.filter((d) => d.ownerId === id && !d.lost && d.stage !== "po");
-  const openTasksOf = (id) => tasks.filter((t) => t.assignee === id && t.status === "open");
+  const openTasksOf = (id) => tasks.filter((t) => t.assignee === id && t.status !== "done");
   const travelIn = (id, from, to) => (expenses || []).filter((e) => e.userId === id && e.status !== "rejected" && e.from && e.to && e.from <= to && e.to >= from);
-  const tasksIn = (id, from, to) => tasks.filter((t) => t.assignee === id && t.status === "open" && t.due && t.due >= from && t.due <= to);
+  const tasksIn = (id, from, to) => tasks.filter((t) => t.assignee === id && t.status !== "done" && t.due && t.due >= from && t.due <= to);
   const statusOf = (u) => {
     if (u.active === false) return ["Inactive", "slate"];
     const n = openDealsOf(u.id).length;
@@ -4062,7 +4302,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                 {filtered.map((u) => {
                   const mine = tasks.filter((t) => t.assignee === u.id);
                   const done = mine.filter((t) => t.status === "done").length;
-                  const overdue = mine.filter((t) => t.status === "open" && t.due && t.due < todayStr()).length;
+                  const overdue = mine.filter((t) => t.status !== "done" && t.due && t.due < todayStr()).length;
                   const pct = mine.length ? Math.round((done / mine.length) * 100) : 0;
                   const won = deals.filter((d) => d.ownerId === u.id && d.stage === "po" && !d.lost).length;
                   const h = healthOf(u, data);
