@@ -296,16 +296,27 @@ const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString("en-IN", 
    below answers instead — same shape, no network, so the flow never stalls.
    Ordering matters: `produce` is tested first, so "prepare the deck for the
    meeting" needs a file while "ask for a meeting" does not.               */
-const ARTIFACT_RE = /\b(quote|quotation|proposal|costing|lld|bom|report|deck|presentation|slides|mom|minutes|invoice|purchase order|\bpo\b|contract|nda|agreement|datasheet|drawing|schematic|spec|specification|sheet|document|draft|write ?up)\b/i;
-const TASK_KINDS = [
-  ["produce", ARTIFACT_RE],
-  ["visit", /\b(visit|site|factory|plant|onsite|on-site)\b/i],
+// Naming a document is not producing one: "call them about the PO" creates
+// nothing. A file is only expected when a producing VERB meets an artifact
+// noun, or an artifact noun stands alone with no talking verb around it.
+// Stems, so "update/updating/updated" all match — hence no trailing \b.
+const PRODUCE_VERB = /\b(prepar|creat|draft|writ|mak|build|produc|issu|generat|compil|updat|revis|finalis|finaliz|put together|work out)/i;
+const ARTIFACT_NOUN = /\b(quote|quotation|proposal|costing|lld|bom|report|deck|presentation|slides|mom|minutes|invoice|contract|nda|agreement|datasheet|drawing|schematic|spec|specification|sheet|document|draft)\b/i;
+const TALK_KINDS = [
+  ["visit", /\b(visit|site visit|factory|plant|onsite|on-site)\b/i],
   ["meeting", /\b(meeting|meet\b|catch ?up|appointment|schedule|book a|slot)\b/i],
   ["call", /\b(call|phone|ring|dial|speak to|talk to)\b/i],
-  ["followup", /\b(follow[ -]?up|chase|remind|nudge|check in|revert)\b/i],
+  ["followup", /\b(follow[ -]?up|chase|remind|nudge|check in|revert|confirm)\b/i],
   ["send", /\b(send|share|mail|email|forward|submit|circulate)\b/i],
-  ["price", /\b(price|pricing|negotiat|discount|rate|cost)\b/i],
+  ["price", /\b(price|pricing|negotiat|discount|rate)\b/i],
 ];
+const classifyTask = (s) => {
+  const talk = TALK_KINDS.find(([, re]) => re.test(s));
+  if (PRODUCE_VERB.test(s) && ARTIFACT_NOUN.test(s)) return ["produce", true];
+  if (talk) return [talk[0], false];              // talking never needs a file
+  if (ARTIFACT_NOUN.test(s)) return ["produce", true];
+  return ["generic", false];
+};
 const QUESTION_BANK = {
   produce: { prep: ["What exactly are you producing, and who is it for?", "What numbers or inputs do you need before you start?", "Where will you save it when it's done?"],
              close: ["What did you produce, and what is it called?", "What are the key numbers in it?", "Who has it now, and what do they do next?"] },
@@ -325,9 +336,8 @@ const QUESTION_BANK = {
              close: ["What exactly did you do?", "What was the outcome?", "What happens next, and by when?"] },
 };
 const fallbackBrief = (t) => {
-  const s = (t.title || "") + " " + (t.details || "");
-  const kind = (TASK_KINDS.find(([, re]) => re.test(s)) || ["generic"])[0];
-  return { kind, artifact: { required: ARTIFACT_RE.test(s), what: "" },
+  const [kind, needsFile] = classifyTask((t.title || "") + " " + (t.details || ""));
+  return { kind, artifact: { required: needsFile, what: "" },
            prep: QUESTION_BANK[kind].prep, close: QUESTION_BANK[kind].close,
            tip: "", source: "fallback", at: nowTS() };
 };
