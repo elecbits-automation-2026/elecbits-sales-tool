@@ -34,7 +34,7 @@ export default async function handler(req, res) {
   // override with ANTHROPIC_MODEL if needed.
   const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
   // Cap output tokens hard so a single call can never run away.
-  const max_tokens = Math.min(Math.max(parseInt(maxTokens, 10) || 700, 1), 2048);
+  const max_tokens = Math.min(Math.max(parseInt(maxTokens, 10) || 700, 1), 8192);
 
   // Content may be a plain string or Anthropic content blocks (text / image /
   // document) — the latter carries pasted screenshots and attached files.
