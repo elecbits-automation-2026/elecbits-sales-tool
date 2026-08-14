@@ -5,7 +5,7 @@ import {
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
   Bot, Database, CalendarCheck2, Sun, Moon, ListTodo, FolderOpen, PencilRuler,
-  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb
+  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
@@ -205,6 +205,68 @@ async function askClaude(system, messages) {
   if (!res.ok) throw new Error("AI request failed (" + res.status + ")");
   const data = await res.json();
   return (data && data.text) || "";
+}
+
+// ── chat attachments + tools, shared by every AI chat ──
+// A pasted screenshot or attached file becomes an Anthropic content block.
+const fileToBlock = (file) => new Promise((resolve) => {
+  const r = new FileReader();
+  r.onload = () => {
+    const data = String(r.result).split(",")[1];
+    if (file.type === "application/pdf") resolve({ type: "document", source: { type: "base64", media_type: "application/pdf", data }, _name: file.name || "document.pdf" });
+    else if (file.type && file.type.startsWith("image/")) resolve({ type: "image", source: { type: "base64", media_type: file.type, data }, _name: file.name || "pasted image" });
+    else resolve(null);
+  };
+  r.onerror = () => resolve(null);
+  r.readAsDataURL(file);
+});
+const contentText = (c) => typeof c === "string" ? c : (c || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+// Tool protocol lines must never reach the user's eyes.
+const stripToolLines = (t) => String(t || "").replace(/(DRIVE_JSON|ACTIONS_JSON|TASKS_JSON)[\s\S]*$/, "").trim();
+
+async function runDriveTool(spec) {
+  const p = new URLSearchParams({ action: spec.action || "root" });
+  if (spec.name) p.set("name", spec.name);
+  if (spec.q) p.set("q", spec.q);
+  const r = await fetch("/api/drive?" + p.toString()).then((x) => x.json());
+  return JSON.stringify(r).slice(0, 6000);
+}
+const DRIVE_TOOL_PROMPT = [
+  "GOOGLE DRIVE: you CAN read the sales Drive (folder and file listings — names, dates, links; not file contents yet).",
+  "To look something up, reply with ONLY one line and nothing else: DRIVE_JSON {\"action\":\"root\"} for the top-level folders · DRIVE_JSON {\"action\":\"list\",\"name\":\"<exact folder name>\"} for a folder's files · DRIVE_JSON {\"action\":\"search\",\"q\":\"<term>\"} to find files by name.",
+  "You'll get the listing back as data, then answer citing file names and links. Never show raw DRIVE_JSON to the user in a final answer.",
+].join("\n");
+
+// Runs a chat turn with the Drive tool loop: feeds listings back until the
+// model answers. Returns { reply, notes } — notes describe what was checked.
+async function askWithDrive(system, convo, maxHops = 4) {
+  let reply = await askClaude(system, convo);
+  const notes = [];
+  for (let hop = 0; hop < maxHops; hop++) {
+    const spec = extractMarkedJSON(reply, "DRIVE_JSON");
+    if (!spec) break;
+    notes.push(spec.action === "search" ? "searched Drive for “" + spec.q + "”" : "checked Drive: " + (spec.name || "top-level folders"));
+    const result = await runDriveTool(spec);
+    convo.push({ role: "assistant", content: reply });
+    convo.push({ role: "user", content: "DRIVE_RESULT " + result + "\n\nAnswer the original question from this listing (or make one more DRIVE_JSON request if you must drill deeper). Never show raw DRIVE_JSON in the final answer." });
+    reply = await askClaude(system, convo);
+  }
+  return { reply, notes };
+}
+
+/* Attachment chips + the paste/attach plumbing, one line to wire in. */
+function AttachChips({ atts, setAtts }) {
+  if (!atts.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mb-2">
+      {atts.map((a, i) => (
+        <span key={i} className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-700 rounded-full px-2.5 py-1">
+          {a.type === "image" ? "🖼" : "📄"} {a._name}
+          <button onClick={() => setAtts(atts.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500"><X size={11} /></button>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function extractMarkedJSON(text, marker) {
@@ -1220,7 +1282,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
 
       {/* the workspace tabs — the PMS project-section, for a company */}
       <div className="bg-white border border-slate-200 rounded-xl px-4 mt-4 flex items-center gap-1 overflow-x-auto">
-        {[["overview", "Overview", TrendingUp], ["plan", "Plan", ClipboardList], ["todos", "To-dos", ListTodo], ["brainstorm", "Brainstorming", Lightbulb], ["files", "Files & Drive", FolderOpen], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
+        {[["overview", "Overview", TrendingUp], ["plan", "Plan", ClipboardList], ["todos", "To-dos", ListTodo], ["brainstorm", "Conversations", Phone], ["files", "Files & Drive", FolderOpen], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
           <button key={k} onClick={() => setCtab(k)}
             className={cls("flex items-center gap-1.5 px-3.5 py-3 text-sm border-b-2 -mb-px whitespace-nowrap", ctab === k ? "border-blue-600 text-blue-700 font-semibold" : "border-transparent text-slate-500 font-medium hover:text-slate-700")}>
             <Ic size={15} /> {l}
@@ -2513,7 +2575,7 @@ function DailyScrumView({ me, data, saveScrums, saveTasks }) {
         || users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
       const win = t.start || t.end ? { start: t.start || "", end: t.end || "" } : parseWin(t.window);
       return {
-        id: uid(), companyId: "", dealId: "",
+        id: uid(), companyId: t.companyId || "", dealId: "",
         assignee: owner ? owner.id : s.userId, author: me.id,
         title: t.task,
         details: t.condition || "", due: s.date || todayStr(),
@@ -2555,23 +2617,26 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
     const text = raw.trim();
     if (!text || busy) return;
     setBusy(true); setErr("");
+    const { users, companies } = data;
     const system = [
-      "You organise a typed/spoken daily scrum for the Elecbits sales + ODM team into clear, assigned, time-boxed tasks.",
-      "Read the note and extract each task with its owner, time window (if given) and any if/else condition.",
-      "Keep task text short and action-first. Preserve project IDs verbatim.",
-      "When done, reply with ONLY this on one line and nothing else: SCRUM_JSON {\"tasks\":[{\"owner\":\"name or empty\",\"task\":\"...\",\"window\":\"e.g. 12pm–1pm or empty\",\"condition\":\"if/else note or empty\"}],\"summary\":\"one-line summary\"}",
-      "The JSON must be valid. No markdown.",
+      "You organise a typed/spoken daily sales scrum at Elecbits into clear, assigned, time-boxed tasks. Extract EVERY actionable item — a scrum line with no task extracted is a failure.",
+      "TEAM ROSTER (match owners to these people; default owner = the note's author): " + users.filter((u) => u.active !== false).map((u) => u.name).join(", "),
+      "COMPANIES (match any client mentioned, even loosely — 'Sunrise Company' means 'Sunrise Retail Tech'): " + companies.map((c) => c.name).join(", "),
+      "TIME WINDOWS: normalise everything to 24h HH:MM. 'by 2pm' / 'before 2' → end 14:00 with empty start. '12 to 1pm' → 12:00–13:00. 'today' with no time → empty window.",
+      "Keep task text short and action-first ('Send Sunrise Retail the pilot quote'). Put any if/else in condition. Preserve IDs verbatim.",
+      "Reply with ONLY one line: SCRUM_JSON {\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name from the list or empty\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"condition\":\"if/else or empty\"}],\"summary\":\"one-line summary\"}",
+      "Valid JSON. No markdown.",
     ].join("\n");
     try {
       const reply = await askClaude(system, [{ role: "user", content: text }]);
       const parsed = extractMarkedJSON(reply, "SCRUM_JSON") || {};
-      const { users } = data;
       const note = {
         id: uid(), userId: me.id, date, raw: text,
         tasks: (Array.isArray(parsed.tasks) ? parsed.tasks : []).map((t) => {
           const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
-          const win = parseWin(t.window);
-          return { ...t, assigneeId: owner ? owner.id : me.id, start: win.start, end: win.end };
+          const comp = companies.find((c) => t.company && c.name.toLowerCase() === String(t.company).trim().toLowerCase());
+          const win = t.start || t.end ? { start: t.start || "", end: t.end || "" } : parseWin(t.window);
+          return { ...t, assigneeId: owner ? owner.id : me.id, companyId: comp ? comp.id : "", start: win.start, end: win.end };
         }),
         summary: parsed.summary || "", createdAt: nowTS(),
       };
@@ -2604,7 +2669,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           <p className="text-sm font-semibold text-slate-800">Daily scrum — write it as it comes</p>
         </div>
         <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-32"
-          placeholder={speech.on ? "Listening… speak the scrum" : "e.g. — project ID esp-32-123: check the gerber file, Rahul 12pm to 1pm. If the gerber is fine, great; if not, verify the schematic and submit a report in an hour. Gargi checks the BoM 12 to 1pm. Ask Akshay to have the client communicated by 2pm."} />
+          placeholder={speech.on ? "Listening… speak the scrum" : "e.g. — Sunrise Retail quote goes out by 2pm, Akash. Ankit calls Nevon about the pilot PO 12 to 1. If Greenline shares the BOM today, price it by evening; if not, chase their SPOC. I'll do the Escorts follow-up mail before lunch."} />
         <div className="flex flex-wrap items-center gap-2 mt-3">
           <Btn kind="primary" disabled={busy || !raw.trim()} onClick={organise}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Organise with AI
@@ -2623,8 +2688,12 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
                 <div key={i} className="border border-slate-200 rounded-lg p-3">
                   <p className="text-sm text-slate-800 mb-2">{t.task}{t.condition && <span className="text-xs text-amber-700 ml-2">({t.condition})</span>}</p>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Sel className="w-44" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
+                    <Sel className="w-40" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
                       {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                    </Sel>
+                    <Sel className="w-44" value={t.companyId || ""} onChange={(e) => setPendingTask(i, { companyId: e.target.value })}>
+                      <option value="">— no company —</option>
+                      {data.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </Sel>
                     <Input type="time" className="w-28" value={t.start || ""} onChange={(e) => setPendingTask(i, { start: e.target.value })} />
                     <ArrowRight size={13} className="text-slate-300" />
@@ -2755,33 +2824,28 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
     ].join("\n\n");
   };
 
-  // The Drive tool loop: when the model asks for a listing, fetch it, hand it
-  // back, and let it answer — at most 3 hops so it can drill root → folder.
-  const runDriveTool = async (spec) => {
-    const p = new URLSearchParams({ action: spec.action || "root" });
-    if (spec.name) p.set("name", spec.name);
-    if (spec.q) p.set("q", spec.q);
-    const r = await fetch("/api/drive?" + p.toString()).then((x) => x.json());
-    return JSON.stringify(r).slice(0, 6000);
+  const [atts, setAtts] = useState([]);
+  const fileRef = useRef(null);
+  const addFiles = (files) => { [...files].forEach((f) => fileToBlock(f).then((b) => b && setAtts((a) => [...a, b]))); };
+  const onPaste = (e) => {
+    const files = [...(e.clipboardData?.items || [])].map((it) => it.getAsFile && it.getAsFile()).filter(Boolean);
+    if (files.length) { e.preventDefault(); addFiles(files); }
   };
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy) return;
+    if ((!text && !atts.length) || busy) return;
     setInput(""); setErr("");
-    const next = [...msgs, { role: "user", content: text }];
+    const content = atts.length
+      ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: text || "See the attached file." }]
+      : text;
+    const display = (text || "") + (atts.length ? "\n" + atts.map((a) => "📎 " + a._name).join("  ") : "");
+    setAtts([]);
+    const next = [...msgs, { role: "user", content, display }];
     setMsgs(next); setBusy(true);
     try {
       const convo = next.map((m) => ({ role: m.role, content: m.content }));
-      let reply = await askClaude(buildSystem(), convo);
-      for (let hop = 0; hop < 3; hop++) {
-        const spec = extractMarkedJSON(reply, "DRIVE_JSON");
-        if (!spec) break;
-        const result = await runDriveTool(spec);
-        convo.push({ role: "assistant", content: reply });
-        convo.push({ role: "user", content: "DRIVE_RESULT " + result + "\n\nNow answer the original question from this listing (or make one more DRIVE_JSON request if you must drill deeper)." });
-        reply = await askClaude(buildSystem(), convo);
-      }
+      let { reply, notes } = await askWithDrive(buildSystem(), convo);
       // Agentic: execute any actions the model returned, then confirm.
       const actions = extractMarkedJSON(reply, "ACTIONS_JSON");
       let doneNote = "";
@@ -2822,7 +2886,9 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
         if (nextScrums !== scrums) saveScrums(nextScrums);
         doneNote = results.length ? "\n\n" + results.join("\n") : "";
       }
-      const shown = reply.replace(/ACTIONS_JSON[\s\S]*$/, "").trim() + doneNote;
+      const shown = stripToolLines(reply)
+        + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "")
+        + doneNote;
       persist([...next, { role: "assistant", content: shown, at: nowTS() }]);
     } catch (e) { setErr("AI call failed — try again."); setInput(text); setMsgs(msgs); }
     setBusy(false);
@@ -2866,17 +2932,23 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
           )}
           {msgs.map((m, i) => (
             <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-              <div className={cls("max-w-lg rounded-lg px-3 py-2 text-sm whitespace-pre-wrap", m.role === "user" ? "bg-blue-600 text-white" : "bg-slate-50 border border-slate-200 text-slate-800")}>{m.content}</div>
+              <div className={cls("max-w-lg rounded-lg px-3 py-2 text-sm whitespace-pre-wrap", m.role === "user" ? "bg-blue-600 text-white" : "bg-slate-50 border border-slate-200 text-slate-800")}>{m.display || contentText(m.content)}</div>
             </div>
           ))}
           {busy && <div className="flex items-center gap-2 text-xs text-slate-400 font-mono"><Loader2 size={13} className="animate-spin" /> thinking…</div>}
           {err && <p className="text-xs text-red-600 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
         </div>
-        <div className="border-t border-slate-200 p-3 flex gap-2 items-end">
-          <TA value={input} onChange={(e) => setInput(e.target.value)} placeholder={speech.on ? "Listening…" : "Ask the assistant…"}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} className="flex-1 min-h-10" />
-          {speech.supported && <Btn kind={speech.on ? "danger" : "ghost"} onClick={speech.toggle}>{speech.on ? <MicOff size={15} /> : <Mic size={15} />}</Btn>}
-          <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={15} /></Btn>
+        <div className="border-t border-slate-200 p-3">
+          <AttachChips atts={atts} setAtts={setAtts} />
+          <div className="flex gap-2 items-end">
+            <input ref={fileRef} type="file" hidden multiple accept="image/*,application/pdf" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+            <Btn kind="ghost" title="Attach an image or PDF — or just paste a screenshot" onClick={() => fileRef.current?.click()}><Paperclip size={15} /></Btn>
+            <TA value={input} onChange={(e) => setInput(e.target.value)} onPaste={onPaste}
+              placeholder={speech.on ? "Listening…" : "Ask, or paste a screenshot — e.g. a client's mail or an RFQ page"}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} className="flex-1 min-h-10" />
+            {speech.supported && <Btn kind={speech.on ? "danger" : "ghost"} onClick={speech.toggle}>{speech.on ? <MicOff size={15} /> : <Mic size={15} />}</Btn>}
+            <Btn kind="primary" disabled={busy || (!input.trim() && !atts.length)} onClick={send}><Send size={15} /></Btn>
+          </div>
         </div>
       </div>
     </div>
@@ -3043,27 +3115,43 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
     saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title, details: "", due: due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS() }, ...tasks]);
   };
 
+  const [atts, setAtts] = useState([]);
+  const fileRef = useRef(null);
+  const addFiles = (files) => { [...files].forEach((f) => fileToBlock(f).then((b) => b && setAtts((a) => [...a, b]))); };
+  const onPaste = (e) => {
+    const files = [...(e.clipboardData?.items || [])].map((it) => it.getAsFile && it.getAsFile()).filter(Boolean);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  };
+
   const send = async () => {
     const text = input.trim();
-    if (!text || busy) return;
+    if ((!text && !atts.length) || busy) return;
     setInput("");
-    const nm = [...msgs, { role: "user", content: text }];
+    const content = atts.length
+      ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: text || "See the attached file — read it and update me." }]
+      : text;
+    const display = (text || "") + (atts.length ? "\n" + atts.map((a) => "📎 " + a._name).join("  ") : "");
+    setAtts([]);
+    const nm = [...msgs, { role: "user", content, display }];
     setMsgs(nm); setBusy(true);
     // everything the agent types is knowledge — file it on the record
-    fileNote(text);
+    if (text) fileNote(text);
     try {
       const system = [
         "You are the company-record assistant on the Elecbits Sales OS, working the record of \"" + c.name + "\" like a disciplined HubSpot operator.",
         "COMPANY RECORD: " + JSON.stringify({ name: c.name, cid: c.cid, industry: c.industry, city: c.city, whatTheyDo: c.whatTheyDo, potential: c.potential, contact: c.contactPerson, designation: c.designation, source: c.source }),
         "FIELDS STILL MISSING ON THE RECORD: " + (missing.join(", ") || "none"),
         "THE TRAINED QUESTION SET (ask these, one at a time, most important first — never a wall of questions): " + JSON.stringify(qset),
-        "Rules: acknowledge what the agent just told you in one short sentence; extract any facts; then ask exactly ONE next question from the set that is still unanswered. Be specific and factual, never generic.",
+        "Rules: acknowledge what the agent just told you in one short sentence; extract any facts (including from attached images/PDFs — read them carefully); then ask exactly ONE next question from the set that is still unanswered. Be specific and factual, never generic.",
+        "THIS COMPANY'S DRIVE FOLDER is named \"" + driveFolderName(c) + "\" — use it when asked about files.",
+        DRIVE_TOOL_PROMPT,
         "If the agent's message contains anything that should be FOLLOWED UP (a call to make, a document to send, a meeting to book), propose tasks by ending your reply with one line: TASKS_JSON [{\"title\":\"...\",\"due\":\"YYYY-MM-DD\"}] — due defaults to tomorrow. No tasks: no line.",
       ].join("\n");
-      const reply = await askClaude(system, nm.slice(-12));
+      const convo = nm.slice(-12).map((m) => ({ role: m.role, content: m.content }));
+      const { reply, notes } = await askWithDrive(system, convo);
       const t = extractMarkedJSON(reply, "TASKS_JSON");
       if (Array.isArray(t) && t.length) setSuggested(t);
-      persistMsgs([...nm, { role: "assistant", content: reply.replace(/TASKS_JSON[\s\S]*$/, "").trim() }]);
+      persistMsgs([...nm, { role: "assistant", content: stripToolLines(reply) + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") }]);
     } catch (e) {
       persistMsgs([...nm, { role: "assistant", content: "Couldn't reach the AI — the note is filed on the record anyway." }]);
     }
@@ -3077,7 +3165,7 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
       <div className="space-y-2 max-h-72 overflow-y-auto pr-1 mb-3">
         {msgs.length === 0 && <p className="text-sm text-slate-400">Start with what happened — “spoke to {c.contactPerson || "the client"}, they want…”</p>}
         {msgs.map((m, i) => (
-          <div key={i} className={cls("text-sm rounded-lg px-3 py-2 max-w-[92%] whitespace-pre-wrap", m.role === "user" ? "bg-blue-50 text-slate-800 ml-auto" : "bg-slate-50 text-slate-700")}>{m.content}</div>
+          <div key={i} className={cls("text-sm rounded-lg px-3 py-2 max-w-[92%] whitespace-pre-wrap", m.role === "user" ? "bg-blue-50 text-slate-800 ml-auto" : "bg-slate-50 text-slate-700")}>{m.display || contentText(m.content)}</div>
         ))}
         {suggested.length > 0 && (
           <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-3">
@@ -3092,9 +3180,14 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
         )}
         <div ref={endRef} />
       </div>
-      <div className="flex gap-2 mt-auto">
-        <Input placeholder="What happened with this company?" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} />
-        <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}</Btn>
+      <div className="mt-auto">
+        <AttachChips atts={atts} setAtts={setAtts} />
+        <div className="flex gap-2">
+          <input ref={fileRef} type="file" hidden multiple accept="image/*,application/pdf" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+          <Btn kind="ghost" title="Attach an image or PDF — or paste a screenshot" onClick={() => fileRef.current?.click()}><Paperclip size={14} /></Btn>
+          <Input placeholder="What happened? Paste a client mail screenshot or attach the RFQ…" value={input} onChange={(e) => setInput(e.target.value)} onPaste={onPaste} onKeyDown={(e) => e.key === "Enter" && send()} />
+          <Btn kind="primary" disabled={busy || (!input.trim() && !atts.length)} onClick={send}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}</Btn>
+        </div>
       </div>
     </div>
   );
@@ -3185,10 +3278,11 @@ function BrainstormTab({ me, company: c, data, saveTasks }) {
     setBusy(true); setErr("");
     try {
       const sys = [
-        "You write up a sales brainstorming session for the record, exactly like the Elecbits PMS: pull out what the challenge really was and how it was beaten, whose idea helped (credit by name), what was decided, and what has to happen next.",
-        "COMPANY: " + c.name + ". PEOPLE WHO MIGHT BE NAMED: " + users.map((u) => u.name).join(", "),
+        "You write up a CONVERSATION WITH A CLIENT for the permanent record on the Elecbits Sales OS. This is the account's memory: what the client said and asked for, what was promised, what was decided, the objections/challenges and how they were (or will be) beaten, and whose idea moved things (credit by name).",
+        "CLIENT: " + c.name + ". PEOPLE WHO MIGHT BE NAMED (our side): " + users.map((u) => u.name).join(", ") + ". Client-side names go into ideas/decisions as written.",
         "Credit an idea ONLY when the suggestion actually changed the approach, saved time or money, caught a risk, or lifted quality — value 1-5 with a one-line why.",
-        "Reply ONLY: MOM_JSON {\"title\":\"short session title\",\"ideas\":[{\"by\":\"name\",\"idea\":\"...\",\"impact\":\"...\",\"value\":1-5,\"why\":\"...\"}],\"decisions\":[{\"what\":\"...\",\"owner\":\"name or empty\"}],\"challenges\":[{\"challenge\":\"...\",\"action\":\"how it was/will be beaten\",\"status\":\"solved|open|watch\"}],\"tasks\":[{\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+        "Every commitment made to the client MUST appear in tasks with its deadline.",
+        "Reply ONLY: MOM_JSON {\"title\":\"short conversation title, e.g. 'Pricing call — pilot split agreed'\",\"ideas\":[{\"by\":\"name\",\"idea\":\"...\",\"impact\":\"...\",\"value\":1-5,\"why\":\"...\"}],\"decisions\":[{\"what\":\"...\",\"owner\":\"name or empty\"}],\"challenges\":[{\"challenge\":\"objection/blocker\",\"action\":\"how it was/will be beaten\",\"status\":\"solved|open|watch\"}],\"tasks\":[{\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
       ].join("\n");
       const reply = await askClaude(sys, [{ role: "user", content: (who ? "In the room: " + who + "\n" : "") + raw.trim() }]);
       const m = extractMarkedJSON(reply, "MOM_JSON");
@@ -3212,18 +3306,18 @@ function BrainstormTab({ me, company: c, data, saveTasks }) {
   return (
     <div className="mt-4 space-y-4">
       <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <SectionTitle right={<Chip color="blue"><Lightbulb size={11} /> ideas · challenges · lessons</Chip>}>Brainstorming session</SectionTitle>
-        <p className="text-xs text-slate-500 mb-3">Type up what was discussed — a pricing argument, an objection, a review that went badly. The AI pulls out the challenge and how it was beaten, credits whose idea helped, what was decided, and what happens next. Actions become tasks; the write-up stays on this company so the same mistake is never made twice.</p>
-        <Input placeholder="Who was in the room? (optional)" value={who} onChange={(e) => setWho(e.target.value)} className="mb-2" />
-        <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-28" placeholder="e.g. Client pushed back on the quote — Akash suggested splitting the pilot from production pricing; we agreed, and Saurav will re-send by Friday…" />
+        <SectionTitle right={<Chip color="blue"><Phone size={11} /> said · promised · decided · next</Chip>}>Client conversation — log it as it happened</SectionTitle>
+        <p className="text-xs text-slate-500 mb-3">Right after a call or meeting with {c.name}, type what was discussed. It's stored with the date and time; the AI writes it up — what the client said, every commitment made (those become tasks), objections and how they were beaten, whose idea helped. This is the account's memory: nothing said to a client gets lost.</p>
+        <Input placeholder="Who was on the call? Client side + our side (optional)" value={who} onChange={(e) => setWho(e.target.value)} className="mb-2" />
+        <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-28" placeholder="e.g. Spoke to Rahul at 3pm — they want 200 units by Nov, pushed back on tooling cost. Akash suggested splitting pilot from production pricing; agreed. We promised the revised quote by Friday and a sample by month-end…" />
         <div className="flex items-center gap-2 mt-3">
           <Btn kind="primary" disabled={busy || !raw.trim()} onClick={writeUp}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Save and write it up</Btn>
-          <span className="text-xs text-slate-400">{sessions ? sessions.length + " session" + (sessions.length === 1 ? "" : "s") + " kept on this company" : "loading…"}</span>
+          <span className="text-xs text-slate-400">{sessions ? sessions.length + " conversation" + (sessions.length === 1 ? "" : "s") + " on record for this client" : "loading…"}</span>
         </div>
         {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
         {proposed.length > 0 && (
           <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-3 mt-3">
-            <p className="text-xs font-semibold text-blue-700 mb-1.5">Actions from the session</p>
+            <p className="text-xs font-semibold text-blue-700 mb-1.5">Commitments &amp; actions from this conversation — file them as tasks</p>
             {proposed.map((t, i) => (
               <div key={i} className="flex items-center gap-2 text-sm py-0.5">
                 <span className="mr-auto text-slate-700">{t.title}</span>
@@ -3238,7 +3332,7 @@ function BrainstormTab({ me, company: c, data, saveTasks }) {
         <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-5 border-l-4 border-l-purple-500">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="font-semibold text-sm text-slate-900 mr-auto">{s.title}</p>
-            <span className="font-mono text-xs text-slate-400">{fmtDate(s.date)}</span>
+            <span className="font-mono text-xs text-slate-400">{fmtDate(s.date)} · {new Date(s.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
             {(users.find((u) => u.id === s.createdBy) || {}).name && <span className="text-xs text-slate-400">by {(users.find((u) => u.id === s.createdBy) || {}).name}</span>}
           </div>
           {s.attendees.length > 0 && <p className="text-xs text-slate-400 mt-0.5">In the room: {s.attendees.join(", ")}</p>}
@@ -3419,11 +3513,15 @@ const c0 = (company) => company.official ? company.cid : "Eb-…";
 
 /* ── task-gate helpers ── */
 const parseWin = (w) => {
-  const m = String(w || "").match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|–|-|—)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-  if (!m) return { start: "", end: "" };
+  const s = String(w || "");
   const h = (n, ap, apOther) => { let x = Number(n) % 12; const a = (ap || apOther || "").toLowerCase(); if (a === "pm") x += 12; return x; };
   const p = (n) => String(n).padStart(2, "0");
-  return { start: p(h(m[1], m[3], m[6])) + ":" + (m[2] || "00"), end: p(h(m[4], m[6], m[3])) + ":" + (m[5] || "00") };
+  const m = s.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|–|-|—)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (m) return { start: p(h(m[1], m[3], m[6])) + ":" + (m[2] || "00"), end: p(h(m[4], m[6], m[3])) + ":" + (m[5] || "00") };
+  // "by 2pm" / "before 14:00" / "at 2pm" — a deadline, not a window
+  const d = s.match(/(?:by|before|till|until|at)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (d) return { start: "", end: p(h(d[1], d[3], "")) + ":" + (d[2] || "00") };
+  return { start: "", end: "" };
 };
 const overdueSecs = (t) => {
   if (!t.due || t.status === "done") return 0;
@@ -3542,11 +3640,11 @@ function TaskCloseFlow({ me, data, task: t, startAt, onClose, saveTasks }) {
             <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><CheckCircle2 size={15} className="text-green-600" /> Yes — fully done {busy && <Loader2 size={13} className="animate-spin" />}</span>
             <span className="block text-xs text-slate-400 mt-0.5">Run the AI verification and close it properly</span>
           </button>
-          <button onClick={() => { setBlocker(""); setStep("branch"); suggestSubs(); }} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-amber-500">
+          <button onClick={() => { setBlocker(""); setSubs([{ title: "", mins: 30, assignee: t.assignee }]); setStep("branch"); suggestSubs(); }} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-amber-500">
             <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><ArrowRight size={15} className="text-amber-600" /> Partially — some of it remains</span>
             <span className="block text-xs text-slate-400 mt-0.5">AI proposes sub-tasks for the rest</span>
           </button>
-          <button onClick={() => { setBlocker(""); setStep("branch"); }} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-red-500">
+          <button onClick={() => { setBlocker(""); setSubs([{ title: "", mins: 30, assignee: t.assignee }]); setStep("branch"); suggestSubs(); }} className="w-full text-left border border-slate-200 rounded-xl p-4 hover:border-red-500">
             <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><AlertTriangle size={15} className="text-red-600" /> Blocked — can't proceed</span>
             <span className="block text-xs text-slate-400 mt-0.5">Describe the blocker; branch it and/or escalate</span>
           </button>
