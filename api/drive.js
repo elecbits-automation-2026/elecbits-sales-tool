@@ -253,6 +253,35 @@ export default async function handler(req, res) {
         folders: kids.filter((k) => k.folder).map((k) => ({ name: k.name, link: k.link })),
       });
     }
+    // write: POST { name, folder?, fileName, content, mimeType? }
+    // Files a document into the company folder (creating the sub-folder on
+    // first use), so a write-up lands in Drive without anybody uploading it.
+    if (action === "write") {
+      if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+      const b = req.body || {};
+      const fileName = String(b.fileName || "").trim();
+      if (!b.name || !fileName) return res.status(400).json({ error: "name and fileName required" });
+      const f = (await findFolder(token, root, b.name)) || (await createFolder(token, root, b.name));
+      let parent = f.id;
+      if (b.folder) {
+        const kids = await childrenOf(token, f.id);
+        const sub = kids.find((k) => k.folder && k.name.toLowerCase() === String(b.folder).toLowerCase());
+        parent = sub ? sub.id : (await createFolder(token, f.id, b.folder)).id;
+      }
+      const boundary = "eb" + Math.random().toString(36).slice(2);
+      const meta = JSON.stringify({ name: fileName, parents: [parent] });
+      const payload =
+        "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + meta + "\r\n" +
+        "--" + boundary + "\r\nContent-Type: " + (b.mimeType || "text/markdown") + "; charset=UTF-8\r\n\r\n" + (b.content || "") + "\r\n" +
+        "--" + boundary + "--";
+      const r = await fetch(
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink",
+        { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "multipart/related; boundary=" + boundary }, body: payload });
+      const j = await r.json();
+      if (!r.ok) return res.status(502).json({ error: (j.error && j.error.message) || ("upload " + r.status) });
+      return res.status(200).json({ ok: true, id: j.id, name: j.name, link: j.webViewLink, folder: b.folder || f.name });
+    }
+
     return res.status(400).json({ error: "unknown action" });
   } catch (e) {
     return res.status(502).json({ error: String(e.message || e) });

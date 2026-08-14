@@ -588,6 +588,59 @@ export async function loadAllIdeas(): Promise<any[]> {
   });
 }
 
+// Client touches — every call, mail, WhatsApp, meeting or visit with a
+// client, and the promises made in them. org_activities is the touch log;
+// kind='note' rows stay the internal activity feed and are filtered out here.
+export async function loadTouches(orgId: string): Promise<any[]> {
+  const { data } = await supabase.from("org_activities").select("*")
+    .eq("org_id", orgId).neq("kind", "note").order("occurred_at", { ascending: false });
+  return (data || []).map((a: any) => ({
+    id: a.id, companyId: a.org_id, kind: a.kind, direction: a.direction,
+    subject: a.subject || "", body: a.body || "", contactName: a.contact_name || "",
+    at: a.occurred_at || a.at, loggedAt: a.at, author: a.author_id,
+    dealId: a.deal_id || "", meetingId: a.meeting_id || "",
+    link: a.link || "", driveFile: a.drive_file || "", source: a.source || "manual",
+    ai: a.ai || {},
+  }));
+}
+export async function saveTouch(t: any): Promise<string | null> {
+  const row = {
+    id: t.id, org_id: t.companyId, kind: t.kind, direction: t.direction || "out",
+    subject: t.subject || null, body: t.body || "", contact_name: t.contactName || null,
+    occurred_at: t.at, author_id: t.author || null, deal_id: t.dealId || null,
+    meeting_id: t.meetingId || null, link: t.link || null, drive_file: t.driveFile || null,
+    source: t.source || "manual", ai: t.ai || {},
+  };
+  const { data, error } = await supabase.from("org_activities").upsert(row, { onConflict: "id" }).select("id").single();
+  if (!ok(error, "saveTouch")) return null;
+  return (data && data.id) || t.id;
+}
+
+export async function loadCommitments(orgId?: string): Promise<any[]> {
+  let q = supabase.from("commitments").select("*").order("due", { ascending: true });
+  if (orgId) q = q.eq("org_id", orgId);
+  const { data } = await q;
+  return (data || []).map((c: any) => ({
+    id: c.id, companyId: c.org_id, activityId: c.activity_id || "", taskId: c.task_id || "",
+    side: c.side, what: c.what, toWhom: c.to_whom || "", ownerId: c.owner_id,
+    due: c.due || "", certainty: c.certainty, status: c.status,
+    closedAt: c.closed_at, closedNote: c.closed_note || "", evidence: c.evidence || "",
+    createdAt: c.created_at,
+  }));
+}
+export async function saveCommitments(list: any[]): Promise<boolean> {
+  if (!list.length) return true;
+  const rowsIn = list.map((c) => ({
+    id: c.id, org_id: c.companyId, activity_id: c.activityId || null, task_id: c.taskId || null,
+    side: c.side || "us", what: c.what, to_whom: c.toWhom || null, owner_id: c.ownerId || null,
+    due: c.due || null, certainty: c.certainty || "promised", status: c.status || "open",
+    closed_at: c.status && c.status !== "open" ? (c.closedAt || new Date().toISOString()) : null,
+    closed_note: c.closedNote || null, evidence: c.evidence || null, created_by: c.createdBy || null,
+  }));
+  const { error } = await supabase.from("commitments").upsert(rowsIn, { onConflict: "id" });
+  return ok(error, "saveCommitments");
+}
+
 // Chat threads — one per person per day; org_id scopes a thread to a company
 // ("Ask the AI" on the record) while null is the personal Assistant.
 // select→insert/update instead of upsert: the uniqueness lives in two partial

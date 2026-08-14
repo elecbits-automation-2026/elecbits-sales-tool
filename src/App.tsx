@@ -13,6 +13,7 @@ import {
   syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
   syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
   loadChat, loadChatDates, saveChat, loadSessions, saveSession, loadAllIdeas,
+  loadTouches, saveTouch, loadCommitments, saveCommitments,
   signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
 } from "./lib/data";
 import logoLight from "./assets/elecbits-logo.png";
@@ -1477,7 +1478,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
 
       {/* the workspace tabs — the PMS project-section, for a company */}
       <div className="bg-white border border-slate-200 rounded-xl px-4 mt-4 flex items-center gap-1 overflow-x-auto">
-        {[["overview", "Overview", TrendingUp], ["plan", "Plan", ClipboardList], ["todos", "To-dos", ListTodo], ["brainstorm", "Conversations", Phone], ["files", "Files & Drive", FolderOpen], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
+        {[["overview", "Overview", TrendingUp], ["plan", "Plan", ClipboardList], ["todos", "To-dos", ListTodo], ["comms", "Client Comms", Phone], ["files", "Files & Drive", FolderOpen], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
           <button key={k} onClick={() => setCtab(k)}
             className={cls("flex items-center gap-1.5 px-3.5 py-3 text-sm border-b-2 -mb-px whitespace-nowrap", ctab === k ? "border-blue-600 text-blue-700 font-semibold" : "border-transparent text-slate-500 font-medium hover:text-slate-700")}>
             <Ic size={15} /> {l}
@@ -1583,7 +1584,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
         </div>
       )}
 
-      {ctab === "brainstorm" && <BrainstormTab me={me} company={c} data={data} saveTasks={saveTasks} />}
+      {ctab === "comms" && <CommsTab me={me} company={c} data={data} saveTasks={saveTasks} />}
 
       {ctab === "files" && (
         <div className="grid lg:grid-cols-2 gap-4 mt-4 items-start">
@@ -3591,6 +3592,329 @@ function PlanTab({ me, company: c, data, saveCompanies, saveTasks }) {
             </div>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   CLIENT COMMS — every touch with a client, and every promise
+   made in one. Quick log in 15 seconds; AI write-up when it
+   deserves one. The account's memory.
+   ============================================================ */
+
+const TOUCH_KINDS = [
+  ["call", "Call", Phone], ["email", "Email", FileText], ["whatsapp", "WhatsApp", Send],
+  ["meeting", "Meeting", Users], ["visit", "Visit", Building2], ["other", "Other", ClipboardList],
+];
+
+const commsSystem = (c, users, touch) => [
+  "You write up a CONVERSATION WITH A CLIENT for the permanent record on the Elecbits Sales OS. This is the account's memory: what the client said and asked for, what we promised, what they promised, what was decided, the objections and how they were or will be beaten, and whose idea moved it forward.",
+  "CLIENT: " + c.name + (c.city ? ", " + c.city : "") + (c.whatTheyDo ? " — " + c.whatTheyDo : "") + ".",
+  "THIS TOUCH: " + touch.kind + ", " + (touch.direction === "in" ? "they came to us" : "we reached out") + ", on " + fmtDate(touch.at) + (touch.contactName ? ", with " + touch.contactName : "") + ".",
+  "OUR PEOPLE (use these spellings): " + users.filter((u) => u.active !== false).map((u) => u.name).join(", ") + ". Anyone else named is on the client's side — keep their name as written and never map it to our roster.",
+  "",
+  "COMMITMENTS ARE THE POINT OF THIS RECORD. Pull out every promise separately:",
+  "  ourCommitments — anything WE said we would do, with the date we said it by. 'I'll get it to you by Friday' is promised; 'we should be able to look at that next week' is implied. Mark which.",
+  "  theirCommitments — anything THEY said they would do, with the date.",
+  "  A commitment with no date is still a commitment: leave due empty rather than inventing Friday.",
+  "  If nothing was promised on either side, return empty arrays. Do not manufacture a promise to look thorough.",
+  "IDEAS: credit one ONLY when the suggestion changed the approach, saved time or money, caught a risk, or lifted quality — value 1-5 and a one-line why. Agreeing with someone is not an idea. Client-side people can be credited too.",
+  "CHALLENGES: every objection, blocker or push-back the client raised, what was done about it, and whether it is genuinely settled. An unsettled objection recorded as 'solved' is worse than one recorded as open.",
+  "TEMPERATURE: hot = they are moving and asking for next steps; warm = interested, no urgency; cold = polite, stalling or going quiet. Judge it from what they said, not from how the note was written.",
+  "Plain English. No jargon, no markdown symbols, no praise.",
+  "",
+  "Reply with ONLY: COMMS_JSON {\"title\":\"short, factual, e.g. 'Pricing call — pilot split agreed'\",\"summary\":\"two or three sentences a colleague can read in ten seconds\",\"clientSaid\":[\"the things the client actually said that matter, in their terms\"],\"ourCommitments\":[{\"what\":\"...\",\"owner\":\"our roster name or empty\",\"toWhom\":\"client person or empty\",\"due\":\"YYYY-MM-DD or empty\",\"certainty\":\"promised|implied\"}],\"theirCommitments\":[{\"what\":\"...\",\"who\":\"client person\",\"due\":\"YYYY-MM-DD or empty\"}],\"ideas\":[{\"by\":\"name\",\"idea\":\"...\",\"impact\":\"timeline|cost|quality|risk|other\",\"value\":4,\"why\":\"one line\"}],\"decisions\":[{\"what\":\"...\",\"owner\":\"name or empty\"}],\"challenges\":[{\"challenge\":\"...\",\"action\":\"...\",\"status\":\"solved|open|watch\"}],\"nextStep\":{\"what\":\"...\",\"who\":\"name or empty\",\"when\":\"YYYY-MM-DD or empty\"},\"temperature\":\"hot|warm|cold\",\"risk\":\"the one thing that could kill this, or empty\"}",
+].join("\n");
+
+const draftSystem = (c, me, touch, writeup) => [
+  "You draft the follow-up after a conversation with a client of Elecbits, an Indian electronics ODM/EMS company. You are writing as " + me.name + " to " + (touch.contactName || "the client contact") + " at " + c.name + ".",
+  "You are given the write-up of the conversation. Use only what is in it — never invent a price, a lead time, a spec or a commitment that was not made.",
+  "The email: a subject line that says the substance, three short paragraphs at most, every commitment restated with its date so the client can hold us to it, and one clear ask. No 'I hope this email finds you well'. No adjectives about ourselves.",
+  "The WhatsApp: under 40 words, same commitments, no salutation theatre. Indian business English, polite and direct.",
+  "If the conversation produced nothing worth sending, say so in \"skip\" and leave the drafts empty — a follow-up with nothing in it costs credibility.",
+  "THE WRITE-UP: " + JSON.stringify(writeup).slice(0, 6000),
+  "Reply with ONLY: DRAFT_JSON {\"subject\":\"...\",\"email\":\"...\",\"whatsapp\":\"...\",\"skip\":\"reason to not send, or empty\"}",
+].join("\n");
+
+function CommsTab({ me, company: c, data, saveTasks }) {
+  const { users, tasks } = data;
+  const [touches, setTouches] = useState(null);
+  const [commits, setCommits] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(null);      // expanded touch id
+  const [draft, setDraft] = useState(null);    // {touchId, subject, email, whatsapp, skip}
+
+  // the composer
+  const [kind, setKind] = useState("call");
+  const [dir, setDir] = useState("out");
+  const [when, setWhen] = useState(() => new Date().toISOString().slice(0, 16));
+  const [contact, setContact] = useState(c.contactPerson || "");
+  const [line, setLine] = useState("");
+  const [more, setMore] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [link, setLink] = useState("");
+  const [driveFile, setDriveFile] = useState("");
+  const [checkMsg, setCheckMsg] = useState("");
+
+  const reload = () => {
+    loadTouches(c.id).then(setTouches).catch(() => setTouches([]));
+    loadCommitments(c.id).then(setCommits).catch(() => {});
+  };
+  useEffect(() => { reload(); }, [c.id]);
+
+  const openCommits = commits.filter((x) => x.status === "open");
+  const overdue = openCommits.filter((x) => x.due && x.due < todayStr());
+
+  const fileToDrive = async (title, body) => {
+    try {
+      const slug = String(title).toLowerCase().replace(/[^\w\- ]/g, "").trim().replace(/\s+/g, "-").slice(0, 50);
+      await fetch("/api/drive?action=write", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: driveFolderName(c), folder: "Client-Comms",
+          fileName: todayStr() + "_" + kind + "_" + slug + ".md", content: body }),
+      });
+    } catch (e) { /* filing is best-effort; the record is in the DB either way */ }
+  };
+
+  const log = async (withAI) => {
+    if (!line.trim() && !notes.trim()) return;
+    setBusy(true); setErr("");
+    const touch = {
+      id: uid(), companyId: c.id, kind, direction: dir, at: new Date(when).toISOString(),
+      subject: line.trim(), body: notes.trim() || line.trim(), contactName: contact.trim(),
+      author: me.id, link: link.trim(), driveFile: driveFile.trim(), source: "manual", ai: {},
+    };
+    if (withAI) {
+      try {
+        const reply = await askClaude(commsSystem(c, users, touch),
+          [{ role: "user", content: (notes.trim() || line.trim()).slice(0, 120000) }], { maxTokens: 2500 });
+        const w = extractMarkedJSON(reply, "COMMS_JSON");
+        if (w) {
+          touch.ai = w;
+          touch.subject = w.title || touch.subject;
+          // promises become tracked commitments
+          const fresh = [
+            ...(w.ourCommitments || []).map((x) => ({
+              id: uid(), companyId: c.id, activityId: touch.id, side: "us", what: x.what,
+              toWhom: x.toWhom || contact.trim(), due: x.due || "", certainty: x.certainty || "promised",
+              status: "open", ownerId: (users.find((u) => u.name === x.owner) || me).id, createdBy: me.id,
+            })),
+            ...(w.theirCommitments || []).map((x) => ({
+              id: uid(), companyId: c.id, activityId: touch.id, side: "them", what: x.what,
+              toWhom: x.who || contact.trim(), due: x.due || "", certainty: "promised",
+              status: "open", ownerId: null, createdBy: me.id,
+            })),
+          ];
+          if (fresh.length) { await saveCommitments(fresh); }
+          const md = ["# " + (w.title || touch.subject), c.name + " · " + fmtDate(touch.at) + " · " + kind + ", " + (dir === "in" ? "they came to us" : "we reached out"),
+            contact.trim() ? "With: " + contact.trim() : "", link.trim() ? "Source: " + link.trim() : "", "",
+            w.summary || "", "", "## What the client said", ...(w.clientSaid || []).map((x) => "- " + x),
+            "", "## We promised", ...(w.ourCommitments || []).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
+            "## They promised", ...(w.theirCommitments || []).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
+            "", "## Objections and how they went", ...(w.challenges || []).map((x) => "- " + x.challenge + " → " + (x.action || "") + " (" + x.status + ")"),
+            "", "## Decided", ...(w.decisions || []).map((x) => "- " + x.what),
+            "", "## Next step", (w.nextStep && w.nextStep.what) || "—", "", "## The note as it was written", touch.body,
+          ].filter((x) => x !== undefined).join("\n");
+          fileToDrive(w.title || touch.subject, md);
+        }
+      } catch (e) { setErr("Logged, but the write-up failed — the touch is saved."); }
+    }
+    await saveTouch(touch);
+    setLine(""); setNotes(""); setLink(""); setDriveFile(""); setMore(false);
+    reload(); setBusy(false);
+  };
+
+  const closeCommit = async (cm, status) => {
+    const note = status === "kept" ? window.prompt("What closed it?") : window.prompt("What happened?");
+    if (note === null) return;
+    const next = commits.map((x) => x.id === cm.id ? { ...x, status, closedNote: note, closedAt: nowTS() } : x);
+    setCommits(next);
+    await saveCommitments(next.filter((x) => x.id === cm.id));
+  };
+
+  const commitToTask = (cm) => {
+    saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: cm.ownerId || me.id, author: me.id,
+      title: cm.what, details: "Promised to " + (cm.toWhom || c.name), due: cm.due || todayStr(),
+      status: "open", source: "commitment", createdAt: nowTS(), windowStart: "", windowEnd: "",
+      work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+  };
+
+  const makeDraft = async (t) => {
+    setBusy(true);
+    try {
+      const reply = await askClaude(draftSystem(c, me, t, t.ai || {}), [{ role: "user", content: "Draft the follow-up." }], { maxTokens: 1500 });
+      const d = extractMarkedJSON(reply, "DRAFT_JSON");
+      if (d) setDraft({ ...d, touchId: t.id });
+    } catch (e) { setErr("Could not draft the follow-up."); }
+    setBusy(false);
+  };
+
+  const KindIcon = ({ k }) => { const f = TOUCH_KINDS.find((x) => x[0] === k); const I = f ? f[2] : ClipboardList; return <I size={13} />; };
+
+  return (
+    <div className="mt-4 space-y-4">
+      {/* ── log a touch ── */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <SectionTitle right={<Chip color="blue"><Phone size={11} /> said · promised · decided</Chip>}>Log a touch with {c.name}</SectionTitle>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {TOUCH_KINDS.map(([k, label, I]) => (
+            <button key={k} onClick={() => setKind(k)}
+              className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border inline-flex items-center gap-1.5",
+                kind === k ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>
+              <I size={12} /> {label}
+            </button>
+          ))}
+          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs ml-2">
+            {[["in", "They came to us"], ["out", "We reached out"]].map(([k, l]) => (
+              <button key={k} onClick={() => setDir(k)} className={cls("px-2.5 py-1 font-medium", dir === k ? "bg-slate-700 text-white" : "bg-white text-slate-600")}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 mb-2">
+          <div><p className="text-[11px] text-slate-400 mb-1">When</p><Input type="datetime-local" className="w-52" value={when} onChange={(e) => setWhen(e.target.value)} /></div>
+          <div className="flex-1 min-w-[200px]"><p className="text-[11px] text-slate-400 mb-1">Their side</p><Input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="who you spoke to" /></div>
+        </div>
+        <Input value={line} onChange={(e) => setLine(e.target.value)}
+          placeholder={"What happened, in one line — “Sent the revised quote, they pushed back on tooling cost”"} />
+        <button onClick={() => setMore(!more)} className="text-xs text-blue-600 hover:underline mt-2">{more ? "▾" : "▸"} Add detail, a link, or the minutes</button>
+        {more && (
+          <div className="space-y-2 mt-2">
+            <TA value={notes} onChange={(e) => setNotes(e.target.value)} className="min-h-24"
+              placeholder="Everything worth keeping. Paste a transcript here and the write-up will use all of it." />
+            <div><p className="text-[11px] text-slate-400 mb-1">Link</p><Input value={link} onChange={(e) => setLink(e.target.value)} placeholder="Fireflies / Meet recording / the mail thread" /></div>
+            <div>
+              <p className="text-[11px] text-slate-400 mb-1">Saved in Drive as</p>
+              <div className="flex gap-2">
+                <Input value={driveFile} onChange={(e) => setDriveFile(e.target.value)} placeholder="2026-08-14_MoM_pricing.docx" />
+                <Btn size="sm" disabled={!driveFile.trim()} onClick={async () => {
+                  setCheckMsg("checking…");
+                  try {
+                    const r = await fetch("/api/drive?action=verify&name=" + encodeURIComponent(driveFolderName(c)) + "&file=" + encodeURIComponent(driveFile.trim())).then((x) => x.json());
+                    setCheckMsg(r.found ? "✓ found in " + (r.matches[0] || {}).where : "✗ not in the folder — did it save?");
+                  } catch (e) { setCheckMsg("could not check"); }
+                }}>Check</Btn>
+              </div>
+              {checkMsg && <p className="text-[11px] text-slate-500 mt-1">{checkMsg}</p>}
+            </div>
+          </div>
+        )}
+        <div className="flex items-center gap-2 mt-3">
+          <Btn disabled={busy || (!line.trim() && !notes.trim())} onClick={() => log(false)}>Log it</Btn>
+          <Btn kind="primary" disabled={busy || (!line.trim() && !notes.trim())} onClick={() => log(true)}>
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Log it and write it up with AI
+          </Btn>
+          <span className="text-xs text-slate-400 ml-auto">{touches ? touches.length + " on record" : "loading…"}</span>
+        </div>
+        {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
+      </div>
+
+      {/* ── commitments ── */}
+      {commits.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <SectionTitle right={<span className="text-xs text-slate-400">{openCommits.length} open{overdue.length ? " · " + overdue.length + " overdue" : ""}</span>}>Commitments</SectionTitle>
+          {["us", "them"].map((side) => {
+            const list = commits.filter((x) => x.side === side && x.status === "open");
+            if (!list.length) return null;
+            return (
+              <div key={side} className="mb-3">
+                <Lbl>{side === "us" ? "We promised" : "They promised"}</Lbl>
+                <div className="space-y-1.5 mt-1.5">
+                  {list.map((cm) => {
+                    const late = cm.due && cm.due < todayStr();
+                    const owner = users.find((u) => u.id === cm.ownerId);
+                    return (
+                      <div key={cm.id} className={cls("flex items-center gap-2 text-sm border rounded-md px-3 py-2", late ? "border-red-200 bg-red-50/40" : "border-slate-200")}>
+                        <span className={cls("w-1.5 h-1.5 rounded-full flex-none", late ? "bg-red-500" : "bg-slate-300")} />
+                        <span className="mr-auto text-slate-800">{cm.what}
+                          {cm.certainty === "implied" && <span className="text-[10px] text-slate-400 uppercase ml-1.5">implied</span>}</span>
+                        {cm.toWhom && <span className="text-xs text-slate-400">to {cm.toWhom}</span>}
+                        {owner && <Avatar name={owner.name} size="sm" />}
+                        {cm.due && <span className={cls("text-xs font-mono", late ? "text-red-600 font-semibold" : "text-slate-400")}>{fmtDate(cm.due)}</span>}
+                        {side === "us" && !cm.taskId && <Btn size="sm" onClick={() => commitToTask(cm)}><Plus size={11} /> Task</Btn>}
+                        <Btn size="sm" onClick={() => closeCommit(cm, "kept")}><Check size={11} /></Btn>
+                        <button onClick={() => closeCommit(cm, "missed")} className="text-slate-300 hover:text-red-500 text-xs">missed</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {commits.some((x) => x.status !== "open") && (
+            <p className="text-[11px] text-slate-400 mt-2">
+              Closed: {commits.filter((x) => x.status === "kept").length} kept · {commits.filter((x) => x.status === "missed").length} missed
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ── the timeline ── */}
+      {(touches || []).map((t) => {
+        const w = t.ai || {};
+        const by = users.find((u) => u.id === t.author);
+        return (
+          <div key={t.id} className="bg-white border border-slate-200 rounded-xl p-4 border-l-4 border-l-blue-500">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-slate-400"><KindIcon k={t.kind} /></span>
+              <span className="text-[11px] text-slate-400">{t.direction === "in" ? "↙ inbound" : "↗ outbound"}</span>
+              <span className="font-mono text-xs text-slate-400">{fmtDate(t.at)} · {fmtTime(t.at)}</span>
+              {by && <span className="text-xs text-slate-400">{by.name}</span>}
+              {t.contactName && <span className="text-xs text-slate-500">→ {t.contactName}</span>}
+              {w.temperature && <Chip color={w.temperature === "hot" ? "green" : w.temperature === "cold" ? "red" : "amber"}>{w.temperature}</Chip>}
+              {t.link && <a href={t.link} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline ml-auto">source ↗</a>}
+            </div>
+            <p className="text-sm font-medium text-slate-800 mt-1.5">{t.subject || w.title}</p>
+            {w.summary && <p className="text-xs text-slate-600 mt-1">{w.summary}</p>}
+            {(w.ourCommitments || w.challenges || w.clientSaid) && (
+              <button onClick={() => setOpen(open === t.id ? null : t.id)} className="text-xs text-blue-600 hover:underline mt-2">
+                {open === t.id ? "▾" : "▸"} Full write-up
+              </button>
+            )}
+            {open === t.id && (
+              <div className="mt-2 space-y-2.5 border-t border-slate-100 pt-2.5">
+                {(w.clientSaid || []).length > 0 && (<div><Lbl>What the client said</Lbl>{w.clientSaid.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x}</p>)}</div>)}
+                {(w.challenges || []).length > 0 && (<div><Lbl>Objections — and how they went</Lbl>{w.challenges.map((x, i) => (
+                  <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color={x.status === "solved" ? "green" : x.status === "watch" ? "amber" : "red"}>{x.status}</Chip> {x.challenge}{x.action && <span className="text-slate-500"> → {x.action}</span>}</p>))}</div>)}
+                {(w.ideas || []).length > 0 && (<div><Lbl>Ideas credited</Lbl>{w.ideas.map((x, i) => (
+                  <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color="purple">{x.by || "?"}</Chip> {x.idea} {x.value && <span className="font-mono text-xs text-purple-600">·{x.value}/5</span>}</p>))}</div>)}
+                {(w.decisions || []).length > 0 && (<div><Lbl>Decided</Lbl>{w.decisions.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x.what}</p>)}</div>)}
+                {w.nextStep && w.nextStep.what && (<div><Lbl>Next step</Lbl><p className="text-sm text-slate-700">{w.nextStep.what}{w.nextStep.when ? " — by " + fmtDate(w.nextStep.when) : ""}</p></div>)}
+                {w.risk && <p className="text-xs text-red-600">Risk: {w.risk}</p>}
+                <details><summary className="text-xs text-slate-400 cursor-pointer">The note as it was written</summary><p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{t.body}</p></details>
+                <Btn size="sm" disabled={busy} onClick={() => makeDraft(t)}><Sparkles size={12} /> Draft the follow-up</Btn>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {touches && touches.length === 0 && (
+        <Empty icon={Phone} title={"Nothing logged with " + c.name + " yet"}
+          sub="Every call, mail and meeting belongs here — it is what the account remembers when someone else picks it up." />
+      )}
+
+      {draft && (
+        <Modal title="Follow-up draft" onClose={() => setDraft(null)} wide
+          footer={<Btn kind="primary" onClick={() => setDraft(null)}>Close</Btn>}>
+          {draft.skip ? <p className="text-sm text-amber-700">{draft.skip}</p> : (
+            <div className="space-y-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1.5"><Lbl className="mr-auto">Email</Lbl>
+                  <Btn size="sm" onClick={() => navigator.clipboard?.writeText("Subject: " + draft.subject + "\n\n" + draft.email)}><Copy size={12} /> Copy</Btn>
+                </div>
+                <p className="text-sm font-medium text-slate-800 mb-1">{draft.subject}</p>
+                <p className="text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-lg p-3">{draft.email}</p>
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-1.5"><Lbl className="mr-auto">WhatsApp</Lbl>
+                  <Btn size="sm" onClick={() => navigator.clipboard?.writeText(draft.whatsapp)}><Copy size={12} /> Copy</Btn>
+                </div>
+                <p className="text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-lg p-3">{draft.whatsapp}</p>
+              </div>
+            </div>
+          )}
+        </Modal>
       )}
     </div>
   );
