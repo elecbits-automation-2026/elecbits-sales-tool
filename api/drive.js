@@ -183,6 +183,43 @@ export default async function handler(req, res) {
     const name = (req.query.name || "").toString().trim();
     if (!name) return res.status(400).json({ error: "name required" });
 
+    // verify: does the artifact a person claims to have saved actually exist?
+    // Looks in the company folder and one level of sub-folders, matching
+    // loosely on name so "MoM 14 Aug" finds "2026-08-14_MoM_Sunrise.docx".
+    if (action === "verify") {
+      const claim = (req.query.file || "").toString().trim();
+      if (!claim) return res.status(400).json({ error: "file required" });
+      const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const words = norm(claim).split(" ").filter((w) => w.length > 2);
+      const hit = (n) => { const t = norm(n); return t === norm(claim) || words.length > 0 && words.every((w) => t.includes(w)); };
+
+      const f = await findFolder(token, root, name);
+      const pool = [];
+      if (f) {
+        const kids = await childrenOf(token, f.id);
+        pool.push(...kids.filter((k) => !k.folder).map((k) => ({ ...k, where: f.name })));
+        for (const sub of kids.filter((k) => k.folder).slice(0, 8)) {
+          const c = await childrenOf(token, sub.id, 60);
+          pool.push(...c.filter((k) => !k.folder).map((k) => ({ ...k, where: f.name + "/" + sub.name })));
+        }
+      }
+      let matches = pool.filter((x) => hit(x.name));
+      // Not in the company folder — is it anywhere the tool can see?
+      if (!matches.length) {
+        const g = await gapi(token, "files", {
+          q: `name contains '${esc(claim.slice(0, 40))}' and trashed = false`,
+          fields: "files(id,name,modifiedTime,webViewLink,parents)", pageSize: "10",
+          supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+        });
+        matches = (g.files || []).map((x) => ({ name: x.name, link: x.webViewLink, modified: x.modifiedTime, where: "elsewhere in Drive" }));
+      }
+      return res.status(200).json({
+        folderFound: !!f, folder: f ? f.name : name, scanned: pool.length,
+        found: matches.length > 0,
+        matches: matches.slice(0, 5).map((m) => ({ name: m.name, where: m.where, modified: m.modified, link: m.link })),
+      });
+    }
+
     // deep: the folder, plus what is inside each of its sub-folders. This is
     // what "check inside all these folders" needs — one call, not ten.
     if (action === "deep") {
