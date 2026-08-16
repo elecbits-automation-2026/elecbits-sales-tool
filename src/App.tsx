@@ -12,8 +12,9 @@ import {
   loadWorkspace, syncUsers, syncCompanies, syncDeals, syncKpis, syncTrainings,
   syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
   syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
-  loadChat, loadChatDates, saveChat, loadSessions, saveSession, loadAllIdeas,
+  loadChat, loadChatDates, saveChat, saveSession, loadAllIdeas,
   loadTouches, saveTouch, loadCommitments, saveCommitments,
+  deleteTask, deleteScrum,
   signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
 } from "./lib/data";
 import logoLight from "./assets/elecbits-logo.png";
@@ -2279,7 +2280,7 @@ function IdeasTab({ viewUser, data }) {
             <div className="text-center py-8">
               <Lightbulb size={28} className="mx-auto text-slate-300 mb-2" />
               <p className="text-sm font-semibold text-slate-700">No ideas credited yet</p>
-              <p className="text-xs text-slate-400 max-w-md mx-auto mt-1">Ideas are credited when a discussion is written up in a brainstorming session on a company — and only when the suggestion actually changed the approach, saved time or money, caught a risk, or lifted quality.</p>
+              <p className="text-xs text-slate-400 max-w-md mx-auto mt-1">Ideas are credited when a client conversation is written up with AI in a company's Client Comms tab — and only when the suggestion actually changed the approach, saved time or money, caught a risk, or lifted quality.</p>
             </div>
           ) : <div className="space-y-1">{mineList.map((x) => <IdeaRow key={x.id} x={x} />)}</div>}
       </div>
@@ -2899,7 +2900,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
     saveScrums([{ id: uid(), userId: me.id, date, raw: text, tasks: [], summary: "", createdAt: nowTS() }, ...scrums]);
     setRaw("");
   };
-  const remove = (id) => saveScrums(scrums.filter((s) => s.id !== id));
+  const remove = (id) => { deleteScrum(id); saveScrums(scrums.filter((s) => s.id !== id)); };
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -3708,6 +3709,29 @@ function CommsTab({ me, company: c, data, saveTasks }) {
             })),
           ];
           if (fresh.length) { await saveCommitments(fresh); }
+          // Credited ideas feed the Performance → Ideas & contribution tab,
+          // which reads the meetings quartet — file this conversation there.
+          if ((w.ideas || []).length) {
+            const first = (n) => String(n || "").trim().toLowerCase().split(" ")[0];
+            const session = {
+              id: uid(), companyId: c.id, dealId: "", date: todayStr(),
+              title: w.title || touch.subject || "Client conversation",
+              attendees: contact.trim() ? [contact.trim()] : [],
+              raw: touch.body, createdBy: me.id,
+              ideas: w.ideas.map((x) => ({
+                by: x.by || "", idea: x.idea || "", impact: x.impact || "",
+                value: Math.min(5, Math.max(1, Number(x.value) || 3)), why: x.why || "",
+                authorId: (users.find((u) => x.by && first(u.name) === first(x.by)) || {}).id || null,
+              })).filter((x) => x.idea),
+              decisions: (w.decisions || []).map((x) => ({ what: x.what || "", ownerName: x.owner || "" })).filter((x) => x.what),
+              challenges: (w.challenges || []).map((x) => ({
+                challenge: x.challenge || "", action: x.action || "",
+                status: ["solved", "open", "watch"].includes(x.status) ? x.status : "open",
+              })).filter((x) => x.challenge),
+            };
+            await saveSession(session);
+            touch.meetingId = session.id;
+          }
           const md = ["# " + (w.title || touch.subject), c.name + " · " + fmtDate(touch.at) + " · " + kind + ", " + (dir === "in" ? "they came to us" : "we reached out"),
             contact.trim() ? "With: " + contact.trim() : "", link.trim() ? "Source: " + link.trim() : "", "",
             w.summary || "", "", "## What the client said", ...(w.clientSaid || []).map((x) => "- " + x),
@@ -3734,11 +3758,16 @@ function CommsTab({ me, company: c, data, saveTasks }) {
     await saveCommitments(next.filter((x) => x.id === cm.id));
   };
 
-  const commitToTask = (cm) => {
-    saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: cm.ownerId || me.id, author: me.id,
+  const commitToTask = async (cm) => {
+    const tid = uid();
+    saveTasks([{ id: tid, companyId: c.id, dealId: "", assignee: cm.ownerId || me.id, author: me.id,
       title: cm.what, details: "Promised to " + (cm.toWhom || c.name), due: cm.due || todayStr(),
       status: "open", source: "commitment", createdAt: nowTS(), windowStart: "", windowEnd: "",
       work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+    // Stamp the link back, or the button stays and every click duplicates.
+    const linked = { ...cm, taskId: tid };
+    setCommits(commits.map((x) => (x.id === cm.id ? linked : x)));
+    await saveCommitments([linked]);
   };
 
   const makeDraft = async (t) => {
@@ -3916,114 +3945,6 @@ function CommsTab({ me, company: c, data, saveTasks }) {
           )}
         </Modal>
       )}
-    </div>
-  );
-}
-
-/* ============================================================
-   BRAINSTORMING — per-company sessions: ideas credited, challenges
-   + how they were beaten (the PMS Brainstorming module)
-   ============================================================ */
-
-function BrainstormTab({ me, company: c, data, saveTasks }) {
-  const { users, tasks } = data;
-  const [sessions, setSessions] = useState(null); // null = loading
-  const [who, setWho] = useState("");
-  const [raw, setRaw] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [proposed, setProposed] = useState([]); // tasks from last write-up
-  useEffect(() => { let a = true; loadSessions(c.id).then((s) => a && setSessions(s)); return () => { a = false; }; }, [c.id]);
-
-  const writeUp = async () => {
-    if (!raw.trim() || busy) return;
-    setBusy(true); setErr("");
-    try {
-      const sys = [
-        "You write up a CONVERSATION WITH A CLIENT for the permanent record on the Elecbits Sales OS. This is the account's memory: what the client said and asked for, what was promised, what was decided, the objections/challenges and how they were (or will be) beaten, and whose idea moved things (credit by name).",
-        "CLIENT: " + c.name + ". PEOPLE WHO MIGHT BE NAMED (our side): " + users.map((u) => u.name).join(", ") + ". Client-side names go into ideas/decisions as written.",
-        "Credit an idea ONLY when the suggestion actually changed the approach, saved time or money, caught a risk, or lifted quality — value 1-5 with a one-line why.",
-        "Every commitment made to the client MUST appear in tasks with its deadline.",
-        "Reply ONLY: MOM_JSON {\"title\":\"short conversation title, e.g. 'Pricing call — pilot split agreed'\",\"ideas\":[{\"by\":\"name\",\"idea\":\"...\",\"impact\":\"...\",\"value\":1-5,\"why\":\"...\"}],\"decisions\":[{\"what\":\"...\",\"owner\":\"name or empty\"}],\"challenges\":[{\"challenge\":\"objection/blocker\",\"action\":\"how it was/will be beaten\",\"status\":\"solved|open|watch\"}],\"tasks\":[{\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
-      ].join("\n");
-      const reply = await askClaude(sys, [{ role: "user", content: (who ? "In the room: " + who + "\n" : "") + raw.trim() }]);
-      const m = extractMarkedJSON(reply, "MOM_JSON");
-      if (!m) throw new Error("no writeup");
-      const s = {
-        id: uid(), companyId: c.id, dealId: "", date: todayStr(),
-        title: m.title || "Brainstorming session", attendees: who ? who.split(",").map((x) => x.trim()) : [],
-        raw: raw.trim(), createdBy: me.id, createdAt: nowTS(),
-        ideas: (m.ideas || []).map((x) => ({ by: x.by || "", idea: x.idea || "", impact: x.impact || "", value: x.value || null, why: x.why || "" })),
-        decisions: (m.decisions || []).map((x) => ({ what: x.what || "", ownerName: x.owner || "" })),
-        challenges: (m.challenges || []).map((x) => ({ challenge: x.challenge || "", action: x.action || "", status: ["solved", "open", "watch"].includes(x.status) ? x.status : "open" })),
-      };
-      saveSession(s);
-      setSessions([s, ...(sessions || [])]);
-      setProposed(Array.isArray(m.tasks) ? m.tasks : []);
-      setRaw(""); setWho("");
-    } catch (e) { setErr("Write-up failed — nothing was saved. Try again."); }
-    setBusy(false);
-  };
-
-  return (
-    <div className="mt-4 space-y-4">
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <SectionTitle right={<Chip color="blue"><Phone size={11} /> said · promised · decided · next</Chip>}>Client conversation — log it as it happened</SectionTitle>
-        <p className="text-xs text-slate-500 mb-3">Right after a call or meeting with {c.name}, type what was discussed. It's stored with the date and time; the AI writes it up — what the client said, every commitment made (those become tasks), objections and how they were beaten, whose idea helped. This is the account's memory: nothing said to a client gets lost.</p>
-        <Input placeholder="Who was on the call? Client side + our side (optional)" value={who} onChange={(e) => setWho(e.target.value)} className="mb-2" />
-        <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-28" placeholder="e.g. Spoke to Rahul at 3pm — they want 200 units by Nov, pushed back on tooling cost. Akash suggested splitting pilot from production pricing; agreed. We promised the revised quote by Friday and a sample by month-end…" />
-        <div className="flex items-center gap-2 mt-3">
-          <Btn kind="primary" disabled={busy || !raw.trim()} onClick={writeUp}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Save and write it up</Btn>
-          <span className="text-xs text-slate-400">{sessions ? sessions.length + " conversation" + (sessions.length === 1 ? "" : "s") + " on record for this client" : "loading…"}</span>
-        </div>
-        {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
-        {proposed.length > 0 && (
-          <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-3 mt-3">
-            <p className="text-xs font-semibold text-blue-700 mb-1.5">Commitments &amp; actions from this conversation — file them as tasks</p>
-            {proposed.map((t, i) => (
-              <div key={i} className="flex items-center gap-2 text-sm py-0.5">
-                <span className="mr-auto text-slate-700">{t.title}</span>
-                <Btn size="sm" kind="primary" onClick={() => { saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title: t.title, details: "From brainstorming", due: t.due || todayStr(), status: "open", source: "system", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]); setProposed(proposed.filter((_, j) => j !== i)); }}><Plus size={12} /> Task</Btn>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {(sessions || []).map((s) => (
-        <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-5 border-l-4 border-l-purple-500">
-          <div className="flex items-center gap-2 flex-wrap">
-            <p className="font-semibold text-sm text-slate-900 mr-auto">{s.title}</p>
-            <span className="font-mono text-xs text-slate-400">{fmtDate(s.date)} · {new Date(s.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
-            {(users.find((u) => u.id === s.createdBy) || {}).name && <span className="text-xs text-slate-400">by {(users.find((u) => u.id === s.createdBy) || {}).name}</span>}
-          </div>
-          {s.attendees.length > 0 && <p className="text-xs text-slate-400 mt-0.5">In the room: {s.attendees.join(", ")}</p>}
-          {s.ideas.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Ideas credited</p>
-              {s.ideas.map((x, i) => (
-                <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color="purple">{x.by || "?"}</Chip> {x.idea} {x.value && <span className="font-mono text-xs text-purple-600">·{x.value}/5</span>} {x.why && <span className="text-xs text-slate-400">— {x.why}</span>}</p>
-              ))}
-            </div>
-          )}
-          {s.challenges.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Challenges — and how they were beaten</p>
-              {s.challenges.map((x, i) => (
-                <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color={x.status === "solved" ? "green" : x.status === "watch" ? "amber" : "red"}>{x.status}</Chip> {x.challenge}{x.action && <span className="text-slate-500"> → {x.action}</span>}</p>
-              ))}
-            </div>
-          )}
-          {s.decisions.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Decided</p>
-              {s.decisions.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x.what}{x.ownerName && <span className="text-xs text-slate-400"> — {x.ownerName}</span>}</p>)}
-            </div>
-          )}
-          <details className="mt-2"><summary className="text-xs text-slate-400 cursor-pointer">Original note</summary><p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{s.raw}</p></details>
-        </div>
-      ))}
-      {sessions && sessions.length === 0 && <p className="text-sm text-slate-400 text-center py-4">Nothing written up yet for {c.name}.</p>}
     </div>
   );
 }
@@ -4264,11 +4185,17 @@ const fmtDur = (s) => { const p = (n) => String(n).padStart(2, "0"); return p(Ma
    TASK CLOSE FLOW — work window → honesty gate → AI verdict /
    branch sub-tasks. The PMS closure pattern, on sales tasks.
    ============================================================ */
+/* A brief is only usable when it has the full modern shape — prep AND close
+   arrays plus the evidence block. Briefs written by earlier versions of this
+   flow miss pieces; rendering them raw crashes the modal, so they are
+   re-fetched instead. */
+const briefOk = (b) => !!(b && b.evidence && Array.isArray(b.prep) && Array.isArray(b.close) && b.close.length);
+
 /* Fetch (or recall) the brief for a task. Never throws, never blocks the UI:
    a dead network yields the local brief instead. */
 async function getBrief(t, comp, who) {
   const cached = (t.ai || {}).brief;
-  if (cached && Array.isArray(cached.close) && cached.close.length) return cached;
+  if (briefOk(cached)) return cached;
   try {
     const reply = await withTimeout(
       askClaude(briefSystem(t, comp, who), [{ role: "user", content: "Brief me on this task." }]), 12000);
@@ -4282,11 +4209,12 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
   const comp = companies.find((c) => c.id === t.companyId);
   const who = users.find((u) => u.id === t.assignee);
   const deptHead = users.find((u) => u.role === "dept_head" && u.active !== false);
-  const [brief, setBrief] = useState(A.brief || null);
+  const [brief, setBrief] = useState(briefOk(A.brief) ? A.brief : null);
   const [step, setStep] = useState("close"); // close | verdict | branch
   const [answers, setAnswers] = useState(() => {
     const seed = {};
-    (A.brief && A.brief.close || []).forEach((q, i) => {
+    if (!briefOk(A.brief)) return seed;
+    A.brief.close.forEach((q, i) => {
       const prior = (A.qa || []).find((x) => x.q === q);
       if (prior && prior.a) seed[i] = prior.a;
       else if ((W.prepAnswers || {})[i] && String(W.prepAnswers[i]).length > 12 && A.brief.prep.length === A.brief.close.length) seed[i] = W.prepAnswers[i];
@@ -4602,7 +4530,7 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
   const { users, companies, tasks } = data;
   const comp = companies.find((c) => c.id === t.companyId);
   const who = users.find((u) => u.id === t.assignee);
-  const [brief, setBrief] = useState((t.ai || {}).brief || null);
+  const [brief, setBrief] = useState(briefOk((t.ai || {}).brief) ? (t.ai || {}).brief : null);
   const [ans, setAns] = useState((t.work || {}).prepAnswers || {});
 
   useEffect(() => {
@@ -4680,7 +4608,8 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
   ];
 
   const toggle = (t) => saveTasks(tasks.map((x) => x.id === t.id ? { ...x, status: "open", doneAt: null } : x));
-  const remove = (t) => saveTasks(tasks.filter((x) => x.id !== t.id));
+  // Deleting is explicit — the sync layer never prunes, so the DB row must go here.
+  const remove = (t) => { deleteTask(t.id); saveTasks(tasks.filter((x) => x.id !== t.id)); };
   const add = () => {
     if (!f.title.trim()) return;
     saveTasks([{ id: uid(), companyId: f.companyId || "", dealId: "", assignee: f.assignee, author: me.id, title: f.title.trim(), details: "", due: f.due || "", status: "open", source: "manual", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);

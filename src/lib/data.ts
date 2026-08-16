@@ -48,6 +48,11 @@ const TARGET_PERIOD = "default";
 // to scope the shared core.trainings table to this tool's people.
 let rosterIds: string[] = [];
 
+// Tables whose load silently degraded to [] (missing migration, transient
+// error). A sync against a degraded table must never prune: the app's array
+// is empty because the LOAD failed, not because the rows are gone.
+const degraded = new Set<string>();
+
 /* ---------- load ---------- */
 
 // Everything the app needs, in its existing shapes. One round of parallel
@@ -74,9 +79,10 @@ export async function loadWorkspace() {
     rows(supabase.from("scrum_notes").select("*"), "scrum_notes"),
     rows(supabase.from("memory").select("*"), "memory"),
     rows(supabase.from("gate_config").select("*"), "gate_config"),
-    // Phase 1 tables may not exist until 12-phase1.sql runs — degrade to empty.
-    supabase.from("tasks").select("*").then((r: any) => r.data || []),
-    supabase.from("llds").select("*").then((r: any) => r.data || []),
+    // Phase 1 tables may not exist until 12-phase1.sql runs — degrade to empty,
+    // but REMEMBER the failure so no sync ever prunes against a phantom [].
+    supabase.from("tasks").select("*").then((r: any) => { if (r.error) degraded.add("tasks"); return r.data || []; }),
+    supabase.from("llds").select("*").then((r: any) => { if (r.error) degraded.add("llds"); return r.data || []; }),
     supabase.from("question_sets").select("*").then((r: any) => r.data || []),
     supabase.from("requests").select("*").then((r: any) => r.data || []),
   ]);
@@ -262,7 +268,18 @@ export async function syncTasks(tasks: any[]): Promise<boolean> {
     work: t.work || {}, ai: t.ai || {}, escalated: !!t.escalated,
     branched_from: t.branchedFrom || null,
   }));
-  return upsertAndPrune("tasks", rowsIn, tasks.map((t) => t.id), "syncTasks");
+  // Upsert only. Tasks are created by everyone from everywhere (scrums,
+  // assistant, comms, branches) — pruning against one browser's possibly
+  // stale array would silently delete a teammate's fresh tasks. Deletion is
+  // an explicit act: deleteTask().
+  if (!rowsIn.length) return true;
+  const { error } = await supabase.from("tasks").upsert(rowsIn, { onConflict: "id" });
+  return ok(error, "syncTasks");
+}
+
+export async function deleteTask(id: string): Promise<boolean> {
+  const { error } = await supabase.from("tasks").delete().eq("id", id);
+  return ok(error, "deleteTask");
 }
 
 export async function syncLlds(llds: any[]): Promise<boolean> {
@@ -419,18 +436,18 @@ export async function syncKpis(kpis: Record<string, Record<string, number>>): Pr
 }
 
 // Small collections that support delete-in-UI: upsert what's present, remove
-// what's gone.
+// what's gone. Two hard safety rules: never prune a table whose load degraded
+// (the [] is a phantom), and never turn an empty array into a full-table
+// wipe — a stray leftover row is recoverable, a deleted table is not.
 async function upsertAndPrune(table: string, rowsIn: any[], keepIds: string[], label: string, client: any = supabase): Promise<boolean> {
   let allOk = true;
   if (rowsIn.length) {
     const { error } = await client.from(table).upsert(rowsIn, { onConflict: "id" });
     allOk = ok(error, label + ".upsert");
   }
+  if (!keepIds.length || degraded.has(table)) return allOk;
   const list = "(" + keepIds.map((i) => '"' + i + '"').join(",") + ")";
-  const del = keepIds.length
-    ? client.from(table).delete().not("id", "in", list)
-    : client.from(table).delete().gte("created_at", "1970-01-01");
-  const { error: e2 } = await del;
+  const { error: e2 } = await client.from(table).delete().not("id", "in", list);
   return ok(e2, label + ".prune") && allOk;
 }
 
@@ -507,7 +524,16 @@ export async function syncScrums(scrums: any[]): Promise<boolean> {
     if (!s._transcriptSynced) row.transcript = s.transcript || null;
     return row;
   });
-  return upsertAndPrune("scrum_notes", rowsIn, scrums.map((s) => s.id), "syncScrums");
+  // Upsert only — same reasoning as syncTasks: notes are written by the whole
+  // team, so pruning against one stale array deletes someone else's note.
+  if (!rowsIn.length) return true;
+  const { error } = await supabase.from("scrum_notes").upsert(rowsIn, { onConflict: "id" });
+  return ok(error, "syncScrums");
+}
+
+export async function deleteScrum(id: string): Promise<boolean> {
+  const { error } = await supabase.from("scrum_notes").delete().eq("id", id);
+  return ok(error, "deleteScrum");
 }
 
 export async function syncMemory(memory: any[]): Promise<boolean> {
