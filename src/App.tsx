@@ -2707,14 +2707,21 @@ function UploadRecording({ date }) {
   );
 }
 
-function MeetingsPanel({ date, onUse, usedIds }) {
+function MeetingsPanel({ date, users, present, onUse, onScheduled, usedIds }) {
   const [ff, setFf] = useState({ on: false });
   const [items, setItems] = useState(null);   // null = not looked yet
   const [busy, setBusy] = useState(false);
   const [pulling, setPulling] = useState("");
   const [err, setErr] = useState("");
+  // Whether the other two halves of this panel have a backend. Tracked here so
+  // the whole box can disappear when none of the three is configured, rather
+  // than rendering an empty bordered rectangle.
+  const [canSchedule, setCanSchedule] = useState(false);
+  const [canUpload, setCanUpload] = useState(false);
 
   useEffect(() => { fireflies.status().then(setFf).catch(() => {}); }, []);
+  useEffect(() => { meet.status().then((m) => setCanSchedule(!!m.connected)).catch(() => {}); }, []);
+  useEffect(() => { recordings.available().then(setCanUpload).catch(() => {}); }, []);
   // A new day is a new list — never show yesterday's meetings under today.
   useEffect(() => { setItems(null); setErr(""); }, [date]);
 
@@ -2740,18 +2747,26 @@ function MeetingsPanel({ date, onUse, usedIds }) {
     setPulling("");
   };
 
-  if (!ff.on) return null;   // not connected — the panel would only be noise
+  // Nothing configured — the panel would be an empty box telling nobody anything.
+  if (!ff.on && !canSchedule && !canUpload) return null;
 
   return (
     <div className="border border-slate-200 rounded-lg p-3 mb-3 bg-slate-50">
       <div className="flex items-center gap-2 flex-wrap">
         <Mic size={13} className="text-blue-600" />
-        <span className="text-xs font-semibold text-slate-700 mr-auto">Recorded calls — {fmtDate(date)}</span>
-        <Btn size="sm" disabled={busy} onClick={look}>
-          {busy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {items === null ? "See the day's calls" : "Refresh"}
-        </Btn>
+        <span className="text-xs font-semibold text-slate-700 mr-auto">The call — {fmtDate(date)}</span>
+        {ff.on && (
+          <Btn size="sm" disabled={busy} onClick={look}>
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {items === null ? "See the day's calls" : "Refresh"}
+          </Btn>
+        )}
       </div>
-      {items !== null && items.length > 0 && (
+
+      {/* Start it, and record it. Both self-hide when unconfigured. */}
+      <ScheduleMeet date={date} users={users} present={present} onScheduled={onScheduled} />
+      <UploadRecording date={date} />
+
+      {ff.on && items !== null && items.length > 0 && (
         <div className="flex flex-col gap-1.5 mt-2">
           {items.map((m) => {
             const used = usedIds.includes(m.id);
@@ -2770,7 +2785,7 @@ function MeetingsPanel({ date, onUse, usedIds }) {
         </div>
       )}
       {err && <p className="text-[11px] text-amber-600 mt-1.5">{err}</p>}
-      <p className="text-[11px] text-slate-400 mt-1.5">Picking a call adds it to the box below — it never replaces what is already there.</p>
+      {ff.on && <p className="text-[11px] text-slate-400 mt-1.5">Picking a call adds it to the box below — it never replaces what is already there.</p>}
     </div>
   );
 }
@@ -2991,15 +3006,6 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           {/^https?:\/\//.test(link) && <Btn onClick={() => window.open(link, "_blank")}><ExternalLink size={13} /> Join</Btn>}
         </div>
         <p className="text-[11px] text-slate-400 mt-1">Remembered from the last note — same link every morning.</p>
-        <ScheduleMeet date={date} users={users} present={present}
-          onScheduled={(m) => {
-            if (m.meetLink) setLink(m.meetLink);
-            // A calendar event with no Meet link is a trap — say so rather
-            // than leaving the box quietly empty.
-            setErr(m.warning || (m.recording && !m.notetakerInvited
-              ? "Meeting created, but the notetaker was dropped from the guest list — this Workspace may block external guests, so the call will not be transcribed."
-              : ""));
-          }} />
         <div className="mt-3">
           <p className="text-[12.5px] text-slate-700 mb-1.5">Who was on it</p>
           <div className="flex flex-wrap gap-1.5">
@@ -3042,7 +3048,13 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
             ))}
           </div>
         </div>
-        <MeetingsPanel date={date} onUse={useMeeting} usedIds={fromMeetings} />
+        <MeetingsPanel date={date} users={users} present={present} onUse={useMeeting} usedIds={fromMeetings}
+          onScheduled={(m) => {
+            if (m.meetLink) setLink(m.meetLink);
+            setErr(m.warning || (m.recording && !m.notetakerInvited
+              ? "Meeting created, but the notetaker was dropped from the guest list — this Workspace may block external guests, so the call will not be transcribed."
+              : ""));
+          }} />
         {mode === "transcript" ? (
           <div className="space-y-2">
             <input ref={trFileRef} type="file" hidden accept=".txt,.vtt,.srt,.md,.json,.csv"
@@ -3051,7 +3063,6 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
               <Btn size="sm" onClick={() => trFileRef.current?.click()}><Paperclip size={12} /> Upload a file</Btn>
               {tr && <button onClick={() => setTr("")} className="text-xs text-slate-400 hover:text-red-500 ml-auto">clear</button>}
             </div>
-            <UploadRecording date={date} />
             <TA value={tr} onChange={(e) => setTr(e.target.value)} className="min-h-40 font-mono text-xs"
               placeholder="Paste the transcript — Fireflies, Meet captions, a .vtt/.srt file's contents, or what someone typed up. Speaker names help but are not required." />
             <div>
@@ -3082,6 +3093,12 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           </Btn>
           <span className="text-xs text-slate-400 ml-auto">Mention project ID, people, time windows and any if/else.</span>
         </div>
+        {busy && (
+          <div className="flex items-center gap-2 mt-3 text-xs text-slate-500">
+            <Loader2 size={13} className="animate-spin" />
+            Splitting the note into tasks, matching people and companies, resolving days and extracting contingencies…
+          </div>
+        )}
         {err && <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
 
         {pending && (
@@ -3175,10 +3192,15 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
             const by = users.find((u) => u.id === s.userId);
             return (
               <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-4 border-l-4 border-l-blue-500">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="font-semibold text-sm text-slate-900">{by ? by.name : "?"}</span>
-                  <span className="font-mono text-xs text-slate-400">{new Date(s.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
-                  {s.tasks && s.tasks.length > 0 ? <Chip color="blue">{s.tasks.length} task{s.tasks.length === 1 ? "" : "s"}</Chip> : <Chip color="slate">raw note</Chip>}
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
+                  {/* "Note 1, Note 2…" within the day — the reference people
+                      actually use when a morning produced six of them. */}
+                  {s.noteNo ? <span className="font-semibold text-sm text-slate-900">Note {s.noteNo}</span> : null}
+                  <span className="font-mono text-xs text-slate-400">{s.time || new Date(s.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  <Chip color="slate">{by ? by.name : "?"}</Chip>
+                  {(() => { const n = (s.tasks || []).filter((t) => t.include !== false).length;
+                    return n > 0 ? <Chip color="blue">{n} task{n === 1 ? "" : "s"}</Chip> : <Chip color="slate">raw note</Chip>; })()}
+                  {s.engine === "offline" && <Chip color="amber"><AlertTriangle size={10} /> offline parse</Chip>}
                   {s.source === "transcript" && <Chip color="purple">from the call</Chip>}
                   {s.attendance && (s.attendance.present || []).length > 0 && (
                     <span className="text-[11px] text-slate-400">{s.attendance.present.length} on the call</span>
@@ -3191,19 +3213,37 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
                 {s.tasks && s.tasks.length > 0 ? (
                   <div className="space-y-2">
                     {s.summary && <p className="text-xs text-slate-500 italic">{s.summary}</p>}
-                    {s.tasks.map((t, i) => (
-                      <div key={i} className="flex items-start gap-2 text-sm">
-                        <Check size={14} className="text-green-600 mt-0.5 flex-none" />
-                        <div className="min-w-0">
-                          <span className="text-slate-800">{t.task}</span>
-                          <span className="ml-2 inline-flex flex-wrap gap-1.5 align-middle">
-                            {t.owner && <Chip color="blue">{t.owner}</Chip>}
-                            {t.window && <Chip color="slate"><Clock size={10} /> {t.window}</Chip>}
-                            {t.condition && <Chip color="amber">{t.condition}</Chip>}
+                    {s.tasks.filter((t) => t.include !== false).map((t, i) => {
+                      const owner = users.find((u) => u.id === t.assigneeId);
+                      const comp = data.companies.find((c) => c.id === t.companyId);
+                      // The day the work is FOR. Shown only when it differs
+                      // from the note's own day — otherwise it is noise, and
+                      // when it differs it is the single most important thing
+                      // on the row.
+                      const otherDay = t.date && t.date !== s.date;
+                      const win = t.start || t.end
+                        ? (t.start || "") + "–" + (t.end || "")
+                        : (t.window || "");
+                      return (
+                        <div key={i} className="flex items-start gap-2 text-sm flex-wrap">
+                          <span className="font-mono text-[10.5px] text-slate-400 mt-1 flex-none">{String(i + 1).padStart(2, "0")}</span>
+                          <span className="text-slate-800 flex-1 min-w-[160px]">{t.task}</span>
+                          <span className="inline-flex flex-wrap gap-1.5 items-center">
+                            {(owner || t.owner) && <Chip color="blue">{owner ? owner.name : t.owner}</Chip>}
+                            {comp && <Chip color="slate">{comp.name}</Chip>}
+                            {otherDay && <Chip color="purple"><CalendarCheck2 size={10} /> {fmtDate(t.date)}</Chip>}
+                            {win && <Chip color="slate"><Clock size={10} /> {win}</Chip>}
+                            {(t.conditions || []).length > 0 &&
+                              <Chip color="amber"><GitBranch size={10} /> {t.conditions.length} if/else</Chip>}
+                            {(t.steps || []).length > 0 &&
+                              <Chip color="slate"><ListTodo size={10} /> {t.steps.length} step{t.steps.length === 1 ? "" : "s"}</Chip>}
                           </span>
+                          {(t.conditions || []).length > 0 && (
+                            <div className="w-full pl-6"><ConditionRail conditions={t.conditions} /></div>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     <div className="flex items-center gap-3 mt-1">
                       {s.tasked
                         ? <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> in My Tasks</span>
