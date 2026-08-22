@@ -1,7 +1,8 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- ROLLBACK — reverse the additive migrations 12 through 20.
+-- ROLLBACK — reverse the additive migrations 12 through 21.
 --
 -- WHAT THIS UNDOES
+--   21-recordings-bucket.sql  the sales-recordings bucket and its policies
 --   20-scrum-parity.sql   sales.tasks.steps and .conditions
 --   19-client-comms.sql   sales.commitments; the touch columns and the two
 --                         check constraints on sales.org_activities

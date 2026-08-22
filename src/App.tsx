@@ -24,6 +24,8 @@ import {
 import * as drive from "./lib/drive";
 import { driveFolderName } from "./lib/drive";
 import * as fireflies from "./lib/fireflies";
+import * as meet from "./lib/meet";
+import * as recordings from "./lib/recordings";
 import {
   STAGES, stageIdx, stageName, DEFAULT_GATES, KPI_METRICS,
   COMPANY_FIELDS, REQ_FIELDS, STALE_AMBER, STALE_RED,
@@ -2561,6 +2563,149 @@ function ConditionRail({ conditions }) {
    call plus a few things somebody typed afterwards, and silently eating what
    is already in the box would be the worst possible behaviour here — the
    previous version auto-picked one meeting and overwrote whatever was there. */
+/* ── Start the call from here ──────────────────────────────────────────────
+   The event is created on the CALLER'S own Google Calendar, so it lands in
+   their diary and the invitees see who called it. Ticking the notetaker is
+   what makes the transcript come back on its own — which is the whole loop:
+   schedule here, talk there, read it in the scrum tomorrow morning.
+
+   Hidden entirely when /api/meet is not configured: an inert button that
+   always errors is worse than no button. */
+function ScheduleMeet({ date, users, present, onScheduled }) {
+  // Typed: the inferred {connected:boolean} has no notetaker field, and the
+  // guest-list line below reads it.
+  const [cfg, setCfg] = useState<meet.MeetStatus>({ connected: false });
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [title, setTitle] = useState("Eb — Daily scrum");
+  const [start, setStart] = useState("09:30");
+  const [end, setEnd] = useState("10:00");
+  const [record, setRecord] = useState(true);
+
+  useEffect(() => { meet.status().then(setCfg).catch(() => {}); }, []);
+  if (!cfg.connected) return null;
+
+  const invitees = users.filter((u) => u.active !== false && present[u.id] && u.email).map((u) => u.email);
+
+  const go = async () => {
+    setBusy(true); setErr("");
+    const r = await meet.create({
+      date, startTime: start, endTime: end, title,
+      attendees: invitees, recordWithFireflies: record,
+    });
+    if (r.error) { setErr(r.error); setBusy(false); return; }
+    onScheduled(r);
+    setOpen(false); setBusy(false);
+  };
+
+  return (
+    <div className="mt-2">
+      {!open ? (
+        <Btn size="sm" onClick={() => setOpen(true)}><CalendarCheck2 size={12} /> Schedule the call</Btn>
+      ) : (
+        <div className="border border-slate-200 rounded-lg p-3 bg-slate-50 flex flex-col gap-2">
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Meeting title" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Input type="time" className="w-28 font-mono" value={start} onChange={(e) => setStart(e.target.value)} />
+            <ArrowRight size={13} className="text-slate-300" />
+            <Input type="time" className="w-28 font-mono" value={end} onChange={(e) => setEnd(e.target.value)} />
+            <label className="flex items-center gap-1.5 text-xs text-slate-600 ml-1">
+              <input type="checkbox" checked={record} onChange={(e) => setRecord(e.target.checked)} />
+              Invite the notetaker
+            </label>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            {invitees.length
+              ? invitees.length + " invitee" + (invitees.length === 1 ? "" : "s") + " — whoever is ticked as present above"
+              : "Nobody is ticked as present, so nobody will be invited."}
+            {record && cfg.notetaker ? " · plus " + cfg.notetaker : ""}
+          </p>
+          {err && <p className="text-[11px] text-red-600">{err}</p>}
+          <div className="flex items-center gap-2">
+            <Btn size="sm" kind="primary" disabled={busy} onClick={go}>
+              {busy ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Create the meeting
+            </Btn>
+            <Btn size="sm" kind="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Audio from a call the notetaker missed ────────────────────────────────
+   A phone call, a laptop recording, a site visit on a handset. The file goes
+   into a PRIVATE bucket; playing it back needs a signed link that expires, so
+   a leaked path is not a leaked recording.
+
+   Transcription is deliberately a separate, manual step — handing Fireflies a
+   signed URL to a client call should be somebody's decision, not a side
+   effect of dragging a file in. */
+function UploadRecording({ date }) {
+  const [on, setOn] = useState(null);          // null = not checked yet
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const fileRef = useRef(null);
+
+  const refresh = React.useCallback(async (d) => {
+    setItems(await recordings.list(d));
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    recordings.available().then((ok) => {
+      if (!alive) return;
+      setOn(ok);
+      if (ok) refresh(date);
+    });
+    return () => { alive = false; };
+  }, [date, refresh]);
+
+  if (on === false || on === null) return null;   // bucket not created yet
+
+  const pick = async (f) => {
+    if (!f) return;
+    setBusy(true); setErr("");
+    const r = await recordings.upload(f, date);
+    if (!r.ok) setErr(r.error || "Upload failed.");
+    else await refresh(date);
+    setBusy(false);
+  };
+
+  const play = async (path) => {
+    const url = await recordings.signedUrl(path);
+    if (url) window.open(url, "_blank");
+    else setErr("Could not sign a link for that file.");
+  };
+
+  return (
+    <div className="mt-2">
+      <input ref={fileRef} type="file" hidden accept="audio/*,video/mp4,video/webm"
+        onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
+      <div className="flex items-center gap-2 flex-wrap">
+        <Btn size="sm" disabled={busy} onClick={() => fileRef.current?.click()}>
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <Mic size={12} />} Upload call audio
+        </Btn>
+        <span className="text-[11px] text-slate-400">Private — playback is a signed link that expires.</span>
+      </div>
+      {err && <p className="text-[11px] text-red-600 mt-1">{err}</p>}
+      {items.length > 0 && (
+        <div className="flex flex-col gap-1 mt-2">
+          {items.map((f) => (
+            <div key={f.path} className="flex items-center gap-2 text-xs bg-white border border-slate-200 rounded-md px-2.5 py-1.5">
+              <span className="truncate flex-1 text-slate-700">{f.name}</span>
+              <span className="text-slate-400 font-mono text-[11px] flex-none">{recordings.humanSize(f.size)}</span>
+              <button onClick={() => play(f.path)} className="text-blue-600 hover:underline flex-none">play</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MeetingsPanel({ date, onUse, usedIds }) {
   const [ff, setFf] = useState({ on: false });
   const [items, setItems] = useState(null);   // null = not looked yet
@@ -2845,6 +2990,15 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           {/^https?:\/\//.test(link) && <Btn onClick={() => window.open(link, "_blank")}><ExternalLink size={13} /> Join</Btn>}
         </div>
         <p className="text-[11px] text-slate-400 mt-1">Remembered from the last note — same link every morning.</p>
+        <ScheduleMeet date={date} users={users} present={present}
+          onScheduled={(m) => {
+            if (m.meetLink) setLink(m.meetLink);
+            // A calendar event with no Meet link is a trap — say so rather
+            // than leaving the box quietly empty.
+            setErr(m.warning || (m.recording && !m.notetakerInvited
+              ? "Meeting created, but the notetaker was dropped from the guest list — this Workspace may block external guests, so the call will not be transcribed."
+              : ""));
+          }} />
         <div className="mt-3">
           <p className="text-[12.5px] text-slate-700 mb-1.5">Who was on it</p>
           <div className="flex flex-wrap gap-1.5">
@@ -2896,6 +3050,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
               <Btn size="sm" onClick={() => trFileRef.current?.click()}><Paperclip size={12} /> Upload a file</Btn>
               {tr && <button onClick={() => setTr("")} className="text-xs text-slate-400 hover:text-red-500 ml-auto">clear</button>}
             </div>
+            <UploadRecording date={date} />
             <TA value={tr} onChange={(e) => setTr(e.target.value)} className="min-h-40 font-mono text-xs"
               placeholder="Paste the transcript — Fireflies, Meet captions, a .vtt/.srt file's contents, or what someone typed up. Speaker names help but are not required." />
             <div>

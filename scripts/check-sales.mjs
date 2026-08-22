@@ -191,6 +191,38 @@ async function checkApi() {
   } catch (e) {
     fail("/api/claude deployed", String(e.message || e));
   }
+
+  // Meet — status answers without credentials.
+  try {
+    const { status, body, html } = await json(`${URL_}/api/meet?action=status`);
+    if (status === 404 || html) {
+      fail("/api/meet deployed", html ? "HTML returned — no function behind this route" : "404",
+        "Not deployed at this origin. `vite preview` never serves api/*.js — use `vercel dev`, or test the deployed origin.");
+    } else if (body?.connected) {
+      pass("/api/meet connected", "organiser fallback: " + (body.organiserFallback || "?"));
+    } else {
+      warn("/api/meet connected", body?.reason || "not connected",
+        "Set GOOGLE_IMPERSONATE_USER in Vercel (GOOGLE_SERVICE_ACCOUNT_JSON is shared with Drive). Then: enable the Google Calendar API, and add https://www.googleapis.com/auth/calendar.events to the SAME service-account client ID under Admin console → Security → API controls → Domain-wide delegation.");
+    }
+  } catch (e) {
+    fail("/api/meet deployed", String(e.message || e));
+  }
+
+  // Login provisioning — never probed with real credentials; status only.
+  try {
+    const { status, body, html } = await json(`${URL_}/api/admin-users?action=status`);
+    if (status === 404 || html) {
+      fail("/api/admin-users deployed", html ? "HTML returned — no function behind this route" : "404",
+        "Not deployed at this origin. `vite preview` never serves api/*.js — use `vercel dev`, or test the deployed origin.");
+    } else if (body?.connected) {
+      pass("/api/admin-users connected");
+    } else {
+      warn("/api/admin-users connected", body?.reason || "not connected",
+        "Add SUPABASE_SERVICE_ROLE_KEY (and SUPABASE_URL / SUPABASE_ANON_KEY) in Vercel — server-only, NEVER VITE_-prefixed — then redeploy.");
+    }
+  } catch (e) {
+    fail("/api/admin-users deployed", String(e.message || e));
+  }
 }
 
 /* ── 3. the database ────────────────────────────────────────────────────── */
@@ -241,6 +273,17 @@ async function checkDb() {
     }
   } catch (e) {
     warn("sales.tasks queryable", String(e.message || e));
+  }
+
+  // The recordings bucket (21-recordings-bucket.sql). Absent is a WARN, not a
+  // failure: uploading audio is optional, and everything else works without it.
+  try {
+    const r = await timedFetch(`${url}/storage/v1/bucket/sales-recordings`, { headers: h }, 15000);
+    if (r.ok) pass("sales-recordings bucket");
+    else if (r.status === 404) warn("sales-recordings bucket", "not found", "Run supabase/21-recordings-bucket.sql to enable uploading call audio.");
+    else warn("sales-recordings bucket", "HTTP " + r.status);
+  } catch (e) {
+    warn("sales-recordings bucket", String(e.message || e));
   }
 }
 
