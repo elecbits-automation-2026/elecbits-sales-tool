@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Building2, Columns, TrendingUp, BookOpen, Receipt, Settings, Plus, X, Search,
   Mic, MicOff, Send, Check, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
   Bot, Database, CalendarCheck2, Sun, Moon, ListTodo, FolderOpen, PencilRuler,
-  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play
+  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play, GitBranch
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
@@ -15,8 +15,26 @@ import {
   loadChat, loadChatDates, saveChat, saveSession, loadAllIdeas,
   loadTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum,
-  signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
 } from "./lib/data";
+import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
+import {
+  askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
+  extractMarkedJSON, withTimeout, setMemoryText, memoryTextFrom, DRIVE_TOOL_PROMPT,
+} from "./lib/ai";
+import * as drive from "./lib/drive";
+import { driveFolderName } from "./lib/drive";
+import * as fireflies from "./lib/fireflies";
+import * as meet from "./lib/meet";
+import * as recordings from "./lib/recordings";
+import * as adminUsers from "./lib/adminUsers";
+import {
+  STAGES, stageIdx, stageName, DEFAULT_GATES, KPI_METRICS,
+  COMPANY_FIELDS, REQ_FIELDS, STALE_AMBER, STALE_RED,
+} from "./data/stages";
+import {
+  INDUSTRIES, ORG_SIZES, industryCodeOf, LLD_QUESTIONS, ROLES, roleLabel,
+} from "./data/taxonomy";
+import { SCRUM_PLACEHOLDER, isoDay, dayFor, fallbackScrum } from "./data/scrum";
 import logoLight from "./assets/elecbits-logo.png";
 import logoDark from "./assets/elecbits-logo-dark.png";
 import markLight from "./assets/elecbits-mark.png";
@@ -50,241 +68,12 @@ function Logo({ height = 28, variant = "full", className = "" }) {
   );
 }
 
-/* ---------- constants ---------- */
-
-const STAGES = [
-  { key: "lead", name: "Lead" },
-  { key: "first_meeting", name: "First Meeting" },
-  { key: "physical_meeting", name: "Physical Meeting" },
-  { key: "rfq", name: "RFQ" },
-  { key: "project_id", name: "Project ID" },
-  { key: "pm_added", name: "PM Added" },
-  { key: "quote_lld", name: "Quote / LLD" },
-  { key: "negotiation", name: "Negotiation" },
-  { key: "closure", name: "Closure" },
-  { key: "po", name: "PO" },
-];
-const stageIdx = (k) => STAGES.findIndex((s) => s.key === k);
-const stageName = (k) => (STAGES.find((s) => s.key === k) || {}).name || k;
-
-const DEFAULT_GATES = {
-  lead: ["Where did this lead come from", "Which Elecbits product line fits", "Who is the contact and their role"],
-  first_meeting: ["Who attended the meeting (both sides)", "What exact need did the client state", "What did you pitch and how did they react", "Agreed next step with a date"],
-  physical_meeting: ["Where did you meet and who was present", "Requirements captured (specs, volumes, timelines)", "What was demonstrated or shown", "Client's budget or volume signals", "Agreed next step with a date"],
-  rfq: ["Exact product / spec being quoted", "Quantity and delivery timeline", "Target price or budget from client", "Who is the decision maker", "Competitors in the picture"],
-  project_id: ["Internal project ID created", "Scope summary in one or two lines", "Engineering owner assigned", "Feasibility or risk notes"],
-  pm_added: ["Project manager name", "Kickoff date", "Key deliverables agreed", "Client-side point of contact"],
-  quote_lld: ["Quote amount and validity", "Margin percentage", "LLD status (shared / pending)", "Who received the quote"],
-  negotiation: ["Exact objections raised and by whom", "Price gap between us and client", "Competitor pressure details", "Concessions asked, concessions offered", "Expected decision date"],
-  closure: ["Final agreed price", "Payment terms", "Delivery schedule", "Any pending approvals on client side"],
-  po: ["PO number", "PO value", "Advance received (yes/no, amount)", "Delivery start date", "PO document received"],
-};
-
-const KPI_METRICS = [
-  { key: "companies", label: "Companies added", pace: true },
-  { key: "meetings", label: "Meetings held", pace: true },
-  { key: "rfqs", label: "RFQs raised", pace: true },
-  { key: "quotes", label: "Quotes sent", pace: true },
-  { key: "pos", label: "POs closed", pace: true },
-  { key: "revenue", label: "Revenue", pace: true, money: true },
-  { key: "completeness", label: "Data completeness", pace: false, pct: true },
-];
-
-const COMPANY_FIELDS = [
-  { k: "name", label: "Company name", req: true },
-  { k: "contactPerson", label: "Contact person", req: true },
-  { k: "designation", label: "Designation", req: false },
-  { k: "phone", label: "Contact phone", req: true },
-  { k: "email", label: "Email", req: true },
-  { k: "city", label: "City", req: true },
-  { k: "industry", label: "Industry", req: true },
-  { k: "whatTheyDo", label: "What they do", req: true, long: true },
-  { k: "source", label: "Lead source", req: true },
-  { k: "potential", label: "Annual potential (₹)", req: true, num: true },
-  { k: "website", label: "Website", req: false },
-  { k: "address", label: "Address", req: false, long: true },
-];
-const REQ_FIELDS = COMPANY_FIELDS.filter((f) => f.req);
-
-/* ── Official client-ID nomenclature (EbClient_ID_Sheet) ──────────────────
-   Eb-<industry 01-43>-<size>-<serial>. The serial comes from the shared
-   core.numbering mint — never typed by hand. */
-const INDUSTRIES = [
-  [1, "Electric Vehicle"], [2, "EMS"], [3, "Just IoT"], [4, "IIoT"],
-  [5, "Home Automation"], [6, "Medical & Healthcare"], [7, "Energy Meter & Metering"],
-  [8, "Wearables"], [9, "Camera & Opticals"], [10, "Agri Tech/Farm Tech/Food Tech"],
-  [11, "AR/VR/AI"], [12, "Education-Tech/EdTech"], [13, "Industrial/ Machine Setup"],
-  [14, "ERP Solutions"], [15, "Robotics"], [16, "Information Technology"],
-  [17, "Defence/Military"], [18, "Automotive"], [19, "Battery Manufacturer"],
-  [20, "Consumer Electronics"], [21, "Other"], [22, "Government & Alliance"],
-  [23, "Freelance/Individual/Personal"], [24, "Logistics/Fleet Management"],
-  [25, "Fintech"], [26, "Aerospace"], [27, "BLDC"], [28, "Renewables"],
-  [29, "Oil & Gas"], [30, "Smart home"], [31, "Research"], [32, "E-Mobility"],
-  [33, "Infrastructure"], [34, "Toys and Games"], [35, "Incubator"],
-  [36, "Security/ surveilance"], [37, "Electronics components manufacturing"],
-  [38, "Drone tech"], [39, "Solar"], [40, "IT Hardware"], [41, "Display Manufacturers"],
-  [42, "Industrial Applications"], [43, "Trader"],
-];
-const ORG_SIZES = [
-  ["PL", "Proto Level — Small Hardware Startups"],
-  ["ML", "Mid Level — Hardware Startups"],
-  ["EL", "Enterprise Level — Large Product Companies"],
-  ["EM", "EMS"],
-  ["UN", "Individuals/Unknown"],
-  ["GO", "Government Organisation"],
-];
-const industryCodeOf = (label) => { const m = INDUSTRIES.find(([, l]) => l.toLowerCase() === String(label || "").toLowerCase()); return m ? m[0] : null; };
-
-/* ── LLD questions (30 — same set as the ODM PMS) ─────────────────────────── */
-const LLD_QUESTIONS = [
-  { id: 1, sec: "Product", text: "What is the product you want to build? Describe it in one sentence." },
-  { id: 2, sec: "Product", text: "What category does it fall into?" },
-  { id: 3, sec: "Product", text: "What problem does it solve for the end user?" },
-  { id: 4, sec: "Product", text: "Who is the target user?" },
-  { id: 5, sec: "Product", text: "Any existing products or references we should study?" },
-  { id: 6, sec: "Functions", text: "List the key features / functions this product must have." },
-  { id: 7, sec: "Functions", text: "Which sensors or input devices are needed?" },
-  { id: 8, sec: "Functions", text: "What outputs / actuators are required?" },
-  { id: 9, sec: "Functions", text: "Does it need a user interface?" },
-  { id: 10, sec: "Functions", text: "Any special processing needs (AI/ML, real-time, high-speed data)?" },
-  { id: 11, sec: "Connectivity", text: "What wireless connectivity is needed?" },
-  { id: 12, sec: "Connectivity", text: "Which wireless protocols are required (Wi-Fi, BLE, LoRa, Cellular, GPS…)?" },
-  { id: 13, sec: "Connectivity", text: "Any wired interfaces needed (USB-C, Ethernet, RS-485, CAN…)?" },
-  { id: 14, sec: "Connectivity", text: "Does it need cloud connectivity or a backend?" },
-  { id: 15, sec: "Power", text: "How will the device be powered?" },
-  { id: 16, sec: "Power", text: "If battery-powered, what is the expected battery life?" },
-  { id: 17, sec: "Power", text: "Any power consumption constraints or targets?" },
-  { id: 18, sec: "Power", text: "Does it need power-saving / sleep modes?" },
-  { id: 19, sec: "Software", text: "Is there a companion mobile or web app?" },
-  { id: 20, sec: "Software", text: "Does the firmware need OTA update capability?" },
-  { id: 21, sec: "Software", text: "Any data logging, analytics or reporting requirements?" },
-  { id: 22, sec: "Physical", text: "Approximate size constraints? (L × W × H in mm, or describe)" },
-  { id: 23, sec: "Physical", text: "What environment will it operate in?" },
-  { id: 24, sec: "Physical", text: "Enclosure material preference?" },
-  { id: 25, sec: "Certs", text: "Which certifications are required (CE, FCC, BIS, RoHS, IP rating…)?" },
-  { id: 26, sec: "Certs", text: "Any regulatory or compliance notes we should know about?" },
-  { id: 27, sec: "Cost & Time", text: "What is the target unit cost (BOM) range?" },
-  { id: 28, sec: "Cost & Time", text: "Expected production volume in the first year?" },
-  { id: 29, sec: "Cost & Time", text: "Any hard deadline or launch date we must hit?" },
-  { id: 30, sec: "Cost & Time", text: "Anything else we should know? Risks, constraints, special requests…" },
-];
-
-const ROLES = [
-  { key: "admin", label: "Admin" },
-  { key: "dept_head", label: "Dept Head" },
-  { key: "agent", label: "Sales Agent" },
-  { key: "finance", label: "Finance" },
-];
-const roleLabel = (r) => (ROLES.find((x) => x.key === r) || {}).label || r;
-
-const STALE_AMBER = 4;
-const STALE_RED = 8;
-
 /* ---------- storage & auth ----------
    Phase 0 cut-over: data lives in the relational sales.* + core.* schemas of
    eb-core-database-1 (see supabase/01–03 SQL), loaded and synced through
    src/lib/data.ts. Login is Supabase Auth — an admin puts a person's email on
    the roster; their first sign-in creates the account and a DB trigger links
    it to their core.people row. */
-
-/* ---------- Claude ---------- */
-
-// Routes through our own serverless proxy (/api/claude), which holds the
-// ANTHROPIC_API_KEY server-side and picks the model. The browser never sees the
-// key. The proxy accepts { system, messages, maxTokens }.
-// System memory rides on EVERY AI call (gates, scrum, plans, scorers, chats)
-// — the PMS pattern. Set by the workspace loader, refreshed on memory edits.
-let MEMORY_TEXT = "";
-async function askClaude(system, messages, opts = {}) {
-  const sys = MEMORY_TEXT
-    ? system + "\n\nSYSTEM MEMORY (durable company facts & rules — always respect these):\n" + MEMORY_TEXT
-    : system;
-  const res = await fetch("/api/claude", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system: sys, messages, maxTokens: opts.maxTokens || 1000 }),
-  });
-  if (!res.ok) throw new Error("AI request failed (" + res.status + ")");
-  const data = await res.json();
-  return (data && data.text) || "";
-}
-
-// ── chat attachments + tools, shared by every AI chat ──
-// A pasted screenshot or attached file becomes an Anthropic content block.
-// Images are downscaled to a 1568px long edge before upload — a raw retina
-// screenshot is several MB of base64, which blows the serverless body limit
-// and returns an empty answer. 1568px is the size the vision model resizes to
-// anyway, so nothing legible is lost and the call is far cheaper.
-const IMG_MAX_EDGE = 1568;
-const fileToBlock = (file) => new Promise((resolve) => {
-  if (file.type === "application/pdf") {
-    if (file.size > 4 * 1024 * 1024) return resolve(null); // too big to post
-    const r = new FileReader();
-    r.onload = () => resolve({ type: "document", source: { type: "base64", media_type: "application/pdf", data: String(r.result).split(",")[1] }, _name: file.name || "document.pdf" });
-    r.onerror = () => resolve(null);
-    r.readAsDataURL(file);
-    return;
-  }
-  if (!file.type || !file.type.startsWith("image/")) return resolve(null);
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = () => {
-    try {
-      const scale = Math.min(1, IMG_MAX_EDGE / Math.max(img.width, img.height));
-      const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
-      const cv = document.createElement("canvas");
-      cv.width = w; cv.height = h;
-      const ctx = cv.getContext("2d");
-      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); // flatten transparency for JPEG
-      ctx.drawImage(img, 0, 0, w, h);
-      const data = cv.toDataURL("image/jpeg", 0.85).split(",")[1];
-      URL.revokeObjectURL(url);
-      resolve(data ? { type: "image", source: { type: "base64", media_type: "image/jpeg", data }, _name: file.name || "pasted image" } : null);
-    } catch (e) { URL.revokeObjectURL(url); resolve(null); }
-  };
-  img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-  img.src = url;
-});
-const contentText = (c) => typeof c === "string" ? c : (c || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
-// Tool protocol lines must never reach the user's eyes.
-const stripToolLines = (t) => String(t || "").replace(/(DRIVE_JSON|ACTIONS_JSON|TASKS_JSON)[\s\S]*$/, "").trim();
-
-async function runDriveTool(spec) {
-  const p = new URLSearchParams({ action: spec.action || "root" });
-  if (spec.name) p.set("name", spec.name);
-  if (spec.q) p.set("q", spec.q);
-  const r = await fetch("/api/drive?" + p.toString()).then((x) => x.json());
-  return JSON.stringify(r).slice(0, 12000);
-}
-const DRIVE_TOOL_PROMPT = [
-  "GOOGLE DRIVE: you CAN read the sales Drive (folder and file listings — names, dates, links; not the contents of files).",
-  "To look something up, reply with ONLY one line and nothing else:",
-  "  DRIVE_JSON {\"action\":\"root\"}                        top-level folders",
-  "  DRIVE_JSON {\"action\":\"list\",\"name\":\"<folder>\"}   that folder's files AND sub-folders",
-  "  DRIVE_JSON {\"action\":\"deep\",\"name\":\"<folder>\"}   that folder PLUS what is inside each sub-folder — use this when asked what is inside a set of folders",
-  "  DRIVE_JSON {\"action\":\"search\",\"q\":\"<term>\"}       find files by name anywhere",
-  "Reading the result: `found:false` means no folder of that name is shared with this tool — say exactly that, do not call it empty. `folders` lists sub-folders; if `files` is empty but `folders` is not, the contents are one level deeper — run `deep` before concluding anything.",
-  "NEVER report a folder as empty until you have looked inside its sub-folders. Never show raw DRIVE_JSON in a final answer.",
-].join("\n");
-
-// Runs a chat turn with the Drive tool loop: feeds listings back until the
-// model answers. Returns { reply, notes } — notes describe what was checked.
-async function askWithDrive(system, convo, maxHops = 4) {
-  let reply = await askClaude(system, convo);
-  const notes = [];
-  for (let hop = 0; hop < maxHops; hop++) {
-    const spec = extractMarkedJSON(reply, "DRIVE_JSON");
-    if (!spec) break;
-    notes.push(spec.action === "search" ? "searched Drive for “" + spec.q + "”"
-      : spec.action === "deep" ? "read inside " + spec.name
-      : "checked Drive: " + (spec.name || "top-level folders"));
-    const result = await runDriveTool(spec);
-    convo.push({ role: "assistant", content: reply });
-    convo.push({ role: "user", content: "DRIVE_RESULT " + result + "\n\nAnswer the original question from this listing (or make one more DRIVE_JSON request if you must drill deeper). Never show raw DRIVE_JSON in the final answer." });
-    reply = await askClaude(system, convo);
-  }
-  return { reply, notes };
-}
 
 /* Attachment chips + the paste/attach plumbing, one line to wire in. */
 function AttachChips({ atts, setAtts }) {
@@ -301,26 +90,6 @@ function AttachChips({ atts, setAtts }) {
   );
 }
 
-// Reads the JSON that follows a marker. Handles BOTH object and array
-// payloads — taking only {…} silently mangled every array contract
-// (`[{a},{b}]` sliced to `{a},{b}` → parse error → feature looked broken).
-function extractMarkedJSON(text, marker) {
-  const i = String(text || "").indexOf(marker);
-  if (i < 0) return null;
-  const rest = String(text).slice(i + marker.length);
-  const oS = rest.indexOf("{"), aS = rest.indexOf("[");
-  const useArr = aS >= 0 && (oS < 0 || aS < oS);
-  const s = useArr ? aS : oS;
-  const e = useArr ? rest.lastIndexOf("]") : rest.lastIndexOf("}");
-  if (s < 0 || e < 0 || e < s) return null;
-  try { return JSON.parse(rest.slice(s, e + 1)); } catch (err) { return null; }
-}
-
-// askClaude has no timeout of its own; a hung call must never strand a user
-// inside a modal.
-const withTimeout = (p, ms) => Promise.race([
-  p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms)),
-]);
 const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
 
 /* ── Task briefs: what to ask before the work, and after it ────────────────
@@ -516,6 +285,8 @@ function localISO(d = new Date()) {
 const todayStr = () => localISO();
 const monthKey = () => localISO().slice(0, 7);
 const nowTS = () => new Date().toISOString();
+/* Local wall-clock HH:MM — the time a note was written, as the writer saw it. */
+const nowHM = () => new Date().toTimeString().slice(0, 5);
 const tsDaysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
 const dateDaysAgo = (n) => localISO(new Date(Date.now() - n * 86400000));
 const fmtINR = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
@@ -887,7 +658,7 @@ export default function App() {
         setExpenses(ws.expenses); setGates(ws.gates); setScrums(ws.scrums); setMemory(ws.memory);
         setTasks(ws.tasks || []); setLlds(ws.llds || []);
         setQuestionSets(ws.questionSets || {}); setRequests(ws.requests || []);
-        MEMORY_TEXT = (ws.memory || []).map((m) => "• " + m.title + ": " + m.text).join("\n");
+        setMemoryText(memoryTextFrom(ws.memory || []));
       } catch (e) { console.error("loadWorkspace failed", e); }
       if (alive) setLoading(false);
     })();
@@ -907,7 +678,7 @@ export default function App() {
   const saveExpenses = (v) => { setExpenses(v); flag(syncExpenses(v)); };
   const saveGates = (v) => { setGates(v); flag(syncGates(v)); };
   const saveScrums = (v) => { setScrums(v); flag(syncScrums(v)); };
-  const saveMemory = (v) => { setMemory(v); MEMORY_TEXT = v.map((m) => "• " + m.title + ": " + m.text).join("\n"); flag(syncMemory(v)); };
+  const saveMemory = (v) => { setMemory(v); setMemoryText(memoryTextFrom(v)); flag(syncMemory(v)); };
   const saveTasks = (v) => { setTasks(v); flag(syncTasks(v)); };
   const saveLlds = (v) => { setLlds(v); flag(syncLlds(v)); };
   const saveQuestionSet = (key, title, questions) => {
@@ -2760,12 +2531,271 @@ function ExpenseModal({ me, data, onClose, onSave }) {
    DAILY SCRUM — write it as it comes → AI-organised tasks
    ============================================================ */
 
+/* An if/else contingency, shown as a branch rather than a sentence. Ported
+   from the PMS: the point is that a reader can see at a glance that this task
+   has a fork in it, and how long they have before the fork matters. */
+function ConditionRail({ conditions }) {
+  if (!conditions || !conditions.length) return null;
+  return (
+    <div className="flex flex-col gap-1.5 mt-2">
+      {conditions.map((c, i) => (
+        <div key={i} className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 text-xs">
+          <div className="flex items-start gap-1.5 flex-wrap">
+            <Chip color="amber"><GitBranch size={10} /> IF</Chip>
+            <span className="text-slate-700 flex-1 min-w-[140px]">{c.if}</span>
+          </div>
+          <div className="flex items-start gap-1.5 flex-wrap mt-1">
+            <Chip color="blue"><ArrowRight size={10} /> THEN</Chip>
+            <span className="text-slate-700 flex-1 min-w-[140px]">{c.then}</span>
+            {c.timeboxMinutes ? <Chip color="purple"><Clock size={10} /> {c.timeboxMinutes}m</Chip> : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── The stand-up that nobody had to type ──────────────────────────────────
+   Fireflies sits in the call and writes down what was said. This panel brings
+   that in: the day's meetings are listed, and picking one APPENDS its
+   transcript to the box.
+
+   Appending, never replacing, is the whole design. A stand-up is usually a
+   call plus a few things somebody typed afterwards, and silently eating what
+   is already in the box would be the worst possible behaviour here — the
+   previous version auto-picked one meeting and overwrote whatever was there. */
+/* ── Start the call from here ──────────────────────────────────────────────
+   The event is created on the CALLER'S own Google Calendar, so it lands in
+   their diary and the invitees see who called it. Ticking the notetaker is
+   what makes the transcript come back on its own — which is the whole loop:
+   schedule here, talk there, read it in the scrum tomorrow morning.
+
+   Hidden entirely when /api/meet is not configured: an inert button that
+   always errors is worse than no button. */
+function ScheduleMeet({ date, users, present, onScheduled }) {
+  // Typed: the inferred {connected:boolean} has no notetaker field, and the
+  // guest-list line below reads it.
+  const [cfg, setCfg] = useState<meet.MeetStatus>({ connected: false });
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [title, setTitle] = useState("Eb — Daily scrum");
+  const [start, setStart] = useState("09:30");
+  const [end, setEnd] = useState("10:00");
+  const [record, setRecord] = useState(true);
+
+  useEffect(() => { meet.status().then(setCfg).catch(() => {}); }, []);
+  if (!cfg.connected) return null;
+
+  const invitees = users.filter((u) => u.active !== false && present[u.id] && u.email).map((u) => u.email);
+
+  const go = async () => {
+    setBusy(true); setErr("");
+    const r = await meet.create({
+      date, startTime: start, endTime: end, title,
+      attendees: invitees, recordWithFireflies: record,
+    });
+    if (r.error) { setErr(r.error); setBusy(false); return; }
+    onScheduled(r);
+    setOpen(false); setBusy(false);
+  };
+
+  return (
+    <div className="mt-2">
+      {!open ? (
+        <Btn size="sm" onClick={() => setOpen(true)}><CalendarCheck2 size={12} /> Schedule the call</Btn>
+      ) : (
+        <div className="border border-slate-200 rounded-lg p-3 bg-slate-50 flex flex-col gap-2">
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Meeting title" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Input type="time" className="w-28 font-mono" value={start} onChange={(e) => setStart(e.target.value)} />
+            <ArrowRight size={13} className="text-slate-300" />
+            <Input type="time" className="w-28 font-mono" value={end} onChange={(e) => setEnd(e.target.value)} />
+            <label className="flex items-center gap-1.5 text-xs text-slate-600 ml-1">
+              <input type="checkbox" checked={record} onChange={(e) => setRecord(e.target.checked)} />
+              Invite the notetaker
+            </label>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            {invitees.length
+              ? invitees.length + " invitee" + (invitees.length === 1 ? "" : "s") + " — whoever is ticked as present above"
+              : "Nobody is ticked as present, so nobody will be invited."}
+            {record && cfg.notetaker ? " · plus " + cfg.notetaker : ""}
+          </p>
+          {err && <p className="text-[11px] text-red-600">{err}</p>}
+          <div className="flex items-center gap-2">
+            <Btn size="sm" kind="primary" disabled={busy} onClick={go}>
+              {busy ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Create the meeting
+            </Btn>
+            <Btn size="sm" kind="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Audio from a call the notetaker missed ────────────────────────────────
+   A phone call, a laptop recording, a site visit on a handset. The file goes
+   into a PRIVATE bucket; playing it back needs a signed link that expires, so
+   a leaked path is not a leaked recording.
+
+   Transcription is deliberately a separate, manual step — handing Fireflies a
+   signed URL to a client call should be somebody's decision, not a side
+   effect of dragging a file in. */
+function UploadRecording({ date }) {
+  const [on, setOn] = useState(null);          // null = not checked yet
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const fileRef = useRef(null);
+
+  const refresh = React.useCallback(async (d) => {
+    setItems(await recordings.list(d));
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    recordings.available().then((ok) => {
+      if (!alive) return;
+      setOn(ok);
+      if (ok) refresh(date);
+    });
+    return () => { alive = false; };
+  }, [date, refresh]);
+
+  if (on === false || on === null) return null;   // bucket not created yet
+
+  const pick = async (f) => {
+    if (!f) return;
+    setBusy(true); setErr("");
+    const r = await recordings.upload(f, date);
+    if (!r.ok) setErr(r.error || "Upload failed.");
+    else await refresh(date);
+    setBusy(false);
+  };
+
+  const play = async (path) => {
+    const url = await recordings.signedUrl(path);
+    if (url) window.open(url, "_blank");
+    else setErr("Could not sign a link for that file.");
+  };
+
+  return (
+    <div className="mt-2">
+      <input ref={fileRef} type="file" hidden accept="audio/*,video/mp4,video/webm"
+        onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
+      <div className="flex items-center gap-2 flex-wrap">
+        <Btn size="sm" disabled={busy} onClick={() => fileRef.current?.click()}>
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <Mic size={12} />} Upload call audio
+        </Btn>
+        <span className="text-[11px] text-slate-400">Private — playback is a signed link that expires.</span>
+      </div>
+      {err && <p className="text-[11px] text-red-600 mt-1">{err}</p>}
+      {items.length > 0 && (
+        <div className="flex flex-col gap-1 mt-2">
+          {items.map((f) => (
+            <div key={f.path} className="flex items-center gap-2 text-xs bg-white border border-slate-200 rounded-md px-2.5 py-1.5">
+              <span className="truncate flex-1 text-slate-700">{f.name}</span>
+              <span className="text-slate-400 font-mono text-[11px] flex-none">{recordings.humanSize(f.size)}</span>
+              <button onClick={() => play(f.path)} className="text-blue-600 hover:underline flex-none">play</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MeetingsPanel({ date, users, present, onUse, onScheduled, usedIds }) {
+  const [ff, setFf] = useState({ on: false });
+  const [items, setItems] = useState(null);   // null = not looked yet
+  const [busy, setBusy] = useState(false);
+  const [pulling, setPulling] = useState("");
+  const [err, setErr] = useState("");
+  // Whether the other two halves of this panel have a backend. Tracked here so
+  // the whole box can disappear when none of the three is configured, rather
+  // than rendering an empty bordered rectangle.
+  const [canSchedule, setCanSchedule] = useState(false);
+  const [canUpload, setCanUpload] = useState(false);
+
+  useEffect(() => { fireflies.status().then(setFf).catch(() => {}); }, []);
+  useEffect(() => { meet.status().then((m) => setCanSchedule(!!m.connected)).catch(() => {}); }, []);
+  useEffect(() => { recordings.available().then(setCanUpload).catch(() => {}); }, []);
+  // A new day is a new list — never show yesterday's meetings under today.
+  useEffect(() => { setItems(null); setErr(""); }, [date]);
+
+  const look = async () => {
+    setBusy(true); setErr("");
+    try {
+      const { from, to } = fireflies.dayRange(date);
+      const list = await fireflies.list(from, to);
+      setItems(list);
+      if (!list.length) setErr("Fireflies recorded nothing on " + fmtDate(date) + ".");
+    } catch (e) { setErr("Could not reach Fireflies."); }
+    setBusy(false);
+  };
+
+  const use = async (m) => {
+    setPulling(m.id); setErr("");
+    try {
+      const t = await fireflies.transcript(m.id);
+      if (t.error) { setErr("Fireflies: " + t.error); setPulling(""); return; }
+      if (!String(t.text || "").trim()) { setErr("That meeting has no transcript text yet."); setPulling(""); return; }
+      onUse(t.text, m, t.url || "");
+    } catch (e) { setErr("Could not read that meeting."); }
+    setPulling("");
+  };
+
+  // Nothing configured — the panel would be an empty box telling nobody anything.
+  if (!ff.on && !canSchedule && !canUpload) return null;
+
+  return (
+    <div className="border border-slate-200 rounded-lg p-3 mb-3 bg-slate-50">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Mic size={13} className="text-blue-600" />
+        <span className="text-xs font-semibold text-slate-700 mr-auto">The call — {fmtDate(date)}</span>
+        {ff.on && (
+          <Btn size="sm" disabled={busy} onClick={look}>
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {items === null ? "See the day's calls" : "Refresh"}
+          </Btn>
+        )}
+      </div>
+
+      {/* Start it, and record it. Both self-hide when unconfigured. */}
+      <ScheduleMeet date={date} users={users} present={present} onScheduled={onScheduled} />
+      <UploadRecording date={date} />
+
+      {ff.on && items !== null && items.length > 0 && (
+        <div className="flex flex-col gap-1.5 mt-2">
+          {items.map((m) => {
+            const used = usedIds.includes(m.id);
+            return (
+              <div key={m.id} className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-2.5 py-1.5">
+                <span className="text-xs text-slate-700 truncate flex-1" title={m.title || "Untitled"}>{m.title || "Untitled call"}</span>
+                {m.duration ? <span className="text-[11px] text-slate-400 font-mono flex-none">{Math.round(m.duration)}m</span> : null}
+                <Btn size="sm" kind={used ? "ghost" : "primary"} disabled={!!pulling}
+                  onClick={() => use(m)} title={used ? "Already added — this will append it again" : "Append this call's transcript"}>
+                  {pulling === m.id ? <Loader2 size={11} className="animate-spin" /> : used ? <Check size={11} /> : <Plus size={11} />}
+                  {used ? " added" : " use"}
+                </Btn>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {err && <p className="text-[11px] text-amber-600 mt-1.5">{err}</p>}
+      {ff.on && <p className="text-[11px] text-slate-400 mt-1.5">Picking a call adds it to the box below — it never replaces what is already there.</p>}
+    </div>
+  );
+}
+
 function DailyScrumView({ me, data, saveScrums, saveTasks }) {
   // A scrum line becomes a real task: owner matched to the roster by name
   // (unmatched → the note's author), due = the scrum's date.
   const scrumToTasks = (s) => {
     const { users, tasks } = data;
-    const fresh = (s.tasks || []).map((t) => {
+    const fresh = (s.tasks || []).filter((t) => t.include !== false).map((t) => {
       // Preview edits win over name-matching: assigneeId/start/end may already
       // be set by the "AI organised" card before saving.
       const owner = (t.assigneeId && users.find((u) => u.id === t.assigneeId))
@@ -2775,8 +2805,13 @@ function DailyScrumView({ me, data, saveScrums, saveTasks }) {
         id: uid(), companyId: t.companyId || "", dealId: "",
         assignee: owner ? owner.id : s.userId, author: me.id,
         title: t.task,
-        details: t.condition || "", due: s.date || todayStr(),
+        details: "",
+        // The day the work is FOR, not the day the note was written. This is
+        // the whole point of resolving "tomorrow" in the organiser.
+        due: t.date || s.date || todayStr(),
         windowStart: win.start, windowEnd: win.end,
+        steps: Array.isArray(t.steps) ? t.steps : [],
+        conditions: Array.isArray(t.conditions) ? t.conditions : [],
         work: {}, ai: {}, escalated: false, branchedFrom: "",
         status: "open", source: s.source === "transcript" ? "transcript" : "scrum",
         scrumNoteId: s.id, createdAt: nowTS(),
@@ -2803,25 +2838,21 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   const [tr, setTr] = useState("");             // raw transcript
   const [trUrl, setTrUrl] = useState("");
   const trFileRef = useRef(null);
-  const [ff, setFf] = useState({ on: false });     // Fireflies connection + list
-  const [ffBusy, setFfBusy] = useState(false);
-  useEffect(() => { fetch("/api/fireflies?action=status").then((r) => r.json()).then((j) => setFf({ on: !!j.connected, why: j.reason })).catch(() => {}); }, []);
-  const pullFireflies = async () => {
-    setFfBusy(true);
-    try {
-      const from = date + "T00:00:00+05:30", to = date + "T23:59:59+05:30";
-      const j = await fetch("/api/fireflies?action=list&from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to)).then((r) => r.json());
-      const items = j.items || [];
-      if (!items.length) { setErr("Fireflies has no meeting recorded for " + fmtDate(date) + "."); setFfBusy(false); return; }
-      // The scrum is the one that looks like a scrum, else the day's longest.
-      const pick = items.find((x) => /scrum|stand[- ]?up|daily/i.test(x.title || "")) || items[0];
-      const t = await fetch("/api/fireflies?action=get&id=" + encodeURIComponent(pick.id)).then((r) => r.json());
-      if (t.error) { setErr("Fireflies: " + t.error); setFfBusy(false); return; }
-      setTr(t.text || ""); setTrUrl(t.url || "");
-      setErr("");
-    } catch (e) { setErr("Could not reach Fireflies."); }
-    setFfBusy(false);
-  };
+  // Which recorded calls fed this note, so the saved note can point back at
+  // the transcripts it came from.
+  const [fromMeetings, setFromMeetings] = useState([]);
+
+  /* A pulled call is APPENDED, never a replacement — a stand-up is often a
+     call plus a few things somebody typed, and silently eating what was
+     already in the box would be the worst possible behaviour here. */
+  const useMeeting = useCallback((text, meeting, url) => {
+    if (!String(text || "").trim()) return;
+    setTr((d) => (d.trim() ? d.trim() + "\n\n" + text : text));
+    if (url) setTrUrl((u) => u || url);
+    if (meeting?.id) setFromMeetings((m) => (m.includes(meeting.id) ? m : [...m, meeting.id]));
+    setMode("transcript");
+    setErr("");
+  }, []);
   const norm = useMemo(() => normaliseTranscript(tr), [tr]);
   const attendanceObj = () => ({
     present: Object.keys(present).filter((k) => present[k]),
@@ -2830,10 +2861,16 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   });
   const setPendingTask = (i, patch) => setPending({ ...pending, tasks: pending.tasks.map((t, j) => (j === i ? { ...t, ...patch } : t)) });
   const savePending = (withTasks) => {
-    const note = { ...pending };
+    // Unticked rows never become tasks and are not kept on the note — the
+    // preview is the last place to say "not that one".
+    const kept = (pending.tasks || []).filter((t) => t.include !== false);
+    // "Note 1, Note 2…" within the day, so a note has a human reference that
+    // survives being one of six written that morning.
+    const sameDay = scrums.filter((x) => x.date === pending.date);
+    const note = { ...pending, tasks: kept, noteNo: sameDay.length + 1, time: nowHM() };
     note.tasked = withTasks ? scrumToTasks(note) > 0 : false;
     saveScrums([note, ...scrums]);
-    setPending(null);
+    setPending(null); setFromMeetings([]); setTr(""); setTrUrl("");
   };
   const speech = useSpeech((t) => setRaw((p) => (p ? p + " " : "") + t));
 
@@ -2855,8 +2892,11 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
       "COMPANIES with their account owners (match any client mentioned, even loosely — 'Sunrise Company' means 'Sunrise Retail Tech'): " + companies.map((c) => { const o = users.find((u) => u.id === c.accountOwner); return c.name + (o ? " (owner: " + o.name + ")" : ""); }).join(", "),
       "ROLE REFERENCES: 'the account owner' / 'the owner' of a company means that company's owner from the list above — put their actual roster NAME in owner, never the phrase.",
       "TIME WINDOWS: normalise everything to 24h HH:MM. 'by 2pm' / 'before 2' → end 14:00 with empty start. '12 to 1pm' → 12:00–13:00. 'today' with no time → empty window.",
-      "Keep task text short and action-first ('Send Sunrise Retail the pilot quote'). Put any if/else in condition. Preserve IDs verbatim.",
-      "Reply with ONLY one line: SCRUM_JSON {\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name from the list or empty\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"condition\":\"if/else or empty\"}],\"summary\":\"one-line summary\"}",
+      "WHEN — resolve the day and put it in \"date\" as YYYY-MM-DD. 'today' or no day mentioned = " + date + "; 'tomorrow' = the day after " + date + "; a weekday name = the next such day on or after " + date + ". A note written today can raise work for tomorrow, and the task must land on the day the work is FOR — never on the day the note was written.",
+      "STEPS — where the note spells out how something is to be done, break it into short imperative steps. Omit steps entirely for a one-action task; do not pad.",
+      "CONDITIONS — capture every if/else contingency as a STRUCTURED row: what the condition is, what to do when it holds, and a timebox in minutes when one is stated ('in an hour' = 60, 'within 30 mins' = 30). Do not bury a contingency in the task text.",
+      "Keep task text short and action-first ('Send Sunrise Retail the pilot quote'). Preserve IDs, part numbers and figures verbatim.",
+      "Reply with ONLY one line: SCRUM_JSON {\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name from the list or empty\",\"date\":\"YYYY-MM-DD\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"steps\":[\"\"],\"conditions\":[{\"if\":\"\",\"then\":\"\",\"timeboxMinutes\":60}]}],\"summary\":\"one-line summary\"}",
       "Valid JSON. No markdown.",
     ].join("\n");
     try {
@@ -2876,7 +2916,27 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           const compOwner = comp && !owner && /owner/i.test(String(t.owner || "") + " " + String(t.task || ""))
             ? users.find((u) => u.id === comp.accountOwner) : null;
           const win = t.start || t.end ? { start: t.start || "", end: t.end || "" } : parseWin(t.window);
-          return { ...t, assigneeId: owner ? owner.id : (compOwner ? compOwner.id : me.id), companyId: comp ? comp.id : "", start: win.start, end: win.end };
+          const assigneeId = owner ? owner.id : (compOwner ? compOwner.id : me.id);
+          return {
+            ...t, assigneeId, companyId: comp ? comp.id : "", start: win.start, end: win.end,
+            // Every row starts included and can be unticked. Deleting was the
+            // only way to drop one before, which is destructive and has no undo.
+            include: true,
+            // The day the work is FOR. A note written today can raise work for
+            // tomorrow; the model resolves it, and this is the floor when it
+            // answers with something that is not a date.
+            date: isoDay(t.date) || dayFor(String(t.task || ""), date) || date,
+            steps: Array.isArray(t.steps) ? t.steps.filter(Boolean) : [],
+            // Structured rows. A flat `condition` string from an older note
+            // (or an older model reply) is lifted into the same shape so the
+            // rail renders one thing, not two.
+            conditions: Array.isArray(t.conditions) && t.conditions.length
+              ? t.conditions.filter((c) => c && (c.if || c.then))
+              : (t.condition ? [{ if: String(t.condition), then: "follow the contingency as written", timeboxMinutes: null }] : []),
+            // Assigning work on an account to someone who does not own it is
+            // usually a mis-read of "the account owner" — say so before saving.
+            offAccount: !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner),
+          };
         }),
         summary: parsed.summary || "", createdAt: nowTS(),
         blockers: Array.isArray(parsed.blockers) ? parsed.blockers : [],
@@ -2884,13 +2944,38 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         ignored: parsed.ignored || "",
         link, attendance: attendanceObj(),
         source: mode === "transcript" ? "transcript" : "typed",
+        origin: fromMeetings.length ? "meeting" : "manual", meetingIds: fromMeetings,
         transcript: mode === "transcript" ? norm.text : "",
         transcriptUrl: mode === "transcript" ? trUrl : "",
       };
       // The PMS preview: adjust assignee + time windows before anything saves.
       setPending(note);
       setRaw("");
-    } catch (e) { setErr("Could not organise this — saved nothing. Check connection and try again."); }
+    } catch (e) {
+      // The AI is unreachable. The person has just typed the day's plan —
+      // failing the save loses it. Parse it crudely instead, flag the preview
+      // as an offline parse, and let them correct it.
+      const fb = fallbackScrum(text, date, users, companies);
+      setPending({
+        id: uid(), userId: me.id, date, raw: text, engine: "offline",
+        tasks: fb.tasks.map((t) => {
+          const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
+          const comp = matchCompany(t.company, companies) || matchCompany(t.task, companies);
+          const assigneeId = owner ? owner.id : me.id;
+          return { ...t, assigneeId, companyId: comp ? comp.id : "", include: true,
+                   offAccount: !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner) };
+        }),
+        summary: fb.summary, createdAt: nowTS(),
+        blockers: [], decisions: [], ignored: "",
+        link, attendance: attendanceObj(),
+        source: mode === "transcript" ? "transcript" : "typed",
+        origin: fromMeetings.length ? "meeting" : "manual", meetingIds: fromMeetings,
+        transcript: mode === "transcript" ? norm.text : "",
+        transcriptUrl: mode === "transcript" ? trUrl : "",
+      });
+      setErr("AI unreachable — this is an offline parse. Check every row before saving.");
+      setRaw("");
+    }
     setBusy(false);
   };
 
@@ -2963,17 +3048,19 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
             ))}
           </div>
         </div>
+        <MeetingsPanel date={date} users={users} present={present} onUse={useMeeting} usedIds={fromMeetings}
+          onScheduled={(m) => {
+            if (m.meetLink) setLink(m.meetLink);
+            setErr(m.warning || (m.recording && !m.notetakerInvited
+              ? "Meeting created, but the notetaker was dropped from the guest list — this Workspace may block external guests, so the call will not be transcribed."
+              : ""));
+          }} />
         {mode === "transcript" ? (
           <div className="space-y-2">
             <input ref={trFileRef} type="file" hidden accept=".txt,.vtt,.srt,.md,.json,.csv"
               onChange={(e) => { const f = e.target.files[0]; if (f) { const r = new FileReader(); r.onload = () => setTr(String(r.result)); r.readAsText(f); } e.target.value = ""; }} />
             <div className="flex items-center gap-2">
               <Btn size="sm" onClick={() => trFileRef.current?.click()}><Paperclip size={12} /> Upload a file</Btn>
-              <Btn size="sm" disabled={!ff.on || ffBusy} onClick={pullFireflies}
-                title={ff.on ? "Fetch this date's meeting from Fireflies" : "Not connected — set FIREFLIES_API_KEY in Vercel (paid Fireflies plan)"}>
-                {ffBusy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Pull from Fireflies
-              </Btn>
-              {!ff.on && <span className="text-[11px] text-slate-400">Fireflies not connected</span>}
               {tr && <button onClick={() => setTr("")} className="text-xs text-slate-400 hover:text-red-500 ml-auto">clear</button>}
             </div>
             <TA value={tr} onChange={(e) => setTr(e.target.value)} className="min-h-40 font-mono text-xs"
@@ -2993,7 +3080,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           </div>
         ) : (
         <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-32"
-          placeholder={speech.on ? "Listening… speak the scrum" : "e.g. — Sunrise Retail quote goes out by 2pm, Akash. Ankit calls Nevon about the pilot PO 12 to 1. If Greenline shares the BOM today, price it by evening; if not, chase their SPOC. I'll do the Escorts follow-up mail before lunch."} />
+          placeholder={speech.on ? "Listening… speak the scrum" : SCRUM_PLACEHOLDER} />
         )}
         <div className="flex flex-wrap items-center gap-2 mt-3">
           <Btn kind="primary" disabled={busy || !(mode === "transcript" ? tr.trim() : raw.trim())} onClick={organise}>
@@ -3006,41 +3093,86 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           </Btn>
           <span className="text-xs text-slate-400 ml-auto">Mention project ID, people, time windows and any if/else.</span>
         </div>
+        {busy && (
+          <div className="flex items-center gap-2 mt-3 text-xs text-slate-500">
+            <Loader2 size={13} className="animate-spin" />
+            Splitting the note into tasks, matching people and companies, resolving days and extracting contingencies…
+          </div>
+        )}
         {err && <p className="text-xs text-red-600 mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
 
         {pending && (
           <div className="mt-4 border-t border-dashed border-slate-200 pt-4">
-            <p className="text-xs mb-2"><Chip color="purple">AI organised</Chip> <span className="text-slate-500 italic ml-1">{pending.summary}</span></p>
+            <p className="text-xs mb-2">
+              {pending.engine === "offline"
+                ? <Chip color="amber"><AlertTriangle size={10} /> Offline parse — review carefully</Chip>
+                : <Chip color="purple">AI organised</Chip>}
+              <span className="text-slate-500 italic ml-1">{pending.summary}</span></p>
             {pending.ignored && <p className="text-[11px] text-slate-400 mb-2">Left out: {pending.ignored}</p>}
             {(pending.blockers || []).length > 0 && (
               <p className="text-[11px] text-red-600 mb-2">Blockers raised: {pending.blockers.map((b) => b.what + (b.who ? " (" + b.who + ")" : "")).join(" · ")}</p>
             )}
             <div className="space-y-2">
               {pending.tasks.map((t, i) => (
-                <div key={i} className="border border-slate-200 rounded-lg p-3">
-                  <p className="text-sm text-slate-800 mb-1">{t.task}
-                    {t.condition && <span className="text-xs text-amber-700 ml-2">({t.condition})</span>}
-                    {t.agreed === false && <span className="text-[10px] text-amber-600 uppercase ml-1.5">not accepted</span>}</p>
-                  {t.said && <p className="text-[11px] text-slate-400 italic mb-2 border-l-2 border-slate-200 pl-2">“{t.said}”</p>}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Sel className="w-40" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
-                      {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-                    </Sel>
-                    <Sel className="w-44" value={t.companyId || ""} onChange={(e) => setPendingTask(i, { companyId: e.target.value })}>
-                      <option value="">— no company —</option>
-                      {data.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </Sel>
-                    <Input type="time" className="w-28" value={t.start || ""} onChange={(e) => setPendingTask(i, { start: e.target.value })} />
-                    <ArrowRight size={13} className="text-slate-300" />
-                    <Input type="time" className="w-28" value={t.end || ""} onChange={(e) => setPendingTask(i, { end: e.target.value })} />
-                    <button onClick={() => setPending({ ...pending, tasks: pending.tasks.filter((_, j) => j !== i) })} className="text-slate-300 hover:text-red-500 ml-auto"><Trash2 size={13} /></button>
+                <div key={i} className={cls("border border-slate-200 rounded-lg p-3 flex items-start gap-2.5",
+                  t.include === false && "opacity-45")}>
+                  {/* Untick to leave a row out. Deleting is still there, but
+                      unticking is reversible and this is a review step. */}
+                  <input type="checkbox" checked={t.include !== false} className="mt-1 flex-none"
+                    onChange={(e) => setPendingTask(i, { include: e.target.checked })}
+                    aria-label={"Include: " + t.task} />
+                  <div className="flex-1 min-w-0">
+                    <Input className="font-medium mb-2" value={t.task}
+                      onChange={(e) => setPendingTask(i, { task: e.target.value })} />
+                    {t.agreed === false && <span className="text-[10px] text-amber-600 uppercase">not accepted in the call</span>}
+                    {t.said && <p className="text-[11px] text-slate-400 italic mb-2 border-l-2 border-slate-200 pl-2">“{t.said}”</p>}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Sel className="w-40" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
+                        {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                      </Sel>
+                      <Sel className="w-44" value={t.companyId || ""} onChange={(e) => setPendingTask(i, { companyId: e.target.value })}>
+                        <option value="">— no company —</option>
+                        {data.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </Sel>
+                      {/* The day the work is FOR. A note written today can
+                          raise work for tomorrow, and that has to be visible
+                          and correctable before it is saved. */}
+                      <Input type="date" className="w-36 font-mono" value={t.date || date}
+                        onChange={(e) => setPendingTask(i, { date: e.target.value })} />
+                      <Input type="time" className="w-28 font-mono" value={t.start || ""} onChange={(e) => setPendingTask(i, { start: e.target.value })} />
+                      <ArrowRight size={13} className="text-slate-300" />
+                      <Input type="time" className="w-28 font-mono" value={t.end || ""} onChange={(e) => setPendingTask(i, { end: e.target.value })} />
+                      <button onClick={() => setPending({ ...pending, tasks: pending.tasks.filter((_, j) => j !== i) })}
+                        className="text-slate-300 hover:text-red-500 ml-auto" title="Remove this row"><Trash2 size={13} /></button>
+                    </div>
+                    {t.offAccount && (
+                      <p className="mt-1.5 text-[11px] text-amber-600 flex items-center gap-1.5">
+                        <AlertTriangle size={11} />
+                        {(users.find((u) => u.id === t.assigneeId) || {}).name || "That person"} does not own{" "}
+                        {(data.companies.find((c) => c.id === t.companyId) || {}).name || "this account"} — check this is who you meant.
+                      </p>
+                    )}
+                    {t.date && t.date !== date && (
+                      <p className="mt-1 text-[11px] text-slate-500">Scheduled for {fmtDate(t.date)}, not the note's day.</p>
+                    )}
+                    {(t.steps || []).length > 0 && (
+                      <div className="mt-2 flex flex-col gap-1">
+                        {t.steps.map((st, si) => (
+                          <div key={si} className="text-xs text-slate-600 flex gap-2">
+                            <span className="text-slate-400 font-mono text-[11px]">{si + 1}.</span>{st}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <ConditionRail conditions={t.conditions} />
                   </div>
                 </div>
               ))}
             </div>
             <div className="flex items-center gap-2 mt-3">
               <Btn onClick={() => savePending(false)}>Save note only</Btn>
-              <Btn kind="primary" onClick={() => savePending(true)}><ListTodo size={14} /> Save note + create {pending.tasks.length} task{pending.tasks.length === 1 ? "" : "s"}</Btn>
+              <Btn kind="primary" disabled={pending.tasks.filter((t) => t.include !== false).length === 0}
+                onClick={() => savePending(true)}><ListTodo size={14} /> Save note + create {pending.tasks.filter((t) => t.include !== false).length} task{pending.tasks.filter((t) => t.include !== false).length === 1 ? "" : "s"}</Btn>
               <Btn kind="ghost" onClick={() => setPending(null)}>Discard</Btn>
             </div>
           </div>
@@ -3060,10 +3192,15 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
             const by = users.find((u) => u.id === s.userId);
             return (
               <div key={s.id} className="bg-white border border-slate-200 rounded-xl p-4 border-l-4 border-l-blue-500">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="font-semibold text-sm text-slate-900">{by ? by.name : "?"}</span>
-                  <span className="font-mono text-xs text-slate-400">{new Date(s.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
-                  {s.tasks && s.tasks.length > 0 ? <Chip color="blue">{s.tasks.length} task{s.tasks.length === 1 ? "" : "s"}</Chip> : <Chip color="slate">raw note</Chip>}
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
+                  {/* "Note 1, Note 2…" within the day — the reference people
+                      actually use when a morning produced six of them. */}
+                  {s.noteNo ? <span className="font-semibold text-sm text-slate-900">Note {s.noteNo}</span> : null}
+                  <span className="font-mono text-xs text-slate-400">{s.time || new Date(s.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  <Chip color="slate">{by ? by.name : "?"}</Chip>
+                  {(() => { const n = (s.tasks || []).filter((t) => t.include !== false).length;
+                    return n > 0 ? <Chip color="blue">{n} task{n === 1 ? "" : "s"}</Chip> : <Chip color="slate">raw note</Chip>; })()}
+                  {s.engine === "offline" && <Chip color="amber"><AlertTriangle size={10} /> offline parse</Chip>}
                   {s.source === "transcript" && <Chip color="purple">from the call</Chip>}
                   {s.attendance && (s.attendance.present || []).length > 0 && (
                     <span className="text-[11px] text-slate-400">{s.attendance.present.length} on the call</span>
@@ -3076,19 +3213,37 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
                 {s.tasks && s.tasks.length > 0 ? (
                   <div className="space-y-2">
                     {s.summary && <p className="text-xs text-slate-500 italic">{s.summary}</p>}
-                    {s.tasks.map((t, i) => (
-                      <div key={i} className="flex items-start gap-2 text-sm">
-                        <Check size={14} className="text-green-600 mt-0.5 flex-none" />
-                        <div className="min-w-0">
-                          <span className="text-slate-800">{t.task}</span>
-                          <span className="ml-2 inline-flex flex-wrap gap-1.5 align-middle">
-                            {t.owner && <Chip color="blue">{t.owner}</Chip>}
-                            {t.window && <Chip color="slate"><Clock size={10} /> {t.window}</Chip>}
-                            {t.condition && <Chip color="amber">{t.condition}</Chip>}
+                    {s.tasks.filter((t) => t.include !== false).map((t, i) => {
+                      const owner = users.find((u) => u.id === t.assigneeId);
+                      const comp = data.companies.find((c) => c.id === t.companyId);
+                      // The day the work is FOR. Shown only when it differs
+                      // from the note's own day — otherwise it is noise, and
+                      // when it differs it is the single most important thing
+                      // on the row.
+                      const otherDay = t.date && t.date !== s.date;
+                      const win = t.start || t.end
+                        ? (t.start || "") + "–" + (t.end || "")
+                        : (t.window || "");
+                      return (
+                        <div key={i} className="flex items-start gap-2 text-sm flex-wrap">
+                          <span className="font-mono text-[10.5px] text-slate-400 mt-1 flex-none">{String(i + 1).padStart(2, "0")}</span>
+                          <span className="text-slate-800 flex-1 min-w-[160px]">{t.task}</span>
+                          <span className="inline-flex flex-wrap gap-1.5 items-center">
+                            {(owner || t.owner) && <Chip color="blue">{owner ? owner.name : t.owner}</Chip>}
+                            {comp && <Chip color="slate">{comp.name}</Chip>}
+                            {otherDay && <Chip color="purple"><CalendarCheck2 size={10} /> {fmtDate(t.date)}</Chip>}
+                            {win && <Chip color="slate"><Clock size={10} /> {win}</Chip>}
+                            {(t.conditions || []).length > 0 &&
+                              <Chip color="amber"><GitBranch size={10} /> {t.conditions.length} if/else</Chip>}
+                            {(t.steps || []).length > 0 &&
+                              <Chip color="slate"><ListTodo size={10} /> {t.steps.length} step{t.steps.length === 1 ? "" : "s"}</Chip>}
                           </span>
+                          {(t.conditions || []).length > 0 && (
+                            <div className="w-full pl-6"><ConditionRail conditions={t.conditions} /></div>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     <div className="flex items-center gap-3 mt-1">
                       {s.tasked
                         ? <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> in My Tasks</span>
@@ -3369,7 +3524,6 @@ function MemoryModal({ entry, me, onClose, onSave }) {
    GOOGLE DRIVE — one folder per company under the shared root
    ============================================================ */
 
-const driveFolderName = (c) => (c.cid ? c.cid + " — " : "") + c.name;
 
 function DriveCard({ company }) {
   const [state, setState] = useState({ phase: "loading" }); // loading | off | ready | error
@@ -3378,10 +3532,10 @@ function DriveCard({ company }) {
     let alive = true;
     (async () => {
       try {
-        const s = await fetch("/api/drive?action=status").then((r) => r.json());
+        const s = await drive.status();
         if (!alive) return;
         if (!s.connected) { setState({ phase: "off", email: s.email }); return; }
-        const l = await fetch("/api/drive?action=list&name=" + encodeURIComponent(driveFolderName(company))).then((r) => r.json());
+        const l = await drive.list(driveFolderName(company));
         if (!alive) return;
         setState(l.error ? { phase: "error", msg: l.error } : { phase: "ready", ...l });
       } catch (e) { if (alive) setState({ phase: "error", msg: "Drive check failed — is the app deployed on Vercel?" }); }
@@ -3392,7 +3546,7 @@ function DriveCard({ company }) {
   const open = async () => {
     setOpening(true);
     try {
-      const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(company))).then((x) => x.json());
+      const r = await drive.open(driveFolderName(company));
       if (r.link) window.open(r.link, "_blank");
       else setState({ phase: "error", msg: r.error || "Could not open folder" });
     } catch (e) { setState({ phase: "error", msg: "Could not reach /api/drive" }); }
@@ -3671,11 +3825,8 @@ function CommsTab({ me, company: c, data, saveTasks }) {
   const fileToDrive = async (title, body) => {
     try {
       const slug = String(title).toLowerCase().replace(/[^\w\- ]/g, "").trim().replace(/\s+/g, "-").slice(0, 50);
-      await fetch("/api/drive?action=write", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: driveFolderName(c), folder: "Client-Comms",
-          fileName: todayStr() + "_" + kind + "_" + slug + ".md", content: body }),
-      });
+      await drive.write(driveFolderName(c), "Client-Comms",
+        todayStr() + "_" + kind + "_" + slug + ".md", body);
     } catch (e) { /* filing is best-effort; the record is in the DB either way */ }
   };
 
@@ -3820,7 +3971,7 @@ function CommsTab({ me, company: c, data, saveTasks }) {
                 <Btn size="sm" disabled={!driveFile.trim()} onClick={async () => {
                   setCheckMsg("checking…");
                   try {
-                    const r = await fetch("/api/drive?action=verify&name=" + encodeURIComponent(driveFolderName(c)) + "&file=" + encodeURIComponent(driveFile.trim())).then((x) => x.json());
+                    const r = await drive.verify(driveFolderName(c), driveFile.trim());
                     setCheckMsg(r.found ? "✓ found in " + (r.matches[0] || {}).where : "✗ not in the folder — did it save?");
                   } catch (e) { setCheckMsg("could not check"); }
                 }}>Check</Btn>
@@ -3962,7 +4113,7 @@ function DriveIntel({ me, company: c, data, saveCompanies }) {
   const analyse = async () => {
     setBusy(true); setErr("");
     try {
-      const l = await fetch("/api/drive?action=list&name=" + encodeURIComponent(driveFolderName(c))).then((r) => r.json());
+      const l = await drive.list(driveFolderName(c));
       const sys = [
         "You are the Drive-intelligence analyst on the Elecbits Sales OS. From the company record and its Drive folder listing, say how this account is ACTUALLY moving — blunt, factual, no praise.",
         "COMPANY: " + JSON.stringify({ name: c.name, cid: c.cid, potential: c.potential, activity: (c.activity || []).slice(-6).map((a) => a.text) }),
@@ -4167,11 +4318,14 @@ const scrumTranscriptSystem = (date, users, companies, attendance) => [
   "AGREEMENT: if work was assigned but nobody accepted it, still extract it and set agreed=false. If something was raised and explicitly dropped in the call, do not extract it at all.",
   "OWNERS: 'I' and 'me' mean the person speaking that line. 'the account owner' means that company's owner from the list above — put the roster NAME, never the phrase. If genuinely unattributed, leave owner empty rather than defaulting it to anyone.",
   "TIME WINDOWS: 24h HH:MM only. 'by 2' → end 14:00, start empty. '12 to 1' → 12:00–13:00. 'first thing' / 'morning' → empty. 'end of day' → end 18:30.",
+  "THE DAY: put it in \"date\" as YYYY-MM-DD. No day said = " + date + "; 'tomorrow' = the day after " + date + "; a weekday name = the next such day on or after " + date + ". Work promised for tomorrow must land on tomorrow, not on the day of the call.",
+  "STEPS: when someone spelt out how they will do it, break that into short imperative steps. A one-action commitment has no steps — leave the array empty rather than restating the task.",
+  "CONDITIONS: every if/else heard in the call becomes a STRUCTURED row — the condition, the action, and a timebox in minutes if one was said. 'if they don't reply in an hour, call the SPOC' is {if:\"they don't reply\", then:\"call the SPOC\", timeboxMinutes:60}. Never leave a contingency inside the task sentence.",
   "EVIDENCE: every task carries \"said\" — the verbatim fragment of the transcript it came from, 140 characters maximum, copied exactly, so a human can check you in two seconds. A task with no quotable line is a task you invented: drop it.",
   "TASK TEXT: action-first and short — 'Send Sunrise Retail the pilot quote', not 'Akash mentioned that he would probably try to send'. Keep IDs, part numbers and figures verbatim.",
   "",
   "Reply with ONLY one line, valid JSON, no markdown, no preamble:",
-  "SCRUM_JSON {\"summary\":\"one line on what this call actually committed to\",\"speakers\":[{\"heard\":\"label as it appears\",\"name\":\"roster name or empty\",\"guest\":false}],\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name or empty\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"condition\":\"if/else or empty\",\"agreed\":true,\"said\":\"verbatim quote, max 140 chars\"}],\"blockers\":[{\"what\":\"...\",\"who\":\"roster name or empty\"}],\"decisions\":[\"...\"],\"ignored\":\"one line naming what you deliberately left out\"}",
+  "SCRUM_JSON {\"summary\":\"one line on what this call actually committed to\",\"speakers\":[{\"heard\":\"label as it appears\",\"name\":\"roster name or empty\",\"guest\":false}],\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name or empty\",\"date\":\"YYYY-MM-DD\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"steps\":[\"\"],\"conditions\":[{\"if\":\"\",\"then\":\"\",\"timeboxMinutes\":60}],\"agreed\":true,\"said\":\"verbatim quote, max 140 chars\"}],\"blockers\":[{\"what\":\"...\",\"who\":\"roster name or empty\"}],\"decisions\":[\"...\"],\"ignored\":\"one line naming what you deliberately left out\"}",
 ].filter(Boolean).join("\n");
 
 const overdueSecs = (t) => {
@@ -4263,7 +4417,7 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
     if (needsEvidence && file.trim() && comp) {
       setChecking("Looking for “" + file.trim() + "” in the Drive folder…");
       try {
-        const r = await withTimeout(fetch("/api/drive?action=verify&name=" + encodeURIComponent(driveFolderName(comp)) + "&file=" + encodeURIComponent(file.trim())).then((x) => x.json()), 12000);
+        const r = await withTimeout(drive.verify(driveFolderName(comp), file.trim()), 12000);
         driveCheck = r && r.found
           ? "FOUND — " + r.matches.map((m) => m.name + " (in " + m.where + ")").join("; ")
           : "NOT FOUND — nothing matching that name in " + (r && r.folderFound ? "the company folder or its sub-folders" : "Drive (the folder itself is not shared with this tool)");
@@ -5181,6 +5335,72 @@ function DesignerLld({ answers, setAnswers }) {
   );
 }
 
+/* ── Whether a person can actually get in ──────────────────────────────────
+   Deactivating someone on the roster hides them from the UI and nothing more:
+   their session stays valid, and every sales table is readable by any signed-in
+   user, so a leaver marked inactive can still read the whole database. This
+   column is where that is made visible and undone.
+
+   Renders nothing at all when /api/admin-users is unconfigured — an inert
+   "Revoke" button beside a leaver's name is worse than no button, because it
+   looks like the job is done. */
+function LoginCell({ user, me }) {
+  const [cfg, setCfg] = useState({ connected: false });
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [gone, setGone] = useState(false);
+
+  useEffect(() => { adminUsers.status().then(setCfg).catch(() => {}); }, []);
+  if (!cfg.connected) return <span className="text-xs text-slate-300">—</span>;
+
+  // authId is null for someone rostered who has never signed in.
+  const hasLogin = !!user.authId && !gone;
+  const isMe = user.id === me.id;
+
+  if (!hasLogin) {
+    return <span className="text-xs text-slate-400" title="Rostered, but no account yet — they sign in once to create it.">
+      {gone ? "revoked" : "never signed in"}
+    </span>;
+  }
+
+  const revoke = async () => {
+    setBusy(true); setMsg("");
+    const r = await adminUsers.revoke(user.email);
+    if (r.error) { setMsg(r.error); setBusy(false); return; }
+    setGone(true); setConfirming(false); setMsg(r.note || "");
+    setBusy(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-1 items-start">
+      {!confirming ? (
+        <div className="flex items-center gap-2">
+          <Chip color="blue">can sign in</Chip>
+          {!isMe && (
+            <button onClick={() => { setConfirming(true); setMsg(""); }}
+              className="text-[11px] text-slate-400 hover:text-red-600 hover:underline">revoke</button>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          <p className="text-[11px] text-slate-600 max-w-[230px]">
+            Delete <b>{user.email}</b>'s login? Their session ends and they lose all
+            database access. The roster entry stays, so their name remains on past work.
+          </p>
+          <div className="flex items-center gap-2">
+            <Btn size="sm" kind="danger" disabled={busy} onClick={revoke}>
+              {busy ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />} Revoke
+            </Btn>
+            <button onClick={() => setConfirming(false)} className="text-[11px] text-slate-400 hover:underline">cancel</button>
+          </div>
+        </div>
+      )}
+      {msg && <p className="text-[11px] text-slate-500 max-w-[230px]">{msg}</p>}
+    </div>
+  );
+}
+
 function AdminView({ me, data, saveUsers, saveGates, saveQuestionSet }) {
   const { users, gates, questionSets } = data;
   const QSET_KEYS = ["company_card", "project_id", "boxbuild_criteria"];
@@ -5228,7 +5448,7 @@ function AdminView({ me, data, saveUsers, saveGates, saveQuestionSet }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs text-slate-400 border-b border-slate-100">
-              <th className="py-2 pr-4 font-medium">Name</th><th className="py-2 pr-4 font-medium">Email</th><th className="py-2 pr-4 font-medium">Role</th><th className="py-2 pr-4 font-medium">Department</th><th className="py-2 pr-4 font-medium">Status</th><th className="py-2" />
+              <th className="py-2 pr-4 font-medium">Name</th><th className="py-2 pr-4 font-medium">Email</th><th className="py-2 pr-4 font-medium">Role</th><th className="py-2 pr-4 font-medium">Department</th><th className="py-2 pr-4 font-medium">Status</th><th className="py-2 pr-4 font-medium">Login</th><th className="py-2" />
             </tr></thead>
             <tbody>
               {users.map((u) => (
@@ -5238,6 +5458,7 @@ function AdminView({ me, data, saveUsers, saveGates, saveQuestionSet }) {
                   <td className="py-2 pr-4">{roleLabel(u.role)}</td>
                   <td className="py-2 pr-4">{u.dept}</td>
                   <td className="py-2 pr-4">{u.active !== false ? <Chip color="green">Active</Chip> : <Chip color="slate">Inactive</Chip>}</td>
+                  <td className="py-2 pr-4"><LoginCell user={u} me={me} /></td>
                   <td className="py-2 text-right"><Btn size="sm" onClick={() => setEditUser(u)}><Pencil size={12} /></Btn></td>
                 </tr>
               ))}
