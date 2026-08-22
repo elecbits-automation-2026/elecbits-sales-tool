@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Building2, Columns, TrendingUp, BookOpen, Receipt, Settings, Plus, X, Search,
   Mic, MicOff, Send, Check, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
   Bot, Database, CalendarCheck2, Sun, Moon, ListTodo, FolderOpen, PencilRuler,
-  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play
+  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play, GitBranch
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
@@ -31,6 +31,7 @@ import {
 import {
   INDUSTRIES, ORG_SIZES, industryCodeOf, LLD_QUESTIONS, ROLES, roleLabel,
 } from "./data/taxonomy";
+import { SCRUM_PLACEHOLDER, isoDay, dayFor, fallbackScrum } from "./data/scrum";
 import logoLight from "./assets/elecbits-logo.png";
 import logoDark from "./assets/elecbits-logo-dark.png";
 import markLight from "./assets/elecbits-mark.png";
@@ -281,6 +282,8 @@ function localISO(d = new Date()) {
 const todayStr = () => localISO();
 const monthKey = () => localISO().slice(0, 7);
 const nowTS = () => new Date().toISOString();
+/* Local wall-clock HH:MM — the time a note was written, as the writer saw it. */
+const nowHM = () => new Date().toTimeString().slice(0, 5);
 const tsDaysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
 const dateDaysAgo = (n) => localISO(new Date(Date.now() - n * 86400000));
 const fmtINR = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
@@ -2525,12 +2528,113 @@ function ExpenseModal({ me, data, onClose, onSave }) {
    DAILY SCRUM — write it as it comes → AI-organised tasks
    ============================================================ */
 
+/* An if/else contingency, shown as a branch rather than a sentence. Ported
+   from the PMS: the point is that a reader can see at a glance that this task
+   has a fork in it, and how long they have before the fork matters. */
+function ConditionRail({ conditions }) {
+  if (!conditions || !conditions.length) return null;
+  return (
+    <div className="flex flex-col gap-1.5 mt-2">
+      {conditions.map((c, i) => (
+        <div key={i} className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 text-xs">
+          <div className="flex items-start gap-1.5 flex-wrap">
+            <Chip color="amber"><GitBranch size={10} /> IF</Chip>
+            <span className="text-slate-700 flex-1 min-w-[140px]">{c.if}</span>
+          </div>
+          <div className="flex items-start gap-1.5 flex-wrap mt-1">
+            <Chip color="blue"><ArrowRight size={10} /> THEN</Chip>
+            <span className="text-slate-700 flex-1 min-w-[140px]">{c.then}</span>
+            {c.timeboxMinutes ? <Chip color="purple"><Clock size={10} /> {c.timeboxMinutes}m</Chip> : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── The stand-up that nobody had to type ──────────────────────────────────
+   Fireflies sits in the call and writes down what was said. This panel brings
+   that in: the day's meetings are listed, and picking one APPENDS its
+   transcript to the box.
+
+   Appending, never replacing, is the whole design. A stand-up is usually a
+   call plus a few things somebody typed afterwards, and silently eating what
+   is already in the box would be the worst possible behaviour here — the
+   previous version auto-picked one meeting and overwrote whatever was there. */
+function MeetingsPanel({ date, onUse, usedIds }) {
+  const [ff, setFf] = useState({ on: false });
+  const [items, setItems] = useState(null);   // null = not looked yet
+  const [busy, setBusy] = useState(false);
+  const [pulling, setPulling] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => { fireflies.status().then(setFf).catch(() => {}); }, []);
+  // A new day is a new list — never show yesterday's meetings under today.
+  useEffect(() => { setItems(null); setErr(""); }, [date]);
+
+  const look = async () => {
+    setBusy(true); setErr("");
+    try {
+      const { from, to } = fireflies.dayRange(date);
+      const list = await fireflies.list(from, to);
+      setItems(list);
+      if (!list.length) setErr("Fireflies recorded nothing on " + fmtDate(date) + ".");
+    } catch (e) { setErr("Could not reach Fireflies."); }
+    setBusy(false);
+  };
+
+  const use = async (m) => {
+    setPulling(m.id); setErr("");
+    try {
+      const t = await fireflies.transcript(m.id);
+      if (t.error) { setErr("Fireflies: " + t.error); setPulling(""); return; }
+      if (!String(t.text || "").trim()) { setErr("That meeting has no transcript text yet."); setPulling(""); return; }
+      onUse(t.text, m, t.url || "");
+    } catch (e) { setErr("Could not read that meeting."); }
+    setPulling("");
+  };
+
+  if (!ff.on) return null;   // not connected — the panel would only be noise
+
+  return (
+    <div className="border border-slate-200 rounded-lg p-3 mb-3 bg-slate-50">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Mic size={13} className="text-blue-600" />
+        <span className="text-xs font-semibold text-slate-700 mr-auto">Recorded calls — {fmtDate(date)}</span>
+        <Btn size="sm" disabled={busy} onClick={look}>
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {items === null ? "See the day's calls" : "Refresh"}
+        </Btn>
+      </div>
+      {items !== null && items.length > 0 && (
+        <div className="flex flex-col gap-1.5 mt-2">
+          {items.map((m) => {
+            const used = usedIds.includes(m.id);
+            return (
+              <div key={m.id} className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-2.5 py-1.5">
+                <span className="text-xs text-slate-700 truncate flex-1" title={m.title || "Untitled"}>{m.title || "Untitled call"}</span>
+                {m.duration ? <span className="text-[11px] text-slate-400 font-mono flex-none">{Math.round(m.duration)}m</span> : null}
+                <Btn size="sm" kind={used ? "ghost" : "primary"} disabled={!!pulling}
+                  onClick={() => use(m)} title={used ? "Already added — this will append it again" : "Append this call's transcript"}>
+                  {pulling === m.id ? <Loader2 size={11} className="animate-spin" /> : used ? <Check size={11} /> : <Plus size={11} />}
+                  {used ? " added" : " use"}
+                </Btn>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {err && <p className="text-[11px] text-amber-600 mt-1.5">{err}</p>}
+      <p className="text-[11px] text-slate-400 mt-1.5">Picking a call adds it to the box below — it never replaces what is already there.</p>
+    </div>
+  );
+}
+
 function DailyScrumView({ me, data, saveScrums, saveTasks }) {
   // A scrum line becomes a real task: owner matched to the roster by name
   // (unmatched → the note's author), due = the scrum's date.
   const scrumToTasks = (s) => {
     const { users, tasks } = data;
-    const fresh = (s.tasks || []).map((t) => {
+    const fresh = (s.tasks || []).filter((t) => t.include !== false).map((t) => {
       // Preview edits win over name-matching: assigneeId/start/end may already
       // be set by the "AI organised" card before saving.
       const owner = (t.assigneeId && users.find((u) => u.id === t.assigneeId))
@@ -2540,8 +2644,13 @@ function DailyScrumView({ me, data, saveScrums, saveTasks }) {
         id: uid(), companyId: t.companyId || "", dealId: "",
         assignee: owner ? owner.id : s.userId, author: me.id,
         title: t.task,
-        details: t.condition || "", due: s.date || todayStr(),
+        details: "",
+        // The day the work is FOR, not the day the note was written. This is
+        // the whole point of resolving "tomorrow" in the organiser.
+        due: t.date || s.date || todayStr(),
         windowStart: win.start, windowEnd: win.end,
+        steps: Array.isArray(t.steps) ? t.steps : [],
+        conditions: Array.isArray(t.conditions) ? t.conditions : [],
         work: {}, ai: {}, escalated: false, branchedFrom: "",
         status: "open", source: s.source === "transcript" ? "transcript" : "scrum",
         scrumNoteId: s.id, createdAt: nowTS(),
@@ -2568,24 +2677,21 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   const [tr, setTr] = useState("");             // raw transcript
   const [trUrl, setTrUrl] = useState("");
   const trFileRef = useRef(null);
-  const [ff, setFf] = useState({ on: false });     // Fireflies connection + list
-  const [ffBusy, setFfBusy] = useState(false);
-  useEffect(() => { fireflies.status().then(setFf).catch(() => {}); }, []);
-  const pullFireflies = async () => {
-    setFfBusy(true);
-    try {
-      const { from, to } = fireflies.dayRange(date);
-      const items = await fireflies.list(from, to);
-      if (!items.length) { setErr("Fireflies has no meeting recorded for " + fmtDate(date) + "."); setFfBusy(false); return; }
-      // The scrum is the one that looks like a scrum, else the day's longest.
-      const pick = fireflies.pickScrum(items)!;
-      const t = await fireflies.transcript(pick.id);
-      if (t.error) { setErr("Fireflies: " + t.error); setFfBusy(false); return; }
-      setTr(t.text || ""); setTrUrl(t.url || "");
-      setErr("");
-    } catch (e) { setErr("Could not reach Fireflies."); }
-    setFfBusy(false);
-  };
+  // Which recorded calls fed this note, so the saved note can point back at
+  // the transcripts it came from.
+  const [fromMeetings, setFromMeetings] = useState([]);
+
+  /* A pulled call is APPENDED, never a replacement — a stand-up is often a
+     call plus a few things somebody typed, and silently eating what was
+     already in the box would be the worst possible behaviour here. */
+  const useMeeting = useCallback((text, meeting, url) => {
+    if (!String(text || "").trim()) return;
+    setTr((d) => (d.trim() ? d.trim() + "\n\n" + text : text));
+    if (url) setTrUrl((u) => u || url);
+    if (meeting?.id) setFromMeetings((m) => (m.includes(meeting.id) ? m : [...m, meeting.id]));
+    setMode("transcript");
+    setErr("");
+  }, []);
   const norm = useMemo(() => normaliseTranscript(tr), [tr]);
   const attendanceObj = () => ({
     present: Object.keys(present).filter((k) => present[k]),
@@ -2594,10 +2700,16 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   });
   const setPendingTask = (i, patch) => setPending({ ...pending, tasks: pending.tasks.map((t, j) => (j === i ? { ...t, ...patch } : t)) });
   const savePending = (withTasks) => {
-    const note = { ...pending };
+    // Unticked rows never become tasks and are not kept on the note — the
+    // preview is the last place to say "not that one".
+    const kept = (pending.tasks || []).filter((t) => t.include !== false);
+    // "Note 1, Note 2…" within the day, so a note has a human reference that
+    // survives being one of six written that morning.
+    const sameDay = scrums.filter((x) => x.date === pending.date);
+    const note = { ...pending, tasks: kept, noteNo: sameDay.length + 1, time: nowHM() };
     note.tasked = withTasks ? scrumToTasks(note) > 0 : false;
     saveScrums([note, ...scrums]);
-    setPending(null);
+    setPending(null); setFromMeetings([]); setTr(""); setTrUrl("");
   };
   const speech = useSpeech((t) => setRaw((p) => (p ? p + " " : "") + t));
 
@@ -2619,8 +2731,11 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
       "COMPANIES with their account owners (match any client mentioned, even loosely — 'Sunrise Company' means 'Sunrise Retail Tech'): " + companies.map((c) => { const o = users.find((u) => u.id === c.accountOwner); return c.name + (o ? " (owner: " + o.name + ")" : ""); }).join(", "),
       "ROLE REFERENCES: 'the account owner' / 'the owner' of a company means that company's owner from the list above — put their actual roster NAME in owner, never the phrase.",
       "TIME WINDOWS: normalise everything to 24h HH:MM. 'by 2pm' / 'before 2' → end 14:00 with empty start. '12 to 1pm' → 12:00–13:00. 'today' with no time → empty window.",
-      "Keep task text short and action-first ('Send Sunrise Retail the pilot quote'). Put any if/else in condition. Preserve IDs verbatim.",
-      "Reply with ONLY one line: SCRUM_JSON {\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name from the list or empty\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"condition\":\"if/else or empty\"}],\"summary\":\"one-line summary\"}",
+      "WHEN — resolve the day and put it in \"date\" as YYYY-MM-DD. 'today' or no day mentioned = " + date + "; 'tomorrow' = the day after " + date + "; a weekday name = the next such day on or after " + date + ". A note written today can raise work for tomorrow, and the task must land on the day the work is FOR — never on the day the note was written.",
+      "STEPS — where the note spells out how something is to be done, break it into short imperative steps. Omit steps entirely for a one-action task; do not pad.",
+      "CONDITIONS — capture every if/else contingency as a STRUCTURED row: what the condition is, what to do when it holds, and a timebox in minutes when one is stated ('in an hour' = 60, 'within 30 mins' = 30). Do not bury a contingency in the task text.",
+      "Keep task text short and action-first ('Send Sunrise Retail the pilot quote'). Preserve IDs, part numbers and figures verbatim.",
+      "Reply with ONLY one line: SCRUM_JSON {\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name from the list or empty\",\"date\":\"YYYY-MM-DD\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"steps\":[\"\"],\"conditions\":[{\"if\":\"\",\"then\":\"\",\"timeboxMinutes\":60}]}],\"summary\":\"one-line summary\"}",
       "Valid JSON. No markdown.",
     ].join("\n");
     try {
@@ -2640,7 +2755,27 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           const compOwner = comp && !owner && /owner/i.test(String(t.owner || "") + " " + String(t.task || ""))
             ? users.find((u) => u.id === comp.accountOwner) : null;
           const win = t.start || t.end ? { start: t.start || "", end: t.end || "" } : parseWin(t.window);
-          return { ...t, assigneeId: owner ? owner.id : (compOwner ? compOwner.id : me.id), companyId: comp ? comp.id : "", start: win.start, end: win.end };
+          const assigneeId = owner ? owner.id : (compOwner ? compOwner.id : me.id);
+          return {
+            ...t, assigneeId, companyId: comp ? comp.id : "", start: win.start, end: win.end,
+            // Every row starts included and can be unticked. Deleting was the
+            // only way to drop one before, which is destructive and has no undo.
+            include: true,
+            // The day the work is FOR. A note written today can raise work for
+            // tomorrow; the model resolves it, and this is the floor when it
+            // answers with something that is not a date.
+            date: isoDay(t.date) || dayFor(String(t.task || ""), date) || date,
+            steps: Array.isArray(t.steps) ? t.steps.filter(Boolean) : [],
+            // Structured rows. A flat `condition` string from an older note
+            // (or an older model reply) is lifted into the same shape so the
+            // rail renders one thing, not two.
+            conditions: Array.isArray(t.conditions) && t.conditions.length
+              ? t.conditions.filter((c) => c && (c.if || c.then))
+              : (t.condition ? [{ if: String(t.condition), then: "follow the contingency as written", timeboxMinutes: null }] : []),
+            // Assigning work on an account to someone who does not own it is
+            // usually a mis-read of "the account owner" — say so before saving.
+            offAccount: !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner),
+          };
         }),
         summary: parsed.summary || "", createdAt: nowTS(),
         blockers: Array.isArray(parsed.blockers) ? parsed.blockers : [],
@@ -2648,13 +2783,38 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         ignored: parsed.ignored || "",
         link, attendance: attendanceObj(),
         source: mode === "transcript" ? "transcript" : "typed",
+        origin: fromMeetings.length ? "meeting" : "manual", meetingIds: fromMeetings,
         transcript: mode === "transcript" ? norm.text : "",
         transcriptUrl: mode === "transcript" ? trUrl : "",
       };
       // The PMS preview: adjust assignee + time windows before anything saves.
       setPending(note);
       setRaw("");
-    } catch (e) { setErr("Could not organise this — saved nothing. Check connection and try again."); }
+    } catch (e) {
+      // The AI is unreachable. The person has just typed the day's plan —
+      // failing the save loses it. Parse it crudely instead, flag the preview
+      // as an offline parse, and let them correct it.
+      const fb = fallbackScrum(text, date, users, companies);
+      setPending({
+        id: uid(), userId: me.id, date, raw: text, engine: "offline",
+        tasks: fb.tasks.map((t) => {
+          const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
+          const comp = matchCompany(t.company, companies) || matchCompany(t.task, companies);
+          const assigneeId = owner ? owner.id : me.id;
+          return { ...t, assigneeId, companyId: comp ? comp.id : "", include: true,
+                   offAccount: !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner) };
+        }),
+        summary: fb.summary, createdAt: nowTS(),
+        blockers: [], decisions: [], ignored: "",
+        link, attendance: attendanceObj(),
+        source: mode === "transcript" ? "transcript" : "typed",
+        origin: fromMeetings.length ? "meeting" : "manual", meetingIds: fromMeetings,
+        transcript: mode === "transcript" ? norm.text : "",
+        transcriptUrl: mode === "transcript" ? trUrl : "",
+      });
+      setErr("AI unreachable — this is an offline parse. Check every row before saving.");
+      setRaw("");
+    }
     setBusy(false);
   };
 
@@ -2727,17 +2887,13 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
             ))}
           </div>
         </div>
+        <MeetingsPanel date={date} onUse={useMeeting} usedIds={fromMeetings} />
         {mode === "transcript" ? (
           <div className="space-y-2">
             <input ref={trFileRef} type="file" hidden accept=".txt,.vtt,.srt,.md,.json,.csv"
               onChange={(e) => { const f = e.target.files[0]; if (f) { const r = new FileReader(); r.onload = () => setTr(String(r.result)); r.readAsText(f); } e.target.value = ""; }} />
             <div className="flex items-center gap-2">
               <Btn size="sm" onClick={() => trFileRef.current?.click()}><Paperclip size={12} /> Upload a file</Btn>
-              <Btn size="sm" disabled={!ff.on || ffBusy} onClick={pullFireflies}
-                title={ff.on ? "Fetch this date's meeting from Fireflies" : "Not connected — set FIREFLIES_API_KEY in Vercel (paid Fireflies plan)"}>
-                {ffBusy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Pull from Fireflies
-              </Btn>
-              {!ff.on && <span className="text-[11px] text-slate-400">Fireflies not connected</span>}
               {tr && <button onClick={() => setTr("")} className="text-xs text-slate-400 hover:text-red-500 ml-auto">clear</button>}
             </div>
             <TA value={tr} onChange={(e) => setTr(e.target.value)} className="min-h-40 font-mono text-xs"
@@ -2757,7 +2913,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           </div>
         ) : (
         <TA value={raw} onChange={(e) => setRaw(e.target.value)} className="min-h-32"
-          placeholder={speech.on ? "Listening… speak the scrum" : "e.g. — Sunrise Retail quote goes out by 2pm, Akash. Ankit calls Nevon about the pilot PO 12 to 1. If Greenline shares the BOM today, price it by evening; if not, chase their SPOC. I'll do the Escorts follow-up mail before lunch."} />
+          placeholder={speech.on ? "Listening… speak the scrum" : SCRUM_PLACEHOLDER} />
         )}
         <div className="flex flex-wrap items-center gap-2 mt-3">
           <Btn kind="primary" disabled={busy || !(mode === "transcript" ? tr.trim() : raw.trim())} onClick={organise}>
@@ -2774,37 +2930,76 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
 
         {pending && (
           <div className="mt-4 border-t border-dashed border-slate-200 pt-4">
-            <p className="text-xs mb-2"><Chip color="purple">AI organised</Chip> <span className="text-slate-500 italic ml-1">{pending.summary}</span></p>
+            <p className="text-xs mb-2">
+              {pending.engine === "offline"
+                ? <Chip color="amber"><AlertTriangle size={10} /> Offline parse — review carefully</Chip>
+                : <Chip color="purple">AI organised</Chip>}
+              <span className="text-slate-500 italic ml-1">{pending.summary}</span></p>
             {pending.ignored && <p className="text-[11px] text-slate-400 mb-2">Left out: {pending.ignored}</p>}
             {(pending.blockers || []).length > 0 && (
               <p className="text-[11px] text-red-600 mb-2">Blockers raised: {pending.blockers.map((b) => b.what + (b.who ? " (" + b.who + ")" : "")).join(" · ")}</p>
             )}
             <div className="space-y-2">
               {pending.tasks.map((t, i) => (
-                <div key={i} className="border border-slate-200 rounded-lg p-3">
-                  <p className="text-sm text-slate-800 mb-1">{t.task}
-                    {t.condition && <span className="text-xs text-amber-700 ml-2">({t.condition})</span>}
-                    {t.agreed === false && <span className="text-[10px] text-amber-600 uppercase ml-1.5">not accepted</span>}</p>
-                  {t.said && <p className="text-[11px] text-slate-400 italic mb-2 border-l-2 border-slate-200 pl-2">“{t.said}”</p>}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Sel className="w-40" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
-                      {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-                    </Sel>
-                    <Sel className="w-44" value={t.companyId || ""} onChange={(e) => setPendingTask(i, { companyId: e.target.value })}>
-                      <option value="">— no company —</option>
-                      {data.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </Sel>
-                    <Input type="time" className="w-28" value={t.start || ""} onChange={(e) => setPendingTask(i, { start: e.target.value })} />
-                    <ArrowRight size={13} className="text-slate-300" />
-                    <Input type="time" className="w-28" value={t.end || ""} onChange={(e) => setPendingTask(i, { end: e.target.value })} />
-                    <button onClick={() => setPending({ ...pending, tasks: pending.tasks.filter((_, j) => j !== i) })} className="text-slate-300 hover:text-red-500 ml-auto"><Trash2 size={13} /></button>
+                <div key={i} className={cls("border border-slate-200 rounded-lg p-3 flex items-start gap-2.5",
+                  t.include === false && "opacity-45")}>
+                  {/* Untick to leave a row out. Deleting is still there, but
+                      unticking is reversible and this is a review step. */}
+                  <input type="checkbox" checked={t.include !== false} className="mt-1 flex-none"
+                    onChange={(e) => setPendingTask(i, { include: e.target.checked })}
+                    aria-label={"Include: " + t.task} />
+                  <div className="flex-1 min-w-0">
+                    <Input className="font-medium mb-2" value={t.task}
+                      onChange={(e) => setPendingTask(i, { task: e.target.value })} />
+                    {t.agreed === false && <span className="text-[10px] text-amber-600 uppercase">not accepted in the call</span>}
+                    {t.said && <p className="text-[11px] text-slate-400 italic mb-2 border-l-2 border-slate-200 pl-2">“{t.said}”</p>}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Sel className="w-40" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
+                        {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                      </Sel>
+                      <Sel className="w-44" value={t.companyId || ""} onChange={(e) => setPendingTask(i, { companyId: e.target.value })}>
+                        <option value="">— no company —</option>
+                        {data.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </Sel>
+                      {/* The day the work is FOR. A note written today can
+                          raise work for tomorrow, and that has to be visible
+                          and correctable before it is saved. */}
+                      <Input type="date" className="w-36 font-mono" value={t.date || date}
+                        onChange={(e) => setPendingTask(i, { date: e.target.value })} />
+                      <Input type="time" className="w-28 font-mono" value={t.start || ""} onChange={(e) => setPendingTask(i, { start: e.target.value })} />
+                      <ArrowRight size={13} className="text-slate-300" />
+                      <Input type="time" className="w-28 font-mono" value={t.end || ""} onChange={(e) => setPendingTask(i, { end: e.target.value })} />
+                      <button onClick={() => setPending({ ...pending, tasks: pending.tasks.filter((_, j) => j !== i) })}
+                        className="text-slate-300 hover:text-red-500 ml-auto" title="Remove this row"><Trash2 size={13} /></button>
+                    </div>
+                    {t.offAccount && (
+                      <p className="mt-1.5 text-[11px] text-amber-600 flex items-center gap-1.5">
+                        <AlertTriangle size={11} />
+                        {(users.find((u) => u.id === t.assigneeId) || {}).name || "That person"} does not own{" "}
+                        {(data.companies.find((c) => c.id === t.companyId) || {}).name || "this account"} — check this is who you meant.
+                      </p>
+                    )}
+                    {t.date && t.date !== date && (
+                      <p className="mt-1 text-[11px] text-slate-500">Scheduled for {fmtDate(t.date)}, not the note's day.</p>
+                    )}
+                    {(t.steps || []).length > 0 && (
+                      <div className="mt-2 flex flex-col gap-1">
+                        {t.steps.map((st, si) => (
+                          <div key={si} className="text-xs text-slate-600 flex gap-2">
+                            <span className="text-slate-400 font-mono text-[11px]">{si + 1}.</span>{st}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <ConditionRail conditions={t.conditions} />
                   </div>
                 </div>
               ))}
             </div>
             <div className="flex items-center gap-2 mt-3">
               <Btn onClick={() => savePending(false)}>Save note only</Btn>
-              <Btn kind="primary" onClick={() => savePending(true)}><ListTodo size={14} /> Save note + create {pending.tasks.length} task{pending.tasks.length === 1 ? "" : "s"}</Btn>
+              <Btn kind="primary" disabled={pending.tasks.filter((t) => t.include !== false).length === 0}
+                onClick={() => savePending(true)}><ListTodo size={14} /> Save note + create {pending.tasks.filter((t) => t.include !== false).length} task{pending.tasks.filter((t) => t.include !== false).length === 1 ? "" : "s"}</Btn>
               <Btn kind="ghost" onClick={() => setPending(null)}>Discard</Btn>
             </div>
           </div>
@@ -3927,11 +4122,14 @@ const scrumTranscriptSystem = (date, users, companies, attendance) => [
   "AGREEMENT: if work was assigned but nobody accepted it, still extract it and set agreed=false. If something was raised and explicitly dropped in the call, do not extract it at all.",
   "OWNERS: 'I' and 'me' mean the person speaking that line. 'the account owner' means that company's owner from the list above — put the roster NAME, never the phrase. If genuinely unattributed, leave owner empty rather than defaulting it to anyone.",
   "TIME WINDOWS: 24h HH:MM only. 'by 2' → end 14:00, start empty. '12 to 1' → 12:00–13:00. 'first thing' / 'morning' → empty. 'end of day' → end 18:30.",
+  "THE DAY: put it in \"date\" as YYYY-MM-DD. No day said = " + date + "; 'tomorrow' = the day after " + date + "; a weekday name = the next such day on or after " + date + ". Work promised for tomorrow must land on tomorrow, not on the day of the call.",
+  "STEPS: when someone spelt out how they will do it, break that into short imperative steps. A one-action commitment has no steps — leave the array empty rather than restating the task.",
+  "CONDITIONS: every if/else heard in the call becomes a STRUCTURED row — the condition, the action, and a timebox in minutes if one was said. 'if they don't reply in an hour, call the SPOC' is {if:\"they don't reply\", then:\"call the SPOC\", timeboxMinutes:60}. Never leave a contingency inside the task sentence.",
   "EVIDENCE: every task carries \"said\" — the verbatim fragment of the transcript it came from, 140 characters maximum, copied exactly, so a human can check you in two seconds. A task with no quotable line is a task you invented: drop it.",
   "TASK TEXT: action-first and short — 'Send Sunrise Retail the pilot quote', not 'Akash mentioned that he would probably try to send'. Keep IDs, part numbers and figures verbatim.",
   "",
   "Reply with ONLY one line, valid JSON, no markdown, no preamble:",
-  "SCRUM_JSON {\"summary\":\"one line on what this call actually committed to\",\"speakers\":[{\"heard\":\"label as it appears\",\"name\":\"roster name or empty\",\"guest\":false}],\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name or empty\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"condition\":\"if/else or empty\",\"agreed\":true,\"said\":\"verbatim quote, max 140 chars\"}],\"blockers\":[{\"what\":\"...\",\"who\":\"roster name or empty\"}],\"decisions\":[\"...\"],\"ignored\":\"one line naming what you deliberately left out\"}",
+  "SCRUM_JSON {\"summary\":\"one line on what this call actually committed to\",\"speakers\":[{\"heard\":\"label as it appears\",\"name\":\"roster name or empty\",\"guest\":false}],\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name or empty\",\"date\":\"YYYY-MM-DD\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"steps\":[\"\"],\"conditions\":[{\"if\":\"\",\"then\":\"\",\"timeboxMinutes\":60}],\"agreed\":true,\"said\":\"verbatim quote, max 140 chars\"}],\"blockers\":[{\"what\":\"...\",\"who\":\"roster name or empty\"}],\"decisions\":[\"...\"],\"ignored\":\"one line naming what you deliberately left out\"}",
 ].filter(Boolean).join("\n");
 
 const overdueSecs = (t) => {

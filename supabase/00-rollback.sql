@@ -1,7 +1,8 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- ROLLBACK — reverse the additive migrations 12 through 19.
+-- ROLLBACK — reverse the additive migrations 12 through 20.
 --
 -- WHAT THIS UNDOES
+--   20-scrum-parity.sql   sales.tasks.steps and .conditions
 --   19-client-comms.sql   sales.commitments; the touch columns and the two
 --                         check constraints on sales.org_activities
 --   18-scrum-call.sql     the call columns on sales.scrum_notes;

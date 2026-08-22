@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "check": "node scripts/check-sales.mjs",
-    "check:ci": "node scripts/check-sales.mjs --quiet --db"
+    "check:ci": "node scripts/check-sales.mjs --quiet --db",
+    "test:scrum": "node scripts/test-scrum.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

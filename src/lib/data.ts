@@ -205,6 +205,11 @@ export async function loadWorkspace() {
     blockers: (s.organized && s.organized.blockers) || [],
     decisions: (s.organized && s.organized.decisions) || [],
     ignored: (s.organized && s.organized.ignored) || "",
+    noteNo: (s.organized && s.organized.noteNo) || null,
+    time: (s.organized && s.organized.time) || "",
+    origin: (s.organized && s.organized.origin) || "manual",
+    meetingIds: (s.organized && s.organized.meetingIds) || [],
+    engine: (s.organized && s.organized.engine) || "ai",
     link: s.meet_link || "", attendance: s.attendance || {},
     source: s.source || "typed", transcript: s.transcript || "",
     transcriptUrl: s.transcript_url || "",
@@ -228,6 +233,8 @@ export async function loadWorkspace() {
     scrumNoteId: t.scrum_note_id || "",
     work: t.work || {}, ai: t.ai || {}, escalated: !!t.escalated,
     branchedFrom: t.branched_from || "",
+    // 20-scrum-parity.sql. Older rows predate the columns, hence the defaults.
+    steps: t.steps || [], conditions: t.conditions || [],
   }));
 
   const lldsOut = llds.map((l: any) => ({
@@ -268,6 +275,7 @@ export async function syncTasks(tasks: any[]): Promise<boolean> {
     scrum_note_id: t.scrumNoteId || null,
     work: t.work || {}, ai: t.ai || {}, escalated: !!t.escalated,
     branched_from: t.branchedFrom || null,
+    steps: t.steps || [], conditions: t.conditions || [],
   }));
   // Upsert only. Tasks are created by everyone from everywhere (scrums,
   // assistant, comms, branches) — pruning against one browser's possibly
@@ -515,7 +523,12 @@ export async function syncScrums(scrums: any[]): Promise<boolean> {
     const row: any = {
       id: s.id, on_date: s.date, raw: s.raw,
       organized: { tasks: s.tasks || [], summary: s.summary || "", tasked: !!s.tasked,
-                   blockers: s.blockers || [], decisions: s.decisions || [], ignored: s.ignored || "" },
+                   blockers: s.blockers || [], decisions: s.decisions || [], ignored: s.ignored || "",
+                   // "Note 1, Note 2…" within the day, the clock time it was
+                   // written, and which recorded calls fed it.
+                   noteNo: s.noteNo || null, time: s.time || null,
+                   origin: s.origin || "manual", meetingIds: s.meetingIds || [],
+                   engine: s.engine || "ai" },
       meet_link: s.link || null, attendance: s.attendance || {},
       source: s.source || "typed", transcript_url: s.transcriptUrl || null,
       author_id: s.userId || null, created_at: s.createdAt,
