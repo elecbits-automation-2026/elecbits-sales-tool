@@ -192,20 +192,25 @@ async function checkApi() {
     fail("/api/claude deployed", String(e.message || e));
   }
 
-  // Meet — status answers without credentials.
+  // Meet — the app uses the PMS's edge function on the shared Supabase
+  // project, NOT this repo's api/meet.js. So the thing to check is that the
+  // shared function is reachable, not that our own copy is deployed.
   try {
-    const { status, body, html } = await json(`${URL_}/api/meet?action=status`);
-    if (status === 404 || html) {
-      fail("/api/meet deployed", html ? "HTML returned — no function behind this route" : "404",
-        "Not deployed at this origin. `vite preview` never serves api/*.js — use `vercel dev`, or test the deployed origin.");
-    } else if (body?.connected) {
-      pass("/api/meet connected", "organiser fallback: " + (body.organiserFallback || "?"));
+    const ref = (process.env.SUPABASE_URL || "").match(/^https:\/\/([a-z0-9]+)\.supabase\.co/i);
+    if (!ref) {
+      warn("shared meet function", "SUPABASE_URL not set — cannot derive the endpoint",
+        "Export SUPABASE_URL to check it, or pass --db which needs it anyway.");
     } else {
-      warn("/api/meet connected", body?.reason || "not connected",
-        "Set GOOGLE_IMPERSONATE_USER in Vercel (GOOGLE_SERVICE_ACCOUNT_JSON is shared with Drive). Then: enable the Google Calendar API, and add https://www.googleapis.com/auth/calendar.events to the SAME service-account client ID under Admin console → Security → API controls → Domain-wide delegation.");
+      const r = await timedFetch(`https://${ref[1]}.functions.supabase.co/meet`, { method: "OPTIONS" }, 15000);
+      if (r.status === 404) {
+        fail("shared meet function", "404 — not deployed on this project",
+          "The PMS's `meet` function is missing. Either deploy it from the elecbits-pms-odm2 repo, or set VITE_MEET_URL=/api/meet in Vercel to use this repo's own copy.");
+      } else {
+        pass("shared meet function", "reachable at " + ref[1] + ".functions.supabase.co/meet");
+      }
     }
   } catch (e) {
-    fail("/api/meet deployed", String(e.message || e));
+    warn("shared meet function", String(e.message || e));
   }
 
   // Login provisioning — never probed with real credentials; status only.

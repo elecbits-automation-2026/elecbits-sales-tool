@@ -1,6 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // MEET — schedule a Google Meet from the app.
 //
+// ⚠ NOT IN USE. src/lib/meet.ts talks to the PMS's `meet` edge function on the
+// shared Supabase project instead, because that one already has the Google
+// service account, the domain-wide delegation and the Calendar scope set up.
+// Running this copy would mean a second set of the same secrets in Vercel and
+// a second delegation entry in the Google admin console, for no gain.
+//
+// It is kept as the escape hatch. To switch back: set VITE_MEET_URL=/api/meet
+// in Vercel, add the secrets listed below, and do the two console steps. Sales
+// is then independent of the PMS repo again.
+//
 // The event is created on the CALLER'S OWN calendar, not a shared robot
 // account, so it appears in their diary, the invitees see who called the
 // meeting, and the Meet belongs to a real person. Fireflies can be invited at

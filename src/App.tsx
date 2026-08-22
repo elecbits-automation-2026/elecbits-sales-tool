@@ -2610,7 +2610,7 @@ function ScheduleMeet({ date, users, present, onScheduled }) {
     return (
       <OffNotice icon={Video} title="Start a Google Meet"
         why={cfg.reason ? "The scheduler is not connected — " + cfg.reason + "." : "The scheduler is not connected."}
-        fix="Set GOOGLE_IMPERSONATE_USER in Vercel, enable the Google Calendar API, and add the calendar.events scope to the same service-account client ID that already has Drive." />
+        fix="This uses the PMS's deployed meet function on the shared Supabase project — Sales holds no Google keys for it. If it is failing, check that function's secrets and its Calendar delegation, not Vercel." />
     );
   }
 

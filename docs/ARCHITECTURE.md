@@ -64,7 +64,7 @@ A file in `src/lib/` that imports from `App.tsx` is the beginning of the
 | `ai.ts` | `askClaude`, the Drive tool loop, attachments, system memory. |
 | `drive.ts` | `/api/drive` — status, list, deep, search, open, verify, write. |
 | `fireflies.ts` | `/api/fireflies` — status, list, transcript. |
-| `meet.ts` | `/api/meet` — schedule, list upcoming, cancel. Carries the caller's JWT so the event is theirs. |
+| `meet.ts` | Schedule / list / cancel. Points at the **PMS's** edge function, not `api/meet.js` — see below. |
 | `recordings.ts` | The private `sales-recordings` bucket — upload, list, signed playback links. |
 | `adminUsers.ts` | `/api/admin-users` — create, reset and revoke logins. |
 
@@ -77,6 +77,29 @@ questions, roster roles.
 The PMS goes a step further — its equivalent is *generated* from the process
 documents by `scripts/build-process-map.mjs`, so the documents are the source
 of truth. That is the shape to grow into when these stop being edited by hand.
+
+## One function we borrow rather than own
+
+Meet scheduling calls `https://<ref>.functions.supabase.co/meet` — the ODM
+PMS's edge function on the **same Supabase project** Sales already uses. That
+function already holds the Google service account, the domain-wide delegation
+and the Calendar scope, so Sales holds **no Google credentials for Meet at
+all**. The URL is derived from `VITE_SUPABASE_URL`; nothing needs configuring.
+
+`api/meet.js` is a complete working copy, kept unused as the escape hatch. Set
+`VITE_MEET_URL=/api/meet`, add `GOOGLE_IMPERSONATE_USER`, do the two Google
+console steps in that file's header, and Sales is independent again.
+
+**The coupling is real and should be named.** That function belongs to the
+`elecbits-pms-odm2` repo. Someone editing it for the PMS can break Sales
+without knowing Sales exists — that repo ought to carry a note saying so. The
+PMS's own `schemas/README.md` argues tools should talk through published
+contracts rather than each other's internals; this is a pragmatic exception,
+taken because standing up a second Google delegation buys nothing.
+
+Not shared, and why: `drive-read` reads the PMS's project/PCB folder tree,
+while Sales files one folder per company — different layouts, not the same
+service. `claude` and `admin-users` are not deployed on that project at all.
 
 ## Deactivating is not revoking
 
