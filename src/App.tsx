@@ -30,6 +30,7 @@ import * as adminUsers from "./lib/adminUsers";
 import {
   STAGES, stageIdx, stageName, DEFAULT_GATES, KPI_METRICS,
   COMPANY_FIELDS, REQ_FIELDS, STALE_AMBER, STALE_RED,
+  STAGE_GUIDE, guideFor, entryGatesFor,
 } from "./data/stages";
 import {
   INDUSTRIES, ORG_SIZES, industryCodeOf, LLD_QUESTIONS, ROLES, roleLabel,
@@ -4730,6 +4731,222 @@ function TaskScopeCard({ task: t, comp, brief, companies, onLink }) {
 
 /* WORK WINDOW — the PMS layout: full scope on the left, your prep on the
    right. Opened from the row while a task is in progress. */
+/* ── WHICH STAGE IS THIS TASK PART OF? ─────────────────────────────────────
+   The PMS equivalent searches 308 process steps. Sales has ten pipeline
+   stages, so this is a list rather than a search — but the point is the same:
+   link it once, and the task opens with what that stage demands and what it
+   has to leave behind. */
+function StagePicker({ task, onPick }) {
+  const suggestion = useMemo(() => {
+    // A task raised against a company usually belongs to that deal's current
+    // stage. Offered, never applied — a guess written to the record silently
+    // is worse than no guess.
+    const txt = String(task.title || "").toLowerCase();
+    const hit = STAGES.find((st) => txt.includes(st.name.toLowerCase()));
+    return hit ? hit.key : "";
+  }, [task.title]);
+
+  return (
+    <div className="mt-3 pt-3 border-t border-dashed border-slate-200">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
+          Which stage of the deal is this?
+        </span>
+      </div>
+      <p className="text-[11.5px] text-slate-400 mt-1 mb-2">
+        Link it once and this task opens with what the stage needs and what it should produce.
+      </p>
+      <div className="flex items-center gap-2 flex-wrap">
+        <Sel className="w-52" value={task.stage || ""} onChange={(e) => onPick(e.target.value)}>
+          <option value="">— no stage (admin work) —</option>
+          {STAGES.map((st, i) => (
+            <option key={st.key} value={st.key}>{String(i + 1).padStart(2, "0")} · {st.name}</option>
+          ))}
+        </Sel>
+        {!task.stage && suggestion && (
+          <button onClick={() => onPick(suggestion)} className="text-[11.5px] text-blue-600 hover:underline">
+            looks like {stageName(suggestion)} — use that?
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── WHAT THE STAGE ASKS OF YOU ────────────────────────────────────────────
+   The PMS reads this off a generated process map: the step's action, its
+   entry and exit questions, its template and the exact Drive path its output
+   is filed at. Sales has no such map, so the parts here come from different
+   places and are labelled accordingly — the exit questions are the real gate
+   the deal will be interviewed against, the rest is a first draft in
+   src/data/stages.ts for the team to correct. */
+function StageGuidance({ task, comp, onPick }) {
+  const g = guideFor(task.stage);
+  if (!g) return null;
+  const i = stageIdx(task.stage);
+  const exits = DEFAULT_GATES[task.stage] || [];
+  const entries = entryGatesFor(task.stage);
+  const folder = comp ? driveFolderName(comp) : "";
+
+  return (
+    <div className="mt-3 pt-3 border-t border-dashed border-slate-200">
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <Chip color="purple">Stage {String(i + 1).padStart(2, "0")}</Chip>
+        <Chip color="slate">{stageName(task.stage)}</Chip>
+        <button onClick={() => onPick("")} className="ml-auto text-[11px] text-slate-400 hover:underline">not this stage?</button>
+      </div>
+
+      <p className="text-[12.5px] leading-relaxed mb-3"><b>{g.action}:</b> {g.whatToDo}</p>
+
+      <div className="flex flex-col gap-1.5 mb-3">
+        <div className="flex gap-2 text-[11.5px] leading-snug">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-none mt-1.5" />
+          <span><b className="text-amber-600">Before you start</b> <span className="text-slate-600">— {g.entry}</span></span>
+        </div>
+        <div className="flex gap-2 text-[11.5px] leading-snug">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-600 flex-none mt-1.5" />
+          <span><b className="text-green-700">Before you close</b> <span className="text-slate-600">— the stage gate will ask {exits.length} question{exits.length === 1 ? "" : "s"}</span></span>
+        </div>
+      </div>
+
+      {/* The real gate, verbatim. Not a paraphrase — this is the list the
+          stage-gate interview runs against, so seeing it now is the whole
+          advantage of linking the task to a stage. */}
+      {exits.length > 0 && (
+        <div className="border border-slate-200 rounded-lg bg-white px-3 py-2.5 mb-2">
+          <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">What the gate will ask</p>
+          <ol className="list-decimal ml-4 space-y-0.5">
+            {exits.map((q, n) => <li key={n} className="text-[11.5px] text-slate-600">{q}</li>)}
+          </ol>
+        </div>
+      )}
+
+      {entries.length > 0 && (
+        <details className="mb-2">
+          <summary className="text-[11px] text-slate-400 cursor-pointer hover:text-slate-600">
+            {entries.length} thing{entries.length === 1 ? "" : "s"} the previous stage should already have answered
+          </summary>
+          <ol className="list-decimal ml-5 mt-1 space-y-0.5">
+            {entries.map((q, n) => <li key={n} className="text-[11px] text-slate-400">{q}</li>)}
+          </ol>
+        </details>
+      )}
+
+      <div className="border border-slate-200 rounded-lg bg-slate-50 px-3 py-2.5 mb-2">
+        <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mb-1">This stage should leave behind</p>
+        <p className="text-[11.5px] text-slate-600">{g.produces}</p>
+        {folder && <p className="font-mono text-[10.5px] text-blue-600 mt-1 break-all">Drive · {folder}</p>}
+      </div>
+
+      <div className="border border-slate-200 rounded-lg bg-slate-50 px-3 py-2.5">
+        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1">How to do it</p>
+        <p className="text-[11.5px] text-slate-600 leading-relaxed">{g.guidance}</p>
+      </div>
+    </div>
+  );
+}
+
+/* ── TALK IT THROUGH WHILE YOU WORK ────────────────────────────────────────
+   The PMS's WorkChat can read AND WRITE the step's Drive document. Sales
+   cannot: its Drive layer lists, verifies and files, but nothing here edits a
+   document in place. So this is the readable half — a conversation that knows
+   the task, the company, the deal and the stage, and can go and look in the
+   company's Drive folder to answer a question about it.
+
+   Kept ON the task (t.workChat), not in the chats table: this is working
+   context for one job, and it should die with the task rather than turn into
+   another thread somebody has to keep. Trimmed to the last 60 turns.        */
+function TaskChat({ task: t, comp, data, saveTasks }) {
+  const { users, deals, tasks } = data;
+  const [msgs, setMsgs] = useState((t.work || {}).chat || []);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const scrollRef = useRef(null);
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 1e6 }); }, [msgs, busy]);
+
+  const persist = (next) => {
+    setMsgs(next);
+    const trimmed = next.slice(-60);
+    saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, work: { ...(x.work || {}), chat: trimmed } } : x)));
+  };
+
+  const send = async () => {
+    const q = draft.trim();
+    if (!q || busy) return;
+    const next = [...msgs, { role: "user", content: q, at: nowTS() }];
+    persist(next); setDraft(""); setBusy(true); setNote("");
+
+    const deal = deals.find((d) => d.companyId === t.companyId && !d.lost);
+    const g = guideFor(t.stage);
+    const owner = users.find((u) => u.id === t.assignee);
+    const system = [
+      "You are helping one person finish one task at Elecbits. Be short and concrete — they are mid-job, not reading a report.",
+      "THE TASK: " + t.title,
+      t.details ? "Detail: " + t.details : "",
+      "Owner: " + (owner ? owner.name : "unassigned") + ". Due " + (t.due || "no date") +
+        ((t.windowStart || t.windowEnd) ? ", window " + (t.windowStart || "…") + "–" + (t.windowEnd || "…") : "") + ".",
+      (t.steps || []).length ? "Steps already written on it: " + t.steps.join(" · ") : "",
+      (t.conditions || []).length ? "Contingencies: " + t.conditions.map((c) => "if " + c.if + " then " + c.then).join(" · ") : "",
+      comp ? "THE ACCOUNT: " + comp.name + (comp.cid ? " (" + comp.cid + ")" : "") +
+        [comp.city && ", " + comp.city, comp.industry && ", " + comp.industry].filter(Boolean).join("") +
+        (comp.whatTheyDo ? ". They do: " + comp.whatTheyDo : "") : "No company linked to this task.",
+      deal ? "THE DEAL: " + (deal.did || "") + " at stage " + stageName(deal.stage) + ", value " + fmtINR(deal.value) + "." : "",
+      g ? "THIS TASK'S STAGE — " + stageName(t.stage) + ". " + g.action + ": " + g.whatToDo +
+          " It should leave behind: " + g.produces +
+          " The gate will ask: " + (DEFAULT_GATES[t.stage] || []).join(" | ") : "",
+      comp ? "Their Drive folder is named exactly: " + driveFolderName(comp) : "",
+      "",
+      DRIVE_TOOL_PROMPT,
+      "",
+      "Answer from what you are given. If you genuinely do not know, say so and say what would settle it — never invent a file, a figure or a commitment.",
+    ].filter(Boolean).join("\n");
+
+    try {
+      const convo = next.slice(-12).map((m) => ({ role: m.role, content: m.content }));
+      const { reply, notes } = await askWithDrive(system, convo);
+      persist([...next, { role: "assistant", content: stripToolLines(reply), at: nowTS() }]);
+      if (notes.length) setNote(notes.join(" · "));
+    } catch (e) {
+      persist([...next, { role: "assistant", content: "Could not reach the assistant. Your message is kept — try again.", at: nowTS() }]);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="flex flex-col border border-slate-200 rounded-lg bg-white overflow-hidden" style={{ minHeight: 220 }}>
+      <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-2">
+        <Bot size={13} className="text-blue-600" />
+        <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mr-auto">Talk it through</span>
+        {msgs.length > 0 && (
+          <button onClick={() => persist([])} className="text-[11px] text-slate-400 hover:text-red-500">clear</button>
+        )}
+      </div>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-2" style={{ maxHeight: 260 }}>
+        {msgs.length === 0 && (
+          <p className="text-[11.5px] text-slate-400">
+            It knows this task, the account, the deal and what the stage has to produce — and it can look in {comp ? "their" : "the"} Drive folder. Ask what to do next, what the gate will want, or what is already filed.
+          </p>
+        )}
+        {msgs.map((m, i) => (
+          <div key={i} className={cls("text-[12.5px] leading-relaxed", m.role === "user" ? "text-slate-800" : "text-slate-600")}>
+            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mr-1.5">{m.role === "user" ? "you" : "ai"}</span>
+            <span className="whitespace-pre-wrap">{m.content}</span>
+          </div>
+        ))}
+        {busy && <p className="text-[11.5px] text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> thinking…</p>}
+        {note && !busy && <p className="text-[10.5px] text-slate-400 italic">{note}</p>}
+      </div>
+      <div className="border-t border-slate-100 p-2 flex items-center gap-2">
+        <Input value={draft} onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder="what should I do next?" className="text-[12.5px]" />
+        <Btn size="sm" kind="primary" disabled={busy || !draft.trim()} onClick={send}><Send size={12} /></Btn>
+      </div>
+    </div>
+  );
+}
+
 function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
   const { users, companies, tasks } = data;
   const comp = companies.find((c) => c.id === t.companyId);
@@ -4748,6 +4965,7 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
   }, [t.id]);
 
   const save = () => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, work: { ...(x.work || {}), prepAnswers: ans } } : x)));
+  const setStage = (key) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, stage: key } : x)));
 
   return (
     <Modal title={t.title} onClose={onClose} wide
@@ -4760,8 +4978,15 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
           .filter(Boolean).join(" · ")} · full scope on the left, your prep on the right
       </p>
       <div className="grid md:grid-cols-2 gap-4">
-        <TaskScopeCard task={t} comp={comp} brief={brief} companies={companies}
-          onLink={(id) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, companyId: id } : x)))} />
+        <div>
+          <TaskScopeCard task={t} comp={comp} brief={brief} companies={companies}
+            onLink={(id) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, companyId: id } : x)))} />
+          {/* Link the task to a stage once, and the stage tells it what it has
+              to answer for and what it should leave behind. */}
+          {t.stage
+            ? <StageGuidance task={t} comp={comp} onPick={setStage} />
+            : <StagePicker task={t} onPick={setStage} />}
+        </div>
         <div className="space-y-3">
           {!brief ? (
             <p className="text-sm text-slate-400 flex items-center gap-2 py-4"><Loader2 size={14} className="animate-spin" /> Working out what this task needs…</p>
@@ -4780,6 +5005,7 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
               Optional — answering now makes closing this a ten-second job.
             </p>
           </>)}
+          <TaskChat task={t} comp={comp} data={data} saveTasks={saveTasks} />
         </div>
       </div>
     </Modal>

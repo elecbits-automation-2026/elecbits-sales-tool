@@ -235,6 +235,8 @@ export async function loadWorkspace() {
     branchedFrom: t.branched_from || "",
     // 20-scrum-parity.sql. Older rows predate the columns, hence the defaults.
     steps: t.steps || [], conditions: t.conditions || [],
+    // 22-task-stage.sql. "" not null — the <select> binds to a string.
+    stage: t.stage || "",
   }));
 
   const lldsOut = llds.map((l: any) => ({
@@ -276,6 +278,7 @@ export async function syncTasks(tasks: any[]): Promise<boolean> {
     work: t.work || {}, ai: t.ai || {}, escalated: !!t.escalated,
     branched_from: t.branchedFrom || null,
     steps: t.steps || [], conditions: t.conditions || [],
+    stage: t.stage || null,
   }));
   // Upsert only. Tasks are created by everyone from everywhere (scrums,
   // assistant, comms, branches) — pruning against one browser's possibly

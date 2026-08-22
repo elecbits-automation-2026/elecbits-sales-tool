@@ -36,6 +36,7 @@ whole thing rolls back and the database is untouched.
 | 6 | **`RUN-THIS-phase3.sql`** | scrum call + transcripts, client comms |
 | 7 | **`20-scrum-parity.sql`** | `steps` + `conditions` on `sales.tasks` — the scrum organiser writes both |
 | 8 | **`21-recordings-bucket.sql`** | private `sales-recordings` bucket, for call audio the notetaker missed |
+| 9 | **`22-task-stage.sql`** | `stage` on `sales.tasks` — which pipeline stage a task advances |
 
 ### Step 5 is a real trap
 
@@ -79,6 +80,7 @@ Run these only when you know why the bundle is not what you want.
 | `19-client-comms.sql` | 18 | touch log direction/channel/contact + commitments |
 | `20-scrum-parity.sql` | 12 | `steps` + `conditions` on `sales.tasks`, for PMS-shape scrum output |
 | `21-recordings-bucket.sql` | 10 | private storage bucket + 4 policies; needs `sales.is_sales_admin` |
+| `22-task-stage.sql` | 12 | `stage` column + index, for the work window's stage guidance |
 
 Only `10 → 11` and `12 → 13 → 17 → 18 → 19 → 20` are real chains. `14 → 16` is a
 second, shorter one. `15` is independent.
@@ -87,7 +89,7 @@ second, shorter one. `15` is independent.
 
 ## Rolling back
 
-`00-rollback.sql` reverses the additive steps — 12 through 21 — and nothing
+`00-rollback.sql` reverses the additive steps — 12 through 22 — and nothing
 else. Read its header before running it: it refuses to touch `10`/`11`, and
 that refusal is deliberate.
 
