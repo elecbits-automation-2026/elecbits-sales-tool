@@ -15,8 +15,22 @@ import {
   loadChat, loadChatDates, saveChat, saveSession, loadAllIdeas,
   loadTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum,
-  signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin,
 } from "./lib/data";
+import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
+import {
+  askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
+  extractMarkedJSON, withTimeout, setMemoryText, memoryTextFrom, DRIVE_TOOL_PROMPT,
+} from "./lib/ai";
+import * as drive from "./lib/drive";
+import { driveFolderName } from "./lib/drive";
+import * as fireflies from "./lib/fireflies";
+import {
+  STAGES, stageIdx, stageName, DEFAULT_GATES, KPI_METRICS,
+  COMPANY_FIELDS, REQ_FIELDS, STALE_AMBER, STALE_RED,
+} from "./data/stages";
+import {
+  INDUSTRIES, ORG_SIZES, industryCodeOf, LLD_QUESTIONS, ROLES, roleLabel,
+} from "./data/taxonomy";
 import logoLight from "./assets/elecbits-logo.png";
 import logoDark from "./assets/elecbits-logo-dark.png";
 import markLight from "./assets/elecbits-mark.png";
@@ -50,241 +64,12 @@ function Logo({ height = 28, variant = "full", className = "" }) {
   );
 }
 
-/* ---------- constants ---------- */
-
-const STAGES = [
-  { key: "lead", name: "Lead" },
-  { key: "first_meeting", name: "First Meeting" },
-  { key: "physical_meeting", name: "Physical Meeting" },
-  { key: "rfq", name: "RFQ" },
-  { key: "project_id", name: "Project ID" },
-  { key: "pm_added", name: "PM Added" },
-  { key: "quote_lld", name: "Quote / LLD" },
-  { key: "negotiation", name: "Negotiation" },
-  { key: "closure", name: "Closure" },
-  { key: "po", name: "PO" },
-];
-const stageIdx = (k) => STAGES.findIndex((s) => s.key === k);
-const stageName = (k) => (STAGES.find((s) => s.key === k) || {}).name || k;
-
-const DEFAULT_GATES = {
-  lead: ["Where did this lead come from", "Which Elecbits product line fits", "Who is the contact and their role"],
-  first_meeting: ["Who attended the meeting (both sides)", "What exact need did the client state", "What did you pitch and how did they react", "Agreed next step with a date"],
-  physical_meeting: ["Where did you meet and who was present", "Requirements captured (specs, volumes, timelines)", "What was demonstrated or shown", "Client's budget or volume signals", "Agreed next step with a date"],
-  rfq: ["Exact product / spec being quoted", "Quantity and delivery timeline", "Target price or budget from client", "Who is the decision maker", "Competitors in the picture"],
-  project_id: ["Internal project ID created", "Scope summary in one or two lines", "Engineering owner assigned", "Feasibility or risk notes"],
-  pm_added: ["Project manager name", "Kickoff date", "Key deliverables agreed", "Client-side point of contact"],
-  quote_lld: ["Quote amount and validity", "Margin percentage", "LLD status (shared / pending)", "Who received the quote"],
-  negotiation: ["Exact objections raised and by whom", "Price gap between us and client", "Competitor pressure details", "Concessions asked, concessions offered", "Expected decision date"],
-  closure: ["Final agreed price", "Payment terms", "Delivery schedule", "Any pending approvals on client side"],
-  po: ["PO number", "PO value", "Advance received (yes/no, amount)", "Delivery start date", "PO document received"],
-};
-
-const KPI_METRICS = [
-  { key: "companies", label: "Companies added", pace: true },
-  { key: "meetings", label: "Meetings held", pace: true },
-  { key: "rfqs", label: "RFQs raised", pace: true },
-  { key: "quotes", label: "Quotes sent", pace: true },
-  { key: "pos", label: "POs closed", pace: true },
-  { key: "revenue", label: "Revenue", pace: true, money: true },
-  { key: "completeness", label: "Data completeness", pace: false, pct: true },
-];
-
-const COMPANY_FIELDS = [
-  { k: "name", label: "Company name", req: true },
-  { k: "contactPerson", label: "Contact person", req: true },
-  { k: "designation", label: "Designation", req: false },
-  { k: "phone", label: "Contact phone", req: true },
-  { k: "email", label: "Email", req: true },
-  { k: "city", label: "City", req: true },
-  { k: "industry", label: "Industry", req: true },
-  { k: "whatTheyDo", label: "What they do", req: true, long: true },
-  { k: "source", label: "Lead source", req: true },
-  { k: "potential", label: "Annual potential (₹)", req: true, num: true },
-  { k: "website", label: "Website", req: false },
-  { k: "address", label: "Address", req: false, long: true },
-];
-const REQ_FIELDS = COMPANY_FIELDS.filter((f) => f.req);
-
-/* ── Official client-ID nomenclature (EbClient_ID_Sheet) ──────────────────
-   Eb-<industry 01-43>-<size>-<serial>. The serial comes from the shared
-   core.numbering mint — never typed by hand. */
-const INDUSTRIES = [
-  [1, "Electric Vehicle"], [2, "EMS"], [3, "Just IoT"], [4, "IIoT"],
-  [5, "Home Automation"], [6, "Medical & Healthcare"], [7, "Energy Meter & Metering"],
-  [8, "Wearables"], [9, "Camera & Opticals"], [10, "Agri Tech/Farm Tech/Food Tech"],
-  [11, "AR/VR/AI"], [12, "Education-Tech/EdTech"], [13, "Industrial/ Machine Setup"],
-  [14, "ERP Solutions"], [15, "Robotics"], [16, "Information Technology"],
-  [17, "Defence/Military"], [18, "Automotive"], [19, "Battery Manufacturer"],
-  [20, "Consumer Electronics"], [21, "Other"], [22, "Government & Alliance"],
-  [23, "Freelance/Individual/Personal"], [24, "Logistics/Fleet Management"],
-  [25, "Fintech"], [26, "Aerospace"], [27, "BLDC"], [28, "Renewables"],
-  [29, "Oil & Gas"], [30, "Smart home"], [31, "Research"], [32, "E-Mobility"],
-  [33, "Infrastructure"], [34, "Toys and Games"], [35, "Incubator"],
-  [36, "Security/ surveilance"], [37, "Electronics components manufacturing"],
-  [38, "Drone tech"], [39, "Solar"], [40, "IT Hardware"], [41, "Display Manufacturers"],
-  [42, "Industrial Applications"], [43, "Trader"],
-];
-const ORG_SIZES = [
-  ["PL", "Proto Level — Small Hardware Startups"],
-  ["ML", "Mid Level — Hardware Startups"],
-  ["EL", "Enterprise Level — Large Product Companies"],
-  ["EM", "EMS"],
-  ["UN", "Individuals/Unknown"],
-  ["GO", "Government Organisation"],
-];
-const industryCodeOf = (label) => { const m = INDUSTRIES.find(([, l]) => l.toLowerCase() === String(label || "").toLowerCase()); return m ? m[0] : null; };
-
-/* ── LLD questions (30 — same set as the ODM PMS) ─────────────────────────── */
-const LLD_QUESTIONS = [
-  { id: 1, sec: "Product", text: "What is the product you want to build? Describe it in one sentence." },
-  { id: 2, sec: "Product", text: "What category does it fall into?" },
-  { id: 3, sec: "Product", text: "What problem does it solve for the end user?" },
-  { id: 4, sec: "Product", text: "Who is the target user?" },
-  { id: 5, sec: "Product", text: "Any existing products or references we should study?" },
-  { id: 6, sec: "Functions", text: "List the key features / functions this product must have." },
-  { id: 7, sec: "Functions", text: "Which sensors or input devices are needed?" },
-  { id: 8, sec: "Functions", text: "What outputs / actuators are required?" },
-  { id: 9, sec: "Functions", text: "Does it need a user interface?" },
-  { id: 10, sec: "Functions", text: "Any special processing needs (AI/ML, real-time, high-speed data)?" },
-  { id: 11, sec: "Connectivity", text: "What wireless connectivity is needed?" },
-  { id: 12, sec: "Connectivity", text: "Which wireless protocols are required (Wi-Fi, BLE, LoRa, Cellular, GPS…)?" },
-  { id: 13, sec: "Connectivity", text: "Any wired interfaces needed (USB-C, Ethernet, RS-485, CAN…)?" },
-  { id: 14, sec: "Connectivity", text: "Does it need cloud connectivity or a backend?" },
-  { id: 15, sec: "Power", text: "How will the device be powered?" },
-  { id: 16, sec: "Power", text: "If battery-powered, what is the expected battery life?" },
-  { id: 17, sec: "Power", text: "Any power consumption constraints or targets?" },
-  { id: 18, sec: "Power", text: "Does it need power-saving / sleep modes?" },
-  { id: 19, sec: "Software", text: "Is there a companion mobile or web app?" },
-  { id: 20, sec: "Software", text: "Does the firmware need OTA update capability?" },
-  { id: 21, sec: "Software", text: "Any data logging, analytics or reporting requirements?" },
-  { id: 22, sec: "Physical", text: "Approximate size constraints? (L × W × H in mm, or describe)" },
-  { id: 23, sec: "Physical", text: "What environment will it operate in?" },
-  { id: 24, sec: "Physical", text: "Enclosure material preference?" },
-  { id: 25, sec: "Certs", text: "Which certifications are required (CE, FCC, BIS, RoHS, IP rating…)?" },
-  { id: 26, sec: "Certs", text: "Any regulatory or compliance notes we should know about?" },
-  { id: 27, sec: "Cost & Time", text: "What is the target unit cost (BOM) range?" },
-  { id: 28, sec: "Cost & Time", text: "Expected production volume in the first year?" },
-  { id: 29, sec: "Cost & Time", text: "Any hard deadline or launch date we must hit?" },
-  { id: 30, sec: "Cost & Time", text: "Anything else we should know? Risks, constraints, special requests…" },
-];
-
-const ROLES = [
-  { key: "admin", label: "Admin" },
-  { key: "dept_head", label: "Dept Head" },
-  { key: "agent", label: "Sales Agent" },
-  { key: "finance", label: "Finance" },
-];
-const roleLabel = (r) => (ROLES.find((x) => x.key === r) || {}).label || r;
-
-const STALE_AMBER = 4;
-const STALE_RED = 8;
-
 /* ---------- storage & auth ----------
    Phase 0 cut-over: data lives in the relational sales.* + core.* schemas of
    eb-core-database-1 (see supabase/01–03 SQL), loaded and synced through
    src/lib/data.ts. Login is Supabase Auth — an admin puts a person's email on
    the roster; their first sign-in creates the account and a DB trigger links
    it to their core.people row. */
-
-/* ---------- Claude ---------- */
-
-// Routes through our own serverless proxy (/api/claude), which holds the
-// ANTHROPIC_API_KEY server-side and picks the model. The browser never sees the
-// key. The proxy accepts { system, messages, maxTokens }.
-// System memory rides on EVERY AI call (gates, scrum, plans, scorers, chats)
-// — the PMS pattern. Set by the workspace loader, refreshed on memory edits.
-let MEMORY_TEXT = "";
-async function askClaude(system, messages, opts = {}) {
-  const sys = MEMORY_TEXT
-    ? system + "\n\nSYSTEM MEMORY (durable company facts & rules — always respect these):\n" + MEMORY_TEXT
-    : system;
-  const res = await fetch("/api/claude", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system: sys, messages, maxTokens: opts.maxTokens || 1000 }),
-  });
-  if (!res.ok) throw new Error("AI request failed (" + res.status + ")");
-  const data = await res.json();
-  return (data && data.text) || "";
-}
-
-// ── chat attachments + tools, shared by every AI chat ──
-// A pasted screenshot or attached file becomes an Anthropic content block.
-// Images are downscaled to a 1568px long edge before upload — a raw retina
-// screenshot is several MB of base64, which blows the serverless body limit
-// and returns an empty answer. 1568px is the size the vision model resizes to
-// anyway, so nothing legible is lost and the call is far cheaper.
-const IMG_MAX_EDGE = 1568;
-const fileToBlock = (file) => new Promise((resolve) => {
-  if (file.type === "application/pdf") {
-    if (file.size > 4 * 1024 * 1024) return resolve(null); // too big to post
-    const r = new FileReader();
-    r.onload = () => resolve({ type: "document", source: { type: "base64", media_type: "application/pdf", data: String(r.result).split(",")[1] }, _name: file.name || "document.pdf" });
-    r.onerror = () => resolve(null);
-    r.readAsDataURL(file);
-    return;
-  }
-  if (!file.type || !file.type.startsWith("image/")) return resolve(null);
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = () => {
-    try {
-      const scale = Math.min(1, IMG_MAX_EDGE / Math.max(img.width, img.height));
-      const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
-      const cv = document.createElement("canvas");
-      cv.width = w; cv.height = h;
-      const ctx = cv.getContext("2d");
-      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); // flatten transparency for JPEG
-      ctx.drawImage(img, 0, 0, w, h);
-      const data = cv.toDataURL("image/jpeg", 0.85).split(",")[1];
-      URL.revokeObjectURL(url);
-      resolve(data ? { type: "image", source: { type: "base64", media_type: "image/jpeg", data }, _name: file.name || "pasted image" } : null);
-    } catch (e) { URL.revokeObjectURL(url); resolve(null); }
-  };
-  img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-  img.src = url;
-});
-const contentText = (c) => typeof c === "string" ? c : (c || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
-// Tool protocol lines must never reach the user's eyes.
-const stripToolLines = (t) => String(t || "").replace(/(DRIVE_JSON|ACTIONS_JSON|TASKS_JSON)[\s\S]*$/, "").trim();
-
-async function runDriveTool(spec) {
-  const p = new URLSearchParams({ action: spec.action || "root" });
-  if (spec.name) p.set("name", spec.name);
-  if (spec.q) p.set("q", spec.q);
-  const r = await fetch("/api/drive?" + p.toString()).then((x) => x.json());
-  return JSON.stringify(r).slice(0, 12000);
-}
-const DRIVE_TOOL_PROMPT = [
-  "GOOGLE DRIVE: you CAN read the sales Drive (folder and file listings — names, dates, links; not the contents of files).",
-  "To look something up, reply with ONLY one line and nothing else:",
-  "  DRIVE_JSON {\"action\":\"root\"}                        top-level folders",
-  "  DRIVE_JSON {\"action\":\"list\",\"name\":\"<folder>\"}   that folder's files AND sub-folders",
-  "  DRIVE_JSON {\"action\":\"deep\",\"name\":\"<folder>\"}   that folder PLUS what is inside each sub-folder — use this when asked what is inside a set of folders",
-  "  DRIVE_JSON {\"action\":\"search\",\"q\":\"<term>\"}       find files by name anywhere",
-  "Reading the result: `found:false` means no folder of that name is shared with this tool — say exactly that, do not call it empty. `folders` lists sub-folders; if `files` is empty but `folders` is not, the contents are one level deeper — run `deep` before concluding anything.",
-  "NEVER report a folder as empty until you have looked inside its sub-folders. Never show raw DRIVE_JSON in a final answer.",
-].join("\n");
-
-// Runs a chat turn with the Drive tool loop: feeds listings back until the
-// model answers. Returns { reply, notes } — notes describe what was checked.
-async function askWithDrive(system, convo, maxHops = 4) {
-  let reply = await askClaude(system, convo);
-  const notes = [];
-  for (let hop = 0; hop < maxHops; hop++) {
-    const spec = extractMarkedJSON(reply, "DRIVE_JSON");
-    if (!spec) break;
-    notes.push(spec.action === "search" ? "searched Drive for “" + spec.q + "”"
-      : spec.action === "deep" ? "read inside " + spec.name
-      : "checked Drive: " + (spec.name || "top-level folders"));
-    const result = await runDriveTool(spec);
-    convo.push({ role: "assistant", content: reply });
-    convo.push({ role: "user", content: "DRIVE_RESULT " + result + "\n\nAnswer the original question from this listing (or make one more DRIVE_JSON request if you must drill deeper). Never show raw DRIVE_JSON in the final answer." });
-    reply = await askClaude(system, convo);
-  }
-  return { reply, notes };
-}
 
 /* Attachment chips + the paste/attach plumbing, one line to wire in. */
 function AttachChips({ atts, setAtts }) {
@@ -301,26 +86,6 @@ function AttachChips({ atts, setAtts }) {
   );
 }
 
-// Reads the JSON that follows a marker. Handles BOTH object and array
-// payloads — taking only {…} silently mangled every array contract
-// (`[{a},{b}]` sliced to `{a},{b}` → parse error → feature looked broken).
-function extractMarkedJSON(text, marker) {
-  const i = String(text || "").indexOf(marker);
-  if (i < 0) return null;
-  const rest = String(text).slice(i + marker.length);
-  const oS = rest.indexOf("{"), aS = rest.indexOf("[");
-  const useArr = aS >= 0 && (oS < 0 || aS < oS);
-  const s = useArr ? aS : oS;
-  const e = useArr ? rest.lastIndexOf("]") : rest.lastIndexOf("}");
-  if (s < 0 || e < 0 || e < s) return null;
-  try { return JSON.parse(rest.slice(s, e + 1)); } catch (err) { return null; }
-}
-
-// askClaude has no timeout of its own; a hung call must never strand a user
-// inside a modal.
-const withTimeout = (p, ms) => Promise.race([
-  p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms)),
-]);
 const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
 
 /* ── Task briefs: what to ask before the work, and after it ────────────────
@@ -887,7 +652,7 @@ export default function App() {
         setExpenses(ws.expenses); setGates(ws.gates); setScrums(ws.scrums); setMemory(ws.memory);
         setTasks(ws.tasks || []); setLlds(ws.llds || []);
         setQuestionSets(ws.questionSets || {}); setRequests(ws.requests || []);
-        MEMORY_TEXT = (ws.memory || []).map((m) => "• " + m.title + ": " + m.text).join("\n");
+        setMemoryText(memoryTextFrom(ws.memory || []));
       } catch (e) { console.error("loadWorkspace failed", e); }
       if (alive) setLoading(false);
     })();
@@ -907,7 +672,7 @@ export default function App() {
   const saveExpenses = (v) => { setExpenses(v); flag(syncExpenses(v)); };
   const saveGates = (v) => { setGates(v); flag(syncGates(v)); };
   const saveScrums = (v) => { setScrums(v); flag(syncScrums(v)); };
-  const saveMemory = (v) => { setMemory(v); MEMORY_TEXT = v.map((m) => "• " + m.title + ": " + m.text).join("\n"); flag(syncMemory(v)); };
+  const saveMemory = (v) => { setMemory(v); setMemoryText(memoryTextFrom(v)); flag(syncMemory(v)); };
   const saveTasks = (v) => { setTasks(v); flag(syncTasks(v)); };
   const saveLlds = (v) => { setLlds(v); flag(syncLlds(v)); };
   const saveQuestionSet = (key, title, questions) => {
@@ -2805,17 +2570,16 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   const trFileRef = useRef(null);
   const [ff, setFf] = useState({ on: false });     // Fireflies connection + list
   const [ffBusy, setFfBusy] = useState(false);
-  useEffect(() => { fetch("/api/fireflies?action=status").then((r) => r.json()).then((j) => setFf({ on: !!j.connected, why: j.reason })).catch(() => {}); }, []);
+  useEffect(() => { fireflies.status().then(setFf).catch(() => {}); }, []);
   const pullFireflies = async () => {
     setFfBusy(true);
     try {
-      const from = date + "T00:00:00+05:30", to = date + "T23:59:59+05:30";
-      const j = await fetch("/api/fireflies?action=list&from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to)).then((r) => r.json());
-      const items = j.items || [];
+      const { from, to } = fireflies.dayRange(date);
+      const items = await fireflies.list(from, to);
       if (!items.length) { setErr("Fireflies has no meeting recorded for " + fmtDate(date) + "."); setFfBusy(false); return; }
       // The scrum is the one that looks like a scrum, else the day's longest.
-      const pick = items.find((x) => /scrum|stand[- ]?up|daily/i.test(x.title || "")) || items[0];
-      const t = await fetch("/api/fireflies?action=get&id=" + encodeURIComponent(pick.id)).then((r) => r.json());
+      const pick = fireflies.pickScrum(items)!;
+      const t = await fireflies.transcript(pick.id);
       if (t.error) { setErr("Fireflies: " + t.error); setFfBusy(false); return; }
       setTr(t.text || ""); setTrUrl(t.url || "");
       setErr("");
@@ -3369,7 +3133,6 @@ function MemoryModal({ entry, me, onClose, onSave }) {
    GOOGLE DRIVE — one folder per company under the shared root
    ============================================================ */
 
-const driveFolderName = (c) => (c.cid ? c.cid + " — " : "") + c.name;
 
 function DriveCard({ company }) {
   const [state, setState] = useState({ phase: "loading" }); // loading | off | ready | error
@@ -3378,10 +3141,10 @@ function DriveCard({ company }) {
     let alive = true;
     (async () => {
       try {
-        const s = await fetch("/api/drive?action=status").then((r) => r.json());
+        const s = await drive.status();
         if (!alive) return;
         if (!s.connected) { setState({ phase: "off", email: s.email }); return; }
-        const l = await fetch("/api/drive?action=list&name=" + encodeURIComponent(driveFolderName(company))).then((r) => r.json());
+        const l = await drive.list(driveFolderName(company));
         if (!alive) return;
         setState(l.error ? { phase: "error", msg: l.error } : { phase: "ready", ...l });
       } catch (e) { if (alive) setState({ phase: "error", msg: "Drive check failed — is the app deployed on Vercel?" }); }
@@ -3392,7 +3155,7 @@ function DriveCard({ company }) {
   const open = async () => {
     setOpening(true);
     try {
-      const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(company))).then((x) => x.json());
+      const r = await drive.open(driveFolderName(company));
       if (r.link) window.open(r.link, "_blank");
       else setState({ phase: "error", msg: r.error || "Could not open folder" });
     } catch (e) { setState({ phase: "error", msg: "Could not reach /api/drive" }); }
@@ -3671,11 +3434,8 @@ function CommsTab({ me, company: c, data, saveTasks }) {
   const fileToDrive = async (title, body) => {
     try {
       const slug = String(title).toLowerCase().replace(/[^\w\- ]/g, "").trim().replace(/\s+/g, "-").slice(0, 50);
-      await fetch("/api/drive?action=write", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: driveFolderName(c), folder: "Client-Comms",
-          fileName: todayStr() + "_" + kind + "_" + slug + ".md", content: body }),
-      });
+      await drive.write(driveFolderName(c), "Client-Comms",
+        todayStr() + "_" + kind + "_" + slug + ".md", body);
     } catch (e) { /* filing is best-effort; the record is in the DB either way */ }
   };
 
@@ -3820,7 +3580,7 @@ function CommsTab({ me, company: c, data, saveTasks }) {
                 <Btn size="sm" disabled={!driveFile.trim()} onClick={async () => {
                   setCheckMsg("checking…");
                   try {
-                    const r = await fetch("/api/drive?action=verify&name=" + encodeURIComponent(driveFolderName(c)) + "&file=" + encodeURIComponent(driveFile.trim())).then((x) => x.json());
+                    const r = await drive.verify(driveFolderName(c), driveFile.trim());
                     setCheckMsg(r.found ? "✓ found in " + (r.matches[0] || {}).where : "✗ not in the folder — did it save?");
                   } catch (e) { setCheckMsg("could not check"); }
                 }}>Check</Btn>
@@ -3962,7 +3722,7 @@ function DriveIntel({ me, company: c, data, saveCompanies }) {
   const analyse = async () => {
     setBusy(true); setErr("");
     try {
-      const l = await fetch("/api/drive?action=list&name=" + encodeURIComponent(driveFolderName(c))).then((r) => r.json());
+      const l = await drive.list(driveFolderName(c));
       const sys = [
         "You are the Drive-intelligence analyst on the Elecbits Sales OS. From the company record and its Drive folder listing, say how this account is ACTUALLY moving — blunt, factual, no praise.",
         "COMPANY: " + JSON.stringify({ name: c.name, cid: c.cid, potential: c.potential, activity: (c.activity || []).slice(-6).map((a) => a.text) }),
@@ -4263,7 +4023,7 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
     if (needsEvidence && file.trim() && comp) {
       setChecking("Looking for “" + file.trim() + "” in the Drive folder…");
       try {
-        const r = await withTimeout(fetch("/api/drive?action=verify&name=" + encodeURIComponent(driveFolderName(comp)) + "&file=" + encodeURIComponent(file.trim())).then((x) => x.json()), 12000);
+        const r = await withTimeout(drive.verify(driveFolderName(comp), file.trim()), 12000);
         driveCheck = r && r.found
           ? "FOUND — " + r.matches.map((m) => m.name + " (in " + m.where + ")").join("; ")
           : "NOT FOUND — nothing matching that name in " + (r && r.folderFound ? "the company folder or its sub-folders" : "Drive (the folder itself is not shared with this tool)");

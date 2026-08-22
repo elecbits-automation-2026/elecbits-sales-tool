@@ -24,7 +24,8 @@
 // moves) travel inside their parent objects with a hidden `_id` marking rows
 // already persisted — sync inserts only entries without one.
 
-import { supabase, core } from "./supabase";
+import { supabase, type Client } from "./supabase";
+import { tbl, RPC, type TableName } from "./tables";
 
 /* ---------- small helpers ---------- */
 
@@ -64,27 +65,27 @@ export async function loadWorkspace() {
     knowledge, expenses, scrums, memory, gates,
     tasks, llds, questionSets, requests,
   ] = await Promise.all([
-    rows(core.from("people").select("*"), "people"),
-    rows(supabase.from("people_detail").select("*"), "people_detail"),
-    rows(core.from("orgs").select("*"), "orgs"),
-    rows(supabase.from("org_detail").select("*"), "org_detail"),
-    rows(supabase.from("org_activities").select("*").order("at"), "org_activities"),
-    rows(supabase.from("deals").select("*"), "deals"),
-    rows(supabase.from("deal_moves").select("*").order("at"), "deal_moves"),
-    rows(supabase.from("targets").select("*").eq("period", TARGET_PERIOD), "targets"),
-    rows(core.from("trainings").select("*"), "trainings"),
-    rows(supabase.from("work_updates").select("*"), "work_updates"),
-    rows(supabase.from("knowledge").select("*"), "knowledge"),
-    rows(supabase.from("travel_requests").select("*"), "travel_requests"),
-    rows(supabase.from("scrum_notes").select("*"), "scrum_notes"),
-    rows(supabase.from("memory").select("*"), "memory"),
-    rows(supabase.from("gate_config").select("*"), "gate_config"),
+    rows(tbl(supabase, "people").select("*"), "people"),
+    rows(tbl(supabase, "people_detail").select("*"), "people_detail"),
+    rows(tbl(supabase, "orgs").select("*"), "orgs"),
+    rows(tbl(supabase, "org_detail").select("*"), "org_detail"),
+    rows(tbl(supabase, "org_activities").select("*").order("at"), "org_activities"),
+    rows(tbl(supabase, "deals").select("*"), "deals"),
+    rows(tbl(supabase, "deal_moves").select("*").order("at"), "deal_moves"),
+    rows(tbl(supabase, "targets").select("*").eq("period", TARGET_PERIOD), "targets"),
+    rows(tbl(supabase, "trainings").select("*"), "trainings"),
+    rows(tbl(supabase, "work_updates").select("*"), "work_updates"),
+    rows(tbl(supabase, "knowledge").select("*"), "knowledge"),
+    rows(tbl(supabase, "travel_requests").select("*"), "travel_requests"),
+    rows(tbl(supabase, "scrum_notes").select("*"), "scrum_notes"),
+    rows(tbl(supabase, "memory").select("*"), "memory"),
+    rows(tbl(supabase, "gate_config").select("*"), "gate_config"),
     // Phase 1 tables may not exist until 12-phase1.sql runs — degrade to empty,
     // but REMEMBER the failure so no sync ever prunes against a phantom [].
-    supabase.from("tasks").select("*").then((r: any) => { if (r.error) degraded.add("tasks"); return r.data || []; }),
-    supabase.from("llds").select("*").then((r: any) => { if (r.error) degraded.add("llds"); return r.data || []; }),
-    supabase.from("question_sets").select("*").then((r: any) => r.data || []),
-    supabase.from("requests").select("*").then((r: any) => r.data || []),
+    tbl(supabase, "tasks").select("*").then((r: any) => { if (r.error) degraded.add("tasks"); return r.data || []; }),
+    tbl(supabase, "llds").select("*").then((r: any) => { if (r.error) degraded.add("llds"); return r.data || []; }),
+    tbl(supabase, "question_sets").select("*").then((r: any) => r.data || []),
+    tbl(supabase, "requests").select("*").then((r: any) => r.data || []),
   ]);
 
   const peopleById = new Map(people.map((p: any) => [p.id, p]));
@@ -273,12 +274,12 @@ export async function syncTasks(tasks: any[]): Promise<boolean> {
   // stale array would silently delete a teammate's fresh tasks. Deletion is
   // an explicit act: deleteTask().
   if (!rowsIn.length) return true;
-  const { error } = await supabase.from("tasks").upsert(rowsIn, { onConflict: "id" });
+  const { error } = await tbl(supabase, "tasks").upsert(rowsIn, { onConflict: "id" });
   return ok(error, "syncTasks");
 }
 
 export async function deleteTask(id: string): Promise<boolean> {
-  const { error } = await supabase.from("tasks").delete().eq("id", id);
+  const { error } = await tbl(supabase, "tasks").delete().eq("id", id);
   return ok(error, "deleteTask");
 }
 
@@ -291,7 +292,7 @@ export async function syncLlds(llds: any[]): Promise<boolean> {
 }
 
 export async function syncQuestionSet(key: string, title: string, questions: string[]): Promise<boolean> {
-  const { error } = await supabase.from("question_sets")
+  const { error } = await tbl(supabase, "question_sets")
     .upsert({ key, title, questions }, { onConflict: "key" });
   return ok(error, "syncQuestionSet." + key);
 }
@@ -300,12 +301,12 @@ export async function syncQuestionSet(key: string, title: string, questions: str
 // stamp the composed Eb-<industry>-<size>-<serial> onto the org. One-way: an
 // org that already has an official ID keeps it.
 export async function mintClientId(orgId: string, industryCode: number, sizeCode: string): Promise<string | null> {
-  const { data: existing } = await core.from("orgs").select("client_id").eq("id", orgId).maybeSingle();
+  const { data: existing } = await tbl(supabase, "orgs").select("client_id").eq("id", orgId).maybeSingle();
   if (existing?.client_id) return existing.client_id;
-  const { data: serial, error } = await core.rpc("next_number", { p_kind: "client_serial" });
+  const { data: serial, error } = await supabase.schema("core").rpc(RPC.nextNumber, { p_kind: "client_serial" });
   if (error) { console.error("mintClientId", error.message); return null; }
   const cid = "Eb-" + String(industryCode).padStart(2, "0") + "-" + sizeCode + "-" + serial;
-  const { error: e2 } = await core.from("orgs")
+  const { error: e2 } = await tbl(supabase, "orgs")
     .update({ client_id: cid, org_size: sizeCode }).eq("id", orgId);
   if (e2) { console.error("mintClientId.update", e2.message); return null; }
   return cid;
@@ -314,7 +315,7 @@ export async function mintClientId(orgId: string, industryCode: number, sizeCode
 // Raise a Project-ID request into the shared pipe (sales.requests → core.intake
 // → ULM decides). Returns the created row's id, or null.
 export async function submitProjectRequest(req: any): Promise<string | null> {
-  const { data, error } = await supabase.from("requests").insert({
+  const { data, error } = await tbl(supabase, "requests").insert({
     org_id: req.companyId, title: req.title, summary: req.summary || null,
     proposed_kind: req.kind || null, qty: req.qty || null,
     target_date: req.targetDate || null, value_inr: Number(req.value || 0) || null,
@@ -335,7 +336,7 @@ export async function submitProjectRequest(req: any): Promise<string | null> {
 export async function syncUsers(users: any[]): Promise<boolean> {
   let allOk = true;
   for (const u of users) {
-    const { error } = await supabase.rpc("upsert_person", {
+    const { error } = await supabase.rpc(RPC.upsertPerson, {
       p_id: u.id || null,
       p_name: u.name || "",
       p_email: (u.email || "").toLowerCase() || null,
@@ -369,8 +370,8 @@ export async function syncCompanies(companies: any[]): Promise<boolean> {
     contact_phone: c.phone || null, contact_email: c.email || null,
     custom: c.custom || [], plan: c.plan || {},
   }));
-  const r1 = await core.from("orgs").upsert(orgs, { onConflict: "id" });
-  const r2 = await supabase.from("org_detail").upsert(details, { onConflict: "org_id" });
+  const r1 = await tbl(supabase, "orgs").upsert(orgs, { onConflict: "id" });
+  const r2 = await tbl(supabase, "org_detail").upsert(details, { onConflict: "org_id" });
   let allOk = ok(r1.error, "syncCompanies.orgs") && ok(r2.error, "syncCompanies.detail");
 
   // Append-only notes: persist only entries that have never been written.
@@ -384,7 +385,7 @@ export async function syncCompanies(companies: any[]): Promise<boolean> {
     }
   }
   if (fresh.length) {
-    const r3 = await supabase.from("org_activities").insert(fresh);
+    const r3 = await tbl(supabase, "org_activities").insert(fresh);
     allOk = ok(r3.error, "syncCompanies.activities") && allOk;
   }
   return allOk;
@@ -398,7 +399,7 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
     lost_note: (d.lostInfo && d.lostInfo.summary) || null,
     created_at: d.createdAt, updated_at: d.updatedAt,
   }));
-  const r1 = await supabase.from("deals").upsert(dealRows, { onConflict: "id" });
+  const r1 = await tbl(supabase, "deals").upsert(dealRows, { onConflict: "id" });
   let allOk = ok(r1.error, "syncDeals.deals");
 
   const fresh: any[] = [];
@@ -416,7 +417,7 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
     }
   }
   if (fresh.length) {
-    const r2 = await supabase.from("deal_moves").insert(fresh);
+    const r2 = await tbl(supabase, "deal_moves").insert(fresh);
     allOk = ok(r2.error, "syncDeals.moves") && allOk;
   }
   return allOk;
@@ -430,7 +431,7 @@ export async function syncKpis(kpis: Record<string, Record<string, number>>): Pr
     }
   }
   if (!rowsIn.length) return true;
-  const { error } = await supabase.from("targets")
+  const { error } = await tbl(supabase, "targets")
     .upsert(rowsIn, { onConflict: "person_id,period,metric" });
   return ok(error, "syncKpis");
 }
@@ -439,15 +440,15 @@ export async function syncKpis(kpis: Record<string, Record<string, number>>): Pr
 // what's gone. Two hard safety rules: never prune a table whose load degraded
 // (the [] is a phantom), and never turn an empty array into a full-table
 // wipe — a stray leftover row is recoverable, a deleted table is not.
-async function upsertAndPrune(table: string, rowsIn: any[], keepIds: string[], label: string, client: any = supabase): Promise<boolean> {
+async function upsertAndPrune(table: TableName, rowsIn: any[], keepIds: string[], label: string, client: Client = supabase): Promise<boolean> {
   let allOk = true;
   if (rowsIn.length) {
-    const { error } = await client.from(table).upsert(rowsIn, { onConflict: "id" });
+    const { error } = await tbl(client, table).upsert(rowsIn, { onConflict: "id" });
     allOk = ok(error, label + ".upsert");
   }
   if (!keepIds.length || degraded.has(table)) return allOk;
   const list = "(" + keepIds.map((i) => '"' + i + '"').join(",") + ")";
-  const { error: e2 } = await client.from(table).delete().not("id", "in", list);
+  const { error: e2 } = await tbl(client, table).delete().not("id", "in", list);
   return ok(e2, label + ".prune") && allOk;
 }
 
@@ -461,12 +462,12 @@ export async function syncTrainings(trainings: any[]): Promise<boolean> {
   }));
   let allOk = true;
   if (rowsIn.length) {
-    const { error } = await core.from("trainings").upsert(rowsIn, { onConflict: "id" });
+    const { error } = await tbl(supabase, "trainings").upsert(rowsIn, { onConflict: "id" });
     allOk = ok(error, "syncTrainings.upsert");
   }
   if (rosterIds.length) {
     const keep = trainings.map((t) => t.id);
-    let del = core.from("trainings").delete()
+    let del = tbl(supabase, "trainings").delete()
       .in("user_id", rosterIds);
     if (keep.length) del = del.not("id", "in", "(" + keep.map((i) => '"' + i + '"').join(",") + ")");
     const { error: e2 } = await del;
@@ -481,7 +482,7 @@ export async function syncWorklogs(worklogs: any[]): Promise<boolean> {
     id: w.id, person_id: w.userId, on_date: w.date, note: w.progress || "",
     score: w.score ?? null, feedback: w.feedback || null,
   }));
-  const { error } = await supabase.from("work_updates")
+  const { error } = await tbl(supabase, "work_updates")
     .upsert(rowsIn, { onConflict: "person_id,on_date" });
   return ok(error, "syncWorklogs");
 }
@@ -505,7 +506,7 @@ export async function syncExpenses(expenses: any[]): Promise<boolean> {
     decided_at: e.status === "pending" ? null : (e.decidedAt || new Date().toISOString()),
     decision_note: e.decisionNote || null, created_at: e.createdAt,
   }));
-  const { error } = await supabase.from("travel_requests").upsert(rowsIn, { onConflict: "id" });
+  const { error } = await tbl(supabase, "travel_requests").upsert(rowsIn, { onConflict: "id" });
   return ok(error, "syncExpenses");
 }
 
@@ -527,12 +528,12 @@ export async function syncScrums(scrums: any[]): Promise<boolean> {
   // Upsert only — same reasoning as syncTasks: notes are written by the whole
   // team, so pruning against one stale array deletes someone else's note.
   if (!rowsIn.length) return true;
-  const { error } = await supabase.from("scrum_notes").upsert(rowsIn, { onConflict: "id" });
+  const { error } = await tbl(supabase, "scrum_notes").upsert(rowsIn, { onConflict: "id" });
   return ok(error, "syncScrums");
 }
 
 export async function deleteScrum(id: string): Promise<boolean> {
-  const { error } = await supabase.from("scrum_notes").delete().eq("id", id);
+  const { error } = await tbl(supabase, "scrum_notes").delete().eq("id", id);
   return ok(error, "deleteScrum");
 }
 
@@ -548,10 +549,10 @@ export async function syncGates(gates: Record<string, string[]>): Promise<boolea
   let allOk = true;
   if (stages.length) {
     const rowsIn = stages.map((stage) => ({ stage, requirements: gates[stage] || [] }));
-    const { error } = await supabase.from("gate_config").upsert(rowsIn, { onConflict: "stage" });
+    const { error } = await tbl(supabase, "gate_config").upsert(rowsIn, { onConflict: "stage" });
     allOk = ok(error, "syncGates.upsert");
   }
-  const q = supabase.from("gate_config").delete();
+  const q = tbl(supabase, "gate_config").delete();
   const { error: e2 } = stages.length
     ? await q.not("stage", "in", "(" + stages.map((s) => '"' + s + '"').join(",") + ")")
     : await q.neq("stage", "");
@@ -562,10 +563,10 @@ export async function syncGates(gates: Record<string, string[]>): Promise<boolea
 // (the Phase 0 quartet). Loaded on demand per company; wholesale-synced.
 export async function loadSessions(orgId: string): Promise<any[]> {
   const [m, i, d, c] = await Promise.all([
-    supabase.from("meetings").select("*").eq("org_id", orgId).order("created_at", { ascending: false }),
-    supabase.from("meeting_ideas").select("*"),
-    supabase.from("meeting_decisions").select("*"),
-    supabase.from("meeting_challenges").select("*"),
+    tbl(supabase, "meetings").select("*").eq("org_id", orgId).order("created_at", { ascending: false }),
+    tbl(supabase, "meeting_ideas").select("*"),
+    tbl(supabase, "meeting_decisions").select("*"),
+    tbl(supabase, "meeting_challenges").select("*"),
   ]);
   return (m.data || []).map((s: any) => ({
     id: s.id, companyId: s.org_id, dealId: s.deal_id || "", date: s.on_date,
@@ -580,7 +581,7 @@ export async function loadSessions(orgId: string): Promise<any[]> {
   }));
 }
 export async function saveSession(s: any): Promise<boolean> {
-  const r1 = await supabase.from("meetings").upsert({
+  const r1 = await tbl(supabase, "meetings").upsert({
     id: s.id, org_id: s.companyId, deal_id: s.dealId || null, on_date: s.date,
     title: s.title || null, attendees: s.attendees || [], raw: s.raw || null, author_id: s.createdBy || null,
   }, { onConflict: "id" });
@@ -589,9 +590,10 @@ export async function saveSession(s: any): Promise<boolean> {
   const ideas = (s.ideas || []).map((x: any, seq: number) => ({ id: (x._id = kid(x)), meeting_id: s.id, seq, author_id: x.authorId || null, by_name: x.by || null, idea: x.idea, impact: x.impact || null, value: x.value || null, why: x.why || null }));
   const decisions = (s.decisions || []).map((x: any, seq: number) => ({ id: (x._id = kid(x)), meeting_id: s.id, seq, what: x.what, owner_name: x.ownerName || null }));
   const challenges = (s.challenges || []).map((x: any, seq: number) => ({ id: (x._id = kid(x)), meeting_id: s.id, seq, challenge: x.challenge, action: x.action || null, status: x.status || "open" }));
-  for (const [table, rowsIn] of [["meeting_ideas", ideas], ["meeting_decisions", decisions], ["meeting_challenges", challenges]] as any) {
+  const children: [TableName, any[]][] = [["meeting_ideas", ideas], ["meeting_decisions", decisions], ["meeting_challenges", challenges]];
+  for (const [table, rowsIn] of children) {
     if (rowsIn.length) {
-      const { error } = await supabase.from(table).upsert(rowsIn, { onConflict: "id" });
+      const { error } = await tbl(supabase, table).upsert(rowsIn, { onConflict: "id" });
       allOk = ok(error, "saveSession." + table) && allOk;
     }
   }
@@ -602,8 +604,8 @@ export async function saveSession(s: any): Promise<boolean> {
 // Performance "Ideas & contribution" tab.
 export async function loadAllIdeas(): Promise<any[]> {
   const [i, m] = await Promise.all([
-    supabase.from("meeting_ideas").select("*"),
-    supabase.from("meetings").select("id, org_id, on_date, title"),
+    tbl(supabase, "meeting_ideas").select("*"),
+    tbl(supabase, "meetings").select("id, org_id, on_date, title"),
   ]);
   const mm = new Map((m.data || []).map((x: any) => [x.id, x]));
   return (i.data || []).map((x: any) => {
@@ -618,7 +620,7 @@ export async function loadAllIdeas(): Promise<any[]> {
 // client, and the promises made in them. org_activities is the touch log;
 // kind='note' rows stay the internal activity feed and are filtered out here.
 export async function loadTouches(orgId: string): Promise<any[]> {
-  const { data } = await supabase.from("org_activities").select("*")
+  const { data } = await tbl(supabase, "org_activities").select("*")
     .eq("org_id", orgId).neq("kind", "note").order("occurred_at", { ascending: false });
   return (data || []).map((a: any) => ({
     id: a.id, companyId: a.org_id, kind: a.kind, direction: a.direction,
@@ -637,13 +639,13 @@ export async function saveTouch(t: any): Promise<string | null> {
     meeting_id: t.meetingId || null, link: t.link || null, drive_file: t.driveFile || null,
     source: t.source || "manual", ai: t.ai || {},
   };
-  const { data, error } = await supabase.from("org_activities").upsert(row, { onConflict: "id" }).select("id").single();
+  const { data, error } = await tbl(supabase, "org_activities").upsert(row, { onConflict: "id" }).select("id").single();
   if (!ok(error, "saveTouch")) return null;
   return (data && data.id) || t.id;
 }
 
 export async function loadCommitments(orgId?: string): Promise<any[]> {
-  let q = supabase.from("commitments").select("*").order("due", { ascending: true });
+  let q = tbl(supabase, "commitments").select("*").order("due", { ascending: true });
   if (orgId) q = q.eq("org_id", orgId);
   const { data } = await q;
   return (data || []).map((c: any) => ({
@@ -663,7 +665,7 @@ export async function saveCommitments(list: any[]): Promise<boolean> {
     closed_at: c.status && c.status !== "open" ? (c.closedAt || new Date().toISOString()) : null,
     closed_note: c.closedNote || null, evidence: c.evidence || null, created_by: c.createdBy || null,
   }));
-  const { error } = await supabase.from("commitments").upsert(rowsIn, { onConflict: "id" });
+  const { error } = await tbl(supabase, "commitments").upsert(rowsIn, { onConflict: "id" });
   return ok(error, "saveCommitments");
 }
 
@@ -676,78 +678,24 @@ function chatScope(q: any, personId: string, date: string, orgId?: string | null
   return orgId ? q.eq("org_id", orgId) : q.is("org_id", null);
 }
 export async function loadChat(personId: string, date: string, orgId?: string | null): Promise<any[]> {
-  const { data } = await chatScope(supabase.from("chats").select("messages"), personId, date, orgId).maybeSingle();
+  const { data } = await chatScope(tbl(supabase, "chats").select("messages"), personId, date, orgId).maybeSingle();
   return (data && data.messages) || [];
 }
 export async function loadChatDates(personId: string, orgId?: string | null): Promise<string[]> {
-  let q = supabase.from("chats").select("on_date").eq("person_id", personId);
+  let q = tbl(supabase, "chats").select("on_date").eq("person_id", personId);
   q = orgId ? q.eq("org_id", orgId) : q.is("org_id", null);
   const { data } = await q.order("on_date", { ascending: false }).limit(60);
   return (data || []).map((r: any) => r.on_date);
 }
 export async function saveChat(personId: string, date: string, messages: any[], orgId?: string | null): Promise<boolean> {
-  const { data } = await chatScope(supabase.from("chats").select("id"), personId, date, orgId).maybeSingle();
+  const { data } = await chatScope(tbl(supabase, "chats").select("id"), personId, date, orgId).maybeSingle();
   if (data?.id) {
-    const { error } = await supabase.from("chats").update({ messages }).eq("id", data.id);
+    const { error } = await tbl(supabase, "chats").update({ messages }).eq("id", data.id);
     return ok(error, "saveChat.update");
   }
-  const { error } = await supabase.from("chats")
+  const { error } = await tbl(supabase, "chats")
     .insert({ person_id: personId, on_date: date, messages, org_id: orgId || null });
   return ok(error, "saveChat.insert");
 }
 
 /* ---------- auth ---------- */
-
-// Onboarding pattern shared with the PMS: sign in; if the account does not
-// exist yet, the first sign-in creates it, and the DB trigger adopts the
-// person's roster row by email (an email nobody rostered authenticates into
-// a fresh engineer row and sees NoProfile).
-export async function signInOrUp(email: string, password: string) {
-  const em = email.trim().toLowerCase();
-  const s1 = await supabase.auth.signInWithPassword({ email: em, password });
-  if (!s1.error) return { ok: true, error: "" };
-  const msg = (s1.error.message || "").toLowerCase();
-  if (msg.includes("invalid login credentials")) {
-    const s2 = await supabase.auth.signUp({ email: em, password });
-    if (!s2.error) {
-      if (s2.data.session) return { ok: true, error: "" };
-      return { ok: false, error: "Account created but email confirmation is on. In Supabase: Authentication → Providers → Email → turn off 'Confirm email', then sign in again." };
-    }
-    const m2 = (s2.error.message || "").toLowerCase();
-    if (m2.includes("already registered"))
-      return { ok: false, error: "Wrong password for this email." };
-    return { ok: false, error: s2.error.message };
-  }
-  if (msg.includes("email not confirmed"))
-    return { ok: false, error: "This account needs email confirmation turned off. In Supabase: Authentication → Providers → Email → 'Confirm email' → off." };
-  return { ok: false, error: s1.error.message };
-}
-
-export async function signOut() {
-  try { await supabase.auth.signOut(); } catch (e) { /* ignore */ }
-}
-
-export async function currentAuthEmail(): Promise<string | null> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    return data?.session?.user?.email?.toLowerCase() || null;
-  } catch (e) { return null; }
-}
-
-// First signed-in user on an empty sales roster enrols themself as admin —
-// the RPC allows exactly that one case without a sales admin behind it.
-export async function bootstrapFirstAdmin(name?: string): Promise<void> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    const u = data?.session?.user;
-    if (!u?.email) return;
-    await supabase.rpc("upsert_person", {
-      p_id: null,
-      p_name: name || u.email.split("@")[0],
-      p_email: u.email.toLowerCase(),
-      p_role: "admin",
-      p_dept: "Management",
-      p_active: true,
-    });
-  } catch (e) { /* ignore */ }
-}
