@@ -66,6 +66,7 @@ A file in `src/lib/` that imports from `App.tsx` is the beginning of the
 | `fireflies.ts` | `/api/fireflies` — status, list, transcript. |
 | `meet.ts` | `/api/meet` — schedule, list upcoming, cancel. Carries the caller's JWT so the event is theirs. |
 | `recordings.ts` | The private `sales-recordings` bucket — upload, list, signed playback links. |
+| `adminUsers.ts` | `/api/admin-users` — create, reset and revoke logins. |
 
 ### `src/data`
 
@@ -76,6 +77,25 @@ questions, roster roles.
 The PMS goes a step further — its equivalent is *generated* from the process
 documents by `scripts/build-process-map.mjs`, so the documents are the source
 of truth. That is the shape to grow into when these stop being edited by hand.
+
+## Deactivating is not revoking
+
+Worth knowing before anyone marks a leaver inactive and considers it done.
+
+`active: false` on the roster is a **UI flag**. It makes `me` resolve to null so
+the person sees NoProfile — and nothing else. Their Supabase session stays
+valid, and every table in `sales` carries
+`for select to authenticated using (true)`, so they can still read the whole
+database directly with the anon key.
+
+Revoking (Admin → Users → Login → revoke) deletes the auth account, which ends
+the session and the access with it. The roster row is deliberately kept and
+merely unlinked: their name is on deals, tasks and scrum notes, and deleting
+the person would orphan all of it.
+
+Two refusals are built into `/api/admin-users`, because the way back from
+either is the Supabase dashboard: you cannot revoke your own login, and you
+cannot revoke the last sales admin who is able to sign in.
 
 ## Two things that are load-bearing
 

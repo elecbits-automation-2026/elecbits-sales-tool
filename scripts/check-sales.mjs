@@ -215,7 +215,7 @@ async function checkApi() {
       fail("/api/admin-users deployed", html ? "HTML returned — no function behind this route" : "404",
         "Not deployed at this origin. `vite preview` never serves api/*.js — use `vercel dev`, or test the deployed origin.");
     } else if (body?.connected) {
-      pass("/api/admin-users connected");
+      pass("/api/admin-users connected", "create, reset and revoke logins");
     } else {
       warn("/api/admin-users connected", body?.reason || "not connected",
         "Add SUPABASE_SERVICE_ROLE_KEY (and SUPABASE_URL / SUPABASE_ANON_KEY) in Vercel — server-only, NEVER VITE_-prefixed — then redeploy.");

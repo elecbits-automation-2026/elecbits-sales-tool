@@ -26,6 +26,7 @@ import { driveFolderName } from "./lib/drive";
 import * as fireflies from "./lib/fireflies";
 import * as meet from "./lib/meet";
 import * as recordings from "./lib/recordings";
+import * as adminUsers from "./lib/adminUsers";
 import {
   STAGES, stageIdx, stageName, DEFAULT_GATES, KPI_METRICS,
   COMPANY_FIELDS, REQ_FIELDS, STALE_AMBER, STALE_RED,
@@ -5294,6 +5295,72 @@ function DesignerLld({ answers, setAnswers }) {
   );
 }
 
+/* ── Whether a person can actually get in ──────────────────────────────────
+   Deactivating someone on the roster hides them from the UI and nothing more:
+   their session stays valid, and every sales table is readable by any signed-in
+   user, so a leaver marked inactive can still read the whole database. This
+   column is where that is made visible and undone.
+
+   Renders nothing at all when /api/admin-users is unconfigured — an inert
+   "Revoke" button beside a leaver's name is worse than no button, because it
+   looks like the job is done. */
+function LoginCell({ user, me }) {
+  const [cfg, setCfg] = useState({ connected: false });
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [gone, setGone] = useState(false);
+
+  useEffect(() => { adminUsers.status().then(setCfg).catch(() => {}); }, []);
+  if (!cfg.connected) return <span className="text-xs text-slate-300">—</span>;
+
+  // authId is null for someone rostered who has never signed in.
+  const hasLogin = !!user.authId && !gone;
+  const isMe = user.id === me.id;
+
+  if (!hasLogin) {
+    return <span className="text-xs text-slate-400" title="Rostered, but no account yet — they sign in once to create it.">
+      {gone ? "revoked" : "never signed in"}
+    </span>;
+  }
+
+  const revoke = async () => {
+    setBusy(true); setMsg("");
+    const r = await adminUsers.revoke(user.email);
+    if (r.error) { setMsg(r.error); setBusy(false); return; }
+    setGone(true); setConfirming(false); setMsg(r.note || "");
+    setBusy(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-1 items-start">
+      {!confirming ? (
+        <div className="flex items-center gap-2">
+          <Chip color="blue">can sign in</Chip>
+          {!isMe && (
+            <button onClick={() => { setConfirming(true); setMsg(""); }}
+              className="text-[11px] text-slate-400 hover:text-red-600 hover:underline">revoke</button>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          <p className="text-[11px] text-slate-600 max-w-[230px]">
+            Delete <b>{user.email}</b>'s login? Their session ends and they lose all
+            database access. The roster entry stays, so their name remains on past work.
+          </p>
+          <div className="flex items-center gap-2">
+            <Btn size="sm" kind="danger" disabled={busy} onClick={revoke}>
+              {busy ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />} Revoke
+            </Btn>
+            <button onClick={() => setConfirming(false)} className="text-[11px] text-slate-400 hover:underline">cancel</button>
+          </div>
+        </div>
+      )}
+      {msg && <p className="text-[11px] text-slate-500 max-w-[230px]">{msg}</p>}
+    </div>
+  );
+}
+
 function AdminView({ me, data, saveUsers, saveGates, saveQuestionSet }) {
   const { users, gates, questionSets } = data;
   const QSET_KEYS = ["company_card", "project_id", "boxbuild_criteria"];
@@ -5341,7 +5408,7 @@ function AdminView({ me, data, saveUsers, saveGates, saveQuestionSet }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs text-slate-400 border-b border-slate-100">
-              <th className="py-2 pr-4 font-medium">Name</th><th className="py-2 pr-4 font-medium">Email</th><th className="py-2 pr-4 font-medium">Role</th><th className="py-2 pr-4 font-medium">Department</th><th className="py-2 pr-4 font-medium">Status</th><th className="py-2" />
+              <th className="py-2 pr-4 font-medium">Name</th><th className="py-2 pr-4 font-medium">Email</th><th className="py-2 pr-4 font-medium">Role</th><th className="py-2 pr-4 font-medium">Department</th><th className="py-2 pr-4 font-medium">Status</th><th className="py-2 pr-4 font-medium">Login</th><th className="py-2" />
             </tr></thead>
             <tbody>
               {users.map((u) => (
@@ -5351,6 +5418,7 @@ function AdminView({ me, data, saveUsers, saveGates, saveQuestionSet }) {
                   <td className="py-2 pr-4">{roleLabel(u.role)}</td>
                   <td className="py-2 pr-4">{u.dept}</td>
                   <td className="py-2 pr-4">{u.active !== false ? <Chip color="green">Active</Chip> : <Chip color="slate">Inactive</Chip>}</td>
+                  <td className="py-2 pr-4"><LoginCell user={u} me={me} /></td>
                   <td className="py-2 text-right"><Btn size="sm" onClick={() => setEditUser(u)}><Pencil size={12} /></Btn></td>
                 </tr>
               ))}
