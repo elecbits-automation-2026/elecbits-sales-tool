@@ -20,14 +20,22 @@ export type Recording = {
   name: string; path: string; size: number; createdAt: string;
 };
 
-/** Is the bucket there? False simply means 21-recordings-bucket.sql has not
-    been run — the UI should say so rather than showing a broken control. */
-export async function available(): Promise<boolean> {
+/** Is the bucket usable, and if not, why? The reason is shown on the face of
+    the disabled control — "not available" with no cause is what sends someone
+    to ask an engineer. */
+export async function available(): Promise<{ ok: boolean; reason: string }> {
   try {
     const { error } = await supabase.storage.from(BUCKET).list("", { limit: 1 });
-    return !error;
-  } catch {
-    return false;
+    if (!error) return { ok: true, reason: "" };
+    if (/bucket not found/i.test(error.message)) {
+      return { ok: false, reason: "The sales-recordings bucket does not exist — run supabase/21-recordings-bucket.sql." };
+    }
+    if (/jwt|auth|denied|permission/i.test(error.message)) {
+      return { ok: false, reason: "Signed out, or the storage policies are not applied. Re-run supabase/21-recordings-bucket.sql." };
+    }
+    return { ok: false, reason: error.message };
+  } catch (e: any) {
+    return { ok: false, reason: String(e?.message || e) };
   }
 }
 

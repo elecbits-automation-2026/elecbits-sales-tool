@@ -13,6 +13,8 @@
 
 export type FfMeeting = { id: string; title?: string; date?: string; duration?: number };
 export type FfTranscript = { text?: string; url?: string; error?: string };
+/** What `status()` answers. `why` explains a false `on`. */
+export type FfStatus = { on: boolean; why?: string };
 
 const get = async (params: Record<string, string>): Promise<any> => {
   const p = new URLSearchParams(params);
@@ -25,7 +27,7 @@ const get = async (params: Record<string, string>): Promise<any> => {
 };
 
 /** Is FIREFLIES_API_KEY set and accepted? `reason` explains a false. */
-export async function status(): Promise<{ on: boolean; why?: string }> {
+export async function status(): Promise<FfStatus> {
   const j = await get({ action: "status" });
   return { on: !!j.connected, why: j.reason };
 }

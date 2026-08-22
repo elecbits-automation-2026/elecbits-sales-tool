@@ -5,7 +5,7 @@ import {
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
   Bot, Database, CalendarCheck2, Sun, Moon, ListTodo, FolderOpen, PencilRuler,
-  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play, GitBranch
+  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play, GitBranch, Video
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
@@ -2572,6 +2572,26 @@ function ConditionRail({ conditions }) {
 
    Hidden entirely when /api/meet is not configured: an inert button that
    always errors is worse than no button. */
+/* ── A feature that exists but is switched off ─────────────────────────────
+   Hiding an unconfigured control makes "not set up" and "not built" look
+   identical, and the only way to tell them apart is to read the source. So the
+   control stays on the page, greyed, wearing its own reason and the fix.
+
+   The rule: never render nothing. Either the working control, or this. */
+function OffNotice({ icon: Ic, title, why, fix }) {
+  return (
+    <div className="border border-dashed border-slate-300 rounded-lg px-3 py-2.5 bg-slate-50/60">
+      <div className="flex items-center gap-2 flex-wrap">
+        {Ic ? <Ic size={13} className="text-slate-400 flex-none" /> : null}
+        <span className="text-[12.5px] font-semibold text-slate-400">{title}</span>
+        <Chip color="slate">not configured</Chip>
+      </div>
+      {why && <p className="text-[11px] text-slate-500 mt-1">{why}</p>}
+      {fix && <p className="text-[11px] text-slate-400 mt-0.5">{fix}</p>}
+    </div>
+  );
+}
+
 function ScheduleMeet({ date, users, present, onScheduled }) {
   // Typed: the inferred {connected:boolean} has no notetaker field, and the
   // guest-list line below reads it.
@@ -2585,7 +2605,14 @@ function ScheduleMeet({ date, users, present, onScheduled }) {
   const [record, setRecord] = useState(true);
 
   useEffect(() => { meet.status().then(setCfg).catch(() => {}); }, []);
-  if (!cfg.connected) return null;
+
+  if (!cfg.connected) {
+    return (
+      <OffNotice icon={Video} title="Start a Google Meet"
+        why={cfg.reason ? "The scheduler is not connected — " + cfg.reason + "." : "The scheduler is not connected."}
+        fix="Set GOOGLE_IMPERSONATE_USER in Vercel, enable the Google Calendar API, and add the calendar.events scope to the same service-account client ID that already has Drive." />
+    );
+  }
 
   const invitees = users.filter((u) => u.active !== false && present[u.id] && u.email).map((u) => u.email);
 
@@ -2603,7 +2630,7 @@ function ScheduleMeet({ date, users, present, onScheduled }) {
   return (
     <div className="mt-2">
       {!open ? (
-        <Btn size="sm" onClick={() => setOpen(true)}><CalendarCheck2 size={12} /> Schedule the call</Btn>
+        <Btn size="sm" onClick={() => setOpen(true)}><Video size={12} /> Start a Google Meet</Btn>
       ) : (
         <div className="border border-slate-200 rounded-lg p-3 bg-slate-50 flex flex-col gap-2">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Meeting title" />
@@ -2645,6 +2672,7 @@ function ScheduleMeet({ date, users, present, onScheduled }) {
    effect of dragging a file in. */
 function UploadRecording({ date }) {
   const [on, setOn] = useState(null);          // null = not checked yet
+  const [why, setWhy] = useState("");
   const [items, setItems] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -2656,15 +2684,23 @@ function UploadRecording({ date }) {
 
   useEffect(() => {
     let alive = true;
-    recordings.available().then((ok) => {
+    recordings.available().then((r) => {
       if (!alive) return;
-      setOn(ok);
-      if (ok) refresh(date);
+      setOn(r.ok); setWhy(r.reason);
+      if (r.ok) refresh(date);
     });
     return () => { alive = false; };
   }, [date, refresh]);
 
-  if (on === false || on === null) return null;   // bucket not created yet
+  // null = the check has not answered yet; showing a notice then retracting it
+  // would flicker. false = genuinely off, and that gets said out loud.
+  if (on === null) return null;
+  if (on === false) {
+    return (
+      <OffNotice icon={Mic} title="Upload a recording" why={why}
+        fix="For a call the notetaker could not join — a phone call, a laptop recording, a site visit." />
+    );
+  }
 
   const pick = async (f) => {
     if (!f) return;
@@ -2687,7 +2723,7 @@ function UploadRecording({ date }) {
         onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
       <div className="flex items-center gap-2 flex-wrap">
         <Btn size="sm" disabled={busy} onClick={() => fileRef.current?.click()}>
-          {busy ? <Loader2 size={12} className="animate-spin" /> : <Mic size={12} />} Upload call audio
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <Mic size={12} />} Upload a recording
         </Btn>
         <span className="text-[11px] text-slate-400">Private — playback is a signed link that expires.</span>
       </div>
@@ -2708,20 +2744,14 @@ function UploadRecording({ date }) {
 }
 
 function MeetingsPanel({ date, users, present, onUse, onScheduled, usedIds }) {
-  const [ff, setFf] = useState({ on: false });
+  const [ff, setFf] = useState<fireflies.FfStatus>({ on: false });
   const [items, setItems] = useState(null);   // null = not looked yet
+  const [open, setOpen] = useState(false);    // ODM2's Show / Hide
   const [busy, setBusy] = useState(false);
   const [pulling, setPulling] = useState("");
   const [err, setErr] = useState("");
-  // Whether the other two halves of this panel have a backend. Tracked here so
-  // the whole box can disappear when none of the three is configured, rather
-  // than rendering an empty bordered rectangle.
-  const [canSchedule, setCanSchedule] = useState(false);
-  const [canUpload, setCanUpload] = useState(false);
 
   useEffect(() => { fireflies.status().then(setFf).catch(() => {}); }, []);
-  useEffect(() => { meet.status().then((m) => setCanSchedule(!!m.connected)).catch(() => {}); }, []);
-  useEffect(() => { recordings.available().then(setCanUpload).catch(() => {}); }, []);
   // A new day is a new list — never show yesterday's meetings under today.
   useEffect(() => { setItems(null); setErr(""); }, [date]);
 
@@ -2747,27 +2777,40 @@ function MeetingsPanel({ date, users, present, onUse, onScheduled, usedIds }) {
     setPulling("");
   };
 
-  // Nothing configured — the panel would be an empty box telling nobody anything.
-  if (!ff.on && !canSchedule && !canUpload) return null;
-
+  /* The panel ALWAYS renders. Which half is switched on is a deployment
+     detail, and a reader should be able to see that a feature exists and is
+     merely off — not be left guessing whether it was ever built. */
   return (
     <div className="border border-slate-200 rounded-lg p-3 mb-3 bg-slate-50">
       <div className="flex items-center gap-2 flex-wrap">
-        <Mic size={13} className="text-blue-600" />
-        <span className="text-xs font-semibold text-slate-700 mr-auto">The call — {fmtDate(date)}</span>
-        {ff.on && (
-          <Btn size="sm" disabled={busy} onClick={look}>
-            {busy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {items === null ? "See the day's calls" : "Refresh"}
-          </Btn>
-        )}
+        <Video size={14} className="text-blue-600" />
+        <span className="text-[13px] font-semibold text-slate-700">Meeting transcripts</span>
+        <span className="text-[11.5px] text-slate-500">Google Meet, captured by Fireflies</span>
+        {usedIds.length > 0 && <Chip color="green">{usedIds.length} pulled in</Chip>}
+        <div className="ml-auto flex items-center gap-2">
+          {open && ff.on && (
+            <Btn size="sm" kind="ghost" disabled={busy} onClick={look}>
+              {busy ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />} {busy ? "Looking…" : "Find meetings"}
+            </Btn>
+          )}
+          <Btn size="sm" kind="ghost" onClick={() => setOpen((v) => !v)}>{open ? "Hide" : "Show"}</Btn>
+        </div>
       </div>
 
-      {/* Start it, and record it. Both self-hide when unconfigured. */}
-      <ScheduleMeet date={date} users={users} present={present} onScheduled={onScheduled} />
-      <UploadRecording date={date} />
+      {open && (
+      <div className="mt-3 flex flex-col gap-2">
+      {/* Fireflies: the day's calls, or why there are none to show. */}
+      {!ff.on && (
+        <OffNotice icon={Sparkles} title="Find recorded meetings"
+          why={ff.why ? "Fireflies is not connected — " + ff.why + "." : "Fireflies is not connected."}
+          fix="Set FIREFLIES_API_KEY in Vercel. API access needs a paid Fireflies plan." />
+      )}
+      {ff.on && items !== null && items.length === 0 && !err && (
+        <p className="text-[12.5px] text-slate-500">No meetings recorded on {fmtDate(date)}. Fireflies only sees calls it was invited to.</p>
+      )}
 
       {ff.on && items !== null && items.length > 0 && (
-        <div className="flex flex-col gap-1.5 mt-2">
+        <div className="flex flex-col gap-1.5">
           {items.map((m) => {
             const used = usedIds.includes(m.id);
             return (
@@ -2784,8 +2827,15 @@ function MeetingsPanel({ date, users, present, onUse, onScheduled, usedIds }) {
           })}
         </div>
       )}
-      {err && <p className="text-[11px] text-amber-600 mt-1.5">{err}</p>}
-      {ff.on && <p className="text-[11px] text-slate-400 mt-1.5">Picking a call adds it to the box below — it never replaces what is already there.</p>}
+      {err && <p className="text-[11px] text-amber-600">{err}</p>}
+      {ff.on && <p className="text-[11px] text-slate-400">Picking a call adds it to the box below — it never replaces what is already there.</p>}
+
+      {/* Start one, and hand over a recording of one that happened off the
+          books. Each says so itself when its backend is not configured. */}
+      <UploadRecording date={date} />
+      <ScheduleMeet date={date} users={users} present={present} onScheduled={onScheduled} />
+      </div>
+      )}
     </div>
   );
 }
