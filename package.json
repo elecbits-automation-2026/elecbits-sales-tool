@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/check-sales.mjs",
+    "check:ci": "node scripts/check-sales.mjs --quiet --db"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

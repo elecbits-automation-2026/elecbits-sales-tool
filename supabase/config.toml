@@ -1,0 +1,63 @@
+# Supabase CLI project config.
+#
+# Without this file there is no CLI project: `supabase db reset`, `supabase
+# start` and `supabase functions deploy` all refuse to run, and the thirteen
+# SQL files in this directory can only be applied by pasting them into the
+# dashboard in an order that lives in somebody's memory.
+#
+# Link this directory to the hosted project once:
+#     supabase link --project-ref <ref>
+# then `supabase db push` / `supabase start` work from here.
+#
+# `project_id` is the local dev container name, not the hosted project ref —
+# the ref comes from `supabase link` and is stored outside version control.
+
+project_id = "elecbits-sales-tool"
+
+[api]
+enabled = true
+port = 54321
+# BOTH schemas must be exposed or PostgREST answers 404 for everything.
+# This mirrors Dashboard → Settings → API → Exposed schemas on the hosted
+# project; if you add a schema there, add it here too or local and hosted
+# stop agreeing.
+schemas = ["public", "core", "sales"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# Match the hosted project. Postgres 15 is what eb-core-database-1 runs.
+major_version = 15
+
+[db.pooler]
+enabled = false
+
+[studio]
+enabled = true
+port = 54323
+
+# Local inbox for auth mails (confirmations, recovery) — nothing is sent
+# anywhere real in dev.
+[inbucket]
+enabled = true
+port = 54324
+
+[auth]
+enabled = true
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["http://localhost:5173"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+# The app's onboarding pattern is sign-in-or-create on first login, which
+# cannot work while confirmation is required. This matches what SETUP.md
+# tells you to switch off on the hosted project.
+enable_confirmations = false
+
+[analytics]
+enabled = false
