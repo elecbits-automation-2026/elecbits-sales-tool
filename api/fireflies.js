@@ -120,6 +120,34 @@ export default async function handler(req, res) {
       });
     }
 
+    // join: send the Fireflies notetaker into a live meeting so the scrum
+    // records itself. Older schema revisions lack the `duration` argument —
+    // retry without it rather than failing the join.
+    if (action === "join") {
+      const link = (req.query.link || "").toString().trim();
+      if (!link) return res.status(400).json({ error: "link required" });
+      const title = (req.query.title || "Eb - Daily scrum").toString();
+      const mins = Math.min(parseInt(req.query.mins, 10) || 60, 180);
+      try {
+        const d = await ff(
+          `mutation SendBot($link: String!, $title: String, $duration: Int) {
+             addToLiveMeeting(meeting_link: $link, title: $title, duration: $duration) { success }
+           }`, { link, title, duration: mins });
+        return res.status(200).json({ joined: !!(d.addToLiveMeeting && d.addToLiveMeeting.success) });
+      } catch (e) {
+        if (/duration/i.test(String(e.message))) {
+          const d = await ff(
+            `mutation SendBot($link: String!, $title: String) {
+               addToLiveMeeting(meeting_link: $link, title: $title) { success }
+             }`, { link, title });
+          return res.status(200).json({ joined: !!(d.addToLiveMeeting && d.addToLiveMeeting.success) });
+        }
+        if (/paid|upgrade|plan/i.test(String(e.message)))
+          return res.status(200).json({ joined: false, error: "The notetaker API needs a paid Fireflies plan." });
+        throw e;
+      }
+    }
+
     return res.status(400).json({ error: "unknown action" });
   } catch (e) {
     return res.status(502).json({ error: String(e.message || e) });

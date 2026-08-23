@@ -55,6 +55,9 @@ const WHERE = {
   meeting_ideas:      ["sales", "meeting_ideas"],
   meeting_decisions:  ["sales", "meeting_decisions"],
   meeting_challenges: ["sales", "meeting_challenges"],
+  deal_stages:        ["sales", "deal_stages"],
+  temperature_moves:  ["sales", "temperature_moves"],
+  scrum_sessions:     ["sales", "scrum_sessions"],
 } as const;
 
 export type TableName = keyof typeof WHERE;
