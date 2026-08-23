@@ -37,6 +37,7 @@ whole thing rolls back and the database is untouched.
 | 7 | **`20-scrum-parity.sql`** | `steps` + `conditions` on `sales.tasks` — the scrum organiser writes both |
 | 8 | **`21-recordings-bucket.sql`** | private `sales-recordings` bucket, for call audio the notetaker missed |
 | 9 | **`22-task-stage.sql`** | `stage` on `sales.tasks` — which pipeline stage a task advances |
+| 10 | **`23-pipeline-brain.sql`** | dynamic per-deal stage plans, judged temperature + history, the committed next step, requirement jsonb on requests, Scrum Master sessions |
 
 ### Step 5 is a real trap
 
@@ -81,6 +82,7 @@ Run these only when you know why the bundle is not what you want.
 | `20-scrum-parity.sql` | 12 | `steps` + `conditions` on `sales.tasks`, for PMS-shape scrum output |
 | `21-recordings-bucket.sql` | 10 | private storage bucket + 4 policies; needs `sales.is_sales_admin` |
 | `22-task-stage.sql` | 12 | `stage` column + index, for the work window's stage guidance |
+| `23-pipeline-brain.sql` | 31 | `sales.deal_stages`, `sales.temperature_moves`, `sales.scrum_sessions`, temperature/next-step/plan columns on deals, requirement on requests |
 
 Only `10 → 11` and `12 → 13 → 17 → 18 → 19 → 20` are real chains. `14 → 16` is a
 second, shorter one. `15` is independent.

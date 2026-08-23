@@ -63,7 +63,7 @@ export async function loadWorkspace() {
     people, details, orgs, orgDetails, activities,
     deals, moves, targets, trainings, worklogs,
     knowledge, expenses, scrums, memory, gates,
-    tasks, llds, questionSets, requests,
+    tasks, llds, questionSets, requests, dealStages, tempMoves,
   ] = await Promise.all([
     rows(tbl(supabase, "people").select("*"), "people"),
     rows(tbl(supabase, "people_detail").select("*"), "people_detail"),
@@ -86,6 +86,11 @@ export async function loadWorkspace() {
     tbl(supabase, "llds").select("*").then((r: any) => { if (r.error) degraded.add("llds"); return r.data || []; }),
     tbl(supabase, "question_sets").select("*").then((r: any) => r.data || []),
     tbl(supabase, "requests").select("*").then((r: any) => r.data || []),
+    // 23-pipeline-brain.sql tables — degrade to empty until the migration runs.
+    tbl(supabase, "deal_stages").select("*").order("seq")
+      .then((r: any) => { if (r.error) degraded.add("deal_stages"); return r.data || []; }),
+    tbl(supabase, "temperature_moves").select("*").order("at")
+      .then((r: any) => r.data || []),
   ]);
 
   const peopleById = new Map(people.map((p: any) => [p.id, p]));
@@ -153,12 +158,37 @@ export async function loadWorkspace() {
     });
     movesByDeal.set(m.deal_id, list);
   }
+  // The deal's own stage plan and its temperature history ride on the deal.
+  const stagesByDeal = new Map<string, any[]>();
+  for (const s of dealStages) {
+    const list = stagesByDeal.get(s.deal_id) || [];
+    list.push({ _id: s.id, seq: s.seq, name: s.name, status: s.status,
+      start: s.start_on || "", end: s.end_on || "", ownerId: s.owner_id || "",
+      note: s.note || "", evidence: Array.isArray(s.evidence) ? s.evidence : [] });
+    stagesByDeal.set(s.deal_id, list);
+  }
+  const tempsByDeal = new Map<string, any[]>();
+  for (const m of tempMoves) {
+    const list = tempsByDeal.get(m.deal_id) || [];
+    list.push({ _id: m.id, from: m.from_temp || "", to: m.to_temp, why: m.why || "",
+      evidence: m.evidence || "", decided: m.decided, by: m.by_id || "", at: m.at });
+    tempsByDeal.set(m.deal_id, list);
+  }
   const dealsOut = deals.map((d: any) => ({
     id: d.id, did: d.code, companyId: d.org_id, ownerId: d.owner_id,
     value: Number(d.value || 0), stage: d.stage,
     createdAt: d.created_at, updatedAt: d.updated_at,
     lost: d.lost, lostInfo: d.lost ? { summary: d.lost_note || "" } : undefined,
     history: movesByDeal.get(d.id) || [],
+    plan: stagesByDeal.get(d.id) || [],
+    planSummary: d.plan_summary || "", planUpdatedAt: d.plan_updated_at || "",
+    planLog: Array.isArray(d.plan_log) ? d.plan_log : [],
+    temperature: d.temperature || "cold",
+    temperatureAt: d.temperature_at || "", temperatureWhy: d.temperature_why || "",
+    tempHistory: tempsByDeal.get(d.id) || [],
+    nextStep: d.next_step || "", nextStepDue: d.next_step_due || "",
+    nextStepOwner: d.next_step_owner || "", nextStepSetAt: d.next_step_set_at || "",
+    nextStepDoneAt: d.next_step_done_at || "",
   }));
 
   // kpis — {userId: {metric: target}}.
@@ -254,6 +284,7 @@ export async function loadWorkspace() {
     value: Number(r.value_inr || 0), urgency: r.urgency, status: r.status,
     projectId: r.project_id || "", decidedAt: r.decided_at, decisionNote: r.decision_note || "",
     submittedBy: r.submitted_by, submittedAt: r.submitted_at,
+    requirement: r.requirement || {}, ai: r.ai || {},
   }));
 
   return {
@@ -324,17 +355,27 @@ export async function mintClientId(orgId: string, industryCode: number, sizeCode
 }
 
 // Raise a Project-ID request into the shared pipe (sales.requests → core.intake
-// → ULM decides). Returns the created row's id, or null.
+// → ULM decides). Carries the full requirement analysis as jsonb; the summary
+// column holds its text rendering so ULM's intake view reads it today.
+// Returns the row's id, or null. Pass req.id to update a draft in place.
 export async function submitProjectRequest(req: any): Promise<string | null> {
-  const { data, error } = await tbl(supabase, "requests").insert({
+  const row: any = {
     org_id: req.companyId, title: req.title, summary: req.summary || null,
     proposed_kind: req.kind || null, qty: req.qty || null,
     target_date: req.targetDate || null, value_inr: Number(req.value || 0) || null,
-    urgency: req.urgency || "normal", status: "submitted",
+    urgency: req.urgency || "normal", status: req.status || "submitted",
     submitted_by: req.by || null,
-  }).select("id").single();
+  };
+  // requirement/ai exist only after 23-pipeline-brain.sql — retry without
+  // them rather than losing the request itself.
+  const withReq = { ...row, requirement: req.requirement || {}, ai: req.ai || {} };
+  const save = async (r: any) => req.id
+    ? tbl(supabase, "requests").update(r).eq("id", req.id).select("id").single()
+    : tbl(supabase, "requests").insert(r).select("id").single();
+  let { data, error } = await save(withReq);
+  if (error && /requirement|column/i.test(error.message || "")) ({ data, error } = await save(row));
   if (error) { console.error("submitProjectRequest", error.message); return null; }
-  return data?.id || null;
+  return data?.id || req.id || null;
 }
 
 /* ---------- syncs (wholesale, Phase 0) ---------- */
@@ -432,6 +473,104 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
     allOk = ok(r2.error, "syncDeals.moves") && allOk;
   }
   return allOk;
+}
+
+/* ---------- the pipeline brain (23-pipeline-brain.sql) ----------
+   Deliberately separate writers: syncDeals keeps writing only the base
+   columns so it succeeds before the migration runs; each of these fails
+   gracefully (console + false) rather than failing a whole deal save. */
+
+// The deal's own stage plan: upsert every row, prune only THIS deal's rows —
+// a scoped prune, never a table-wide one.
+export async function saveDealPlan(dealId: string, stages: any[], meta?: { summary?: string; logEntry?: any; log?: any[] }): Promise<boolean> {
+  if (degraded.has("deal_stages")) return false;
+  const rowsIn = (stages || []).map((s: any, i: number) => ({
+    id: (s._id = s._id || uuid()), deal_id: dealId, seq: i,
+    name: s.name || "(stage)", status: s.status || "pending",
+    start_on: s.start || null, end_on: s.end || null,
+    owner_id: s.ownerId || null, note: s.note || null,
+    evidence: Array.isArray(s.evidence) ? s.evidence : [],
+  }));
+  let allOk = true;
+  if (rowsIn.length) {
+    const { error } = await tbl(supabase, "deal_stages").upsert(rowsIn, { onConflict: "id" });
+    allOk = ok(error, "saveDealPlan.upsert");
+  }
+  const keep = rowsIn.map((r) => r.id);
+  let del = tbl(supabase, "deal_stages").delete().eq("deal_id", dealId);
+  if (keep.length) del = del.not("id", "in", "(" + keep.map((i) => '"' + i + '"').join(",") + ")");
+  const { error: e2 } = await del;
+  allOk = ok(e2, "saveDealPlan.prune") && allOk;
+  if (meta) {
+    const patch: any = { plan_updated_at: new Date().toISOString() };
+    if (meta.summary !== undefined) patch.plan_summary = meta.summary || null;
+    if (meta.log) patch.plan_log = meta.log.slice(0, 100);
+    const { error: e3 } = await tbl(supabase, "deals").update(patch).eq("id", dealId);
+    allOk = ok(e3, "saveDealPlan.meta") && allOk;
+  }
+  return allOk;
+}
+
+// Temperature: the deal's current reading plus an append-only move.
+export async function setTemperature(dealId: string, move: { from: string; to: string; why?: string; evidence?: string; decided?: string; by?: string }): Promise<boolean> {
+  const now = new Date().toISOString();
+  const r1 = await tbl(supabase, "deals").update({
+    temperature: ["cold", "warm", "hot"].includes(move.to) ? move.to : undefined,
+    temperature_at: now, temperature_why: move.why || null,
+  }).eq("id", dealId);
+  const r2 = await tbl(supabase, "temperature_moves").insert({
+    deal_id: dealId, from_temp: move.from || null, to_temp: move.to,
+    why: move.why || null, evidence: move.evidence || null,
+    decided: move.decided || "ai", by_id: move.by || null, at: now,
+  });
+  return ok(r1.error, "setTemperature.deal") && ok(r2.error, "setTemperature.move");
+}
+
+// The commitment: next step in the salesperson's own words, with their date.
+export async function saveNextStep(dealId: string, step: { what: string; due?: string; owner?: string; doneAt?: string | null }): Promise<boolean> {
+  const { error } = await tbl(supabase, "deals").update({
+    next_step: step.what || null,
+    next_step_due: step.due || null,
+    next_step_owner: step.owner || null,
+    next_step_set_at: new Date().toISOString(),
+    next_step_done_at: step.doneAt === undefined ? null : step.doneAt,
+  }).eq("id", dealId);
+  return ok(error, "saveNextStep");
+}
+
+/* ---------- Scrum Master sessions ---------- */
+
+const sessionOut = (s: any) => ({
+  id: s.id, personId: s.person_id, date: s.on_date,
+  startedAt: s.started_at, finishedAt: s.finished_at || "",
+  onTime: s.on_time !== false, teamScrum: s.team_scrum || "",
+  scrumNoteId: s.scrum_note_id || "",
+  messages: Array.isArray(s.messages) ? s.messages : [],
+  covered: Array.isArray(s.covered) ? s.covered : [],
+  status: s.status || "open",
+});
+
+export async function loadScrumSessions(sinceDate: string): Promise<any[]> {
+  const { data, error } = await tbl(supabase, "scrum_sessions")
+    .select("*").gte("on_date", sinceDate).order("on_date", { ascending: false });
+  if (error) { console.error("loadScrumSessions", error.message); return []; }
+  return (data || []).map(sessionOut);
+}
+
+export async function upsertScrumSession(s: any): Promise<any | null> {
+  const row = {
+    person_id: s.personId, on_date: s.date,
+    started_at: s.startedAt || new Date().toISOString(),
+    finished_at: s.finishedAt || null,
+    on_time: s.onTime !== false, team_scrum: s.teamScrum || null,
+    scrum_note_id: s.scrumNoteId || null,
+    messages: (s.messages || []).slice(-120), covered: s.covered || [],
+    status: s.status || "open",
+  };
+  const { data, error } = await tbl(supabase, "scrum_sessions")
+    .upsert(row, { onConflict: "person_id,on_date" }).select("*").single();
+  if (error) { console.error("upsertScrumSession", error.message); return null; }
+  return data ? sessionOut(data) : null;
 }
 
 export async function syncKpis(kpis: Record<string, Record<string, number>>): Promise<boolean> {

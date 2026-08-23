@@ -180,6 +180,65 @@ export default async function handler(req, res) {
       });
     }
 
+    // read: GET ?action=read&id=<fileId>  (or &name=<folder>&file=<fileName>)
+    // The content of one file, as text. Google Docs/Sheets export as
+    // text/csv; anything else must already be a text-ish file under 1 MB.
+    if (action === "read") {
+      let id = (req.query.id || "").toString().trim();
+      let mime = "";
+      if (!id) {
+        const fname = (req.query.file || "").toString().trim();
+        if (!fname) return res.status(400).json({ error: "id or file required" });
+        const folderName = (req.query.name || "").toString().trim();
+        if (!folderName) return res.status(400).json({ error: "name (folder) required with file" });
+        const f = await findFolder(token, root, folderName);
+        if (!f) return res.status(200).json({ found: false, error: "folder not found" });
+        const kids = await childrenOf(token, f.id, 200);
+        const hitFile = kids.find((k) => !k.folder && k.name.toLowerCase() === fname.toLowerCase())
+          || kids.find((k) => !k.folder && k.name.toLowerCase().includes(fname.toLowerCase()));
+        if (!hitFile) return res.status(200).json({ found: false, error: "file not found in folder" });
+        id = hitFile.id; mime = hitFile.mime || "";
+      }
+      if (!mime) {
+        const meta = await gapi(token, "files/" + encodeURIComponent(id), { fields: "id,name,mimeType,size", supportsAllDrives: "true" });
+        mime = meta.mimeType || "";
+      }
+      const isDoc = mime === "application/vnd.google-apps.document";
+      const isSheet = mime === "application/vnd.google-apps.spreadsheet";
+      const url = isDoc || isSheet
+        ? "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(id) + "/export?mimeType=" + encodeURIComponent(isDoc ? "text/plain" : "text/csv")
+        : "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(id) + "?alt=media&supportsAllDrives=true";
+      const r = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+      if (!r.ok) return res.status(502).json({ error: "read " + r.status });
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > 1024 * 1024) return res.status(200).json({ found: true, id, error: "file too large to read as text", size: buf.length });
+      return res.status(200).json({ found: true, id, mime, text: buf.toString("utf8").slice(0, 200000) });
+    }
+
+    // update: POST { id, content, mimeType? } — overwrite an existing file's
+    // content in place (media upload; the file keeps its identity and links).
+    if (action === "update") {
+      if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+      const b = req.body || {};
+      if (!b.id) return res.status(400).json({ error: "id required" });
+      const r = await fetch(
+        "https://www.googleapis.com/upload/drive/v3/files/" + encodeURIComponent(b.id) + "?uploadType=media&supportsAllDrives=true&fields=id,name,webViewLink",
+        { method: "PATCH", headers: { Authorization: "Bearer " + token, "Content-Type": (b.mimeType || "text/markdown") + "; charset=UTF-8" }, body: b.content || "" });
+      const j = await r.json();
+      if (!r.ok) return res.status(502).json({ error: (j.error && j.error.message) || ("update " + r.status) });
+      return res.status(200).json({ ok: true, id: j.id, name: j.name, link: j.webViewLink });
+    }
+
+    // rename: POST { id, newName }
+    if (action === "rename") {
+      if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+      const b = req.body || {};
+      if (!b.id || !b.newName) return res.status(400).json({ error: "id and newName required" });
+      const j = await gapi(token, "files/" + encodeURIComponent(b.id), { supportsAllDrives: "true", fields: "id,name,webViewLink" },
+        { method: "PATCH", body: JSON.stringify({ name: String(b.newName) }) });
+      return res.status(200).json({ ok: true, id: j.id, name: j.name, link: j.webViewLink });
+    }
+
     const name = (req.query.name || "").toString().trim();
     if (!name) return res.status(400).json({ error: "name required" });
 
