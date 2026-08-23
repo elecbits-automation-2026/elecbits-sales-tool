@@ -4,8 +4,9 @@
 //
 // Env vars (set in Vercel project settings, server-only — do NOT prefix with VITE_):
 //   ANTHROPIC_API_KEY   (required)
-//   ANTHROPIC_MODEL     (optional; defaults to claude-opus-4-8. Use
-//                        claude-sonnet-5 or claude-haiku-4-5 to cut cost.)
+//   ANTHROPIC_MODEL     (optional; defaults to claude-sonnet-5 — the floor
+//                        for reliable structured output. claude-haiku-4-5
+//                        cuts cost, claude-opus-4-8 raises quality.)
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {

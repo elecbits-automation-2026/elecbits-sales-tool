@@ -24,11 +24,16 @@ without leaving a real trace.
 
 | Layer | What it is |
 |---|---|
-| Front end | Vite + React, one file (`src/App.tsx`, ~5,300 lines), Tailwind styling, lucide icons. Light theme default with dark toggle. PMS visual language: slate-on-white, blue accent, IBM Plex Mono readouts. |
-| Data | Supabase (Postgres + Auth + RLS). Two schemas: **`core`** (shared with the PMS — people, orgs, trainings, numbering) and **`sales`** (this tool's own 26 tables). The app loads whole collections at login and syncs per feature. |
+| Views | Vite + React + TypeScript. `src/App.tsx` holds the views; `src/main.tsx` mounts with an error boundary and a config diagnostic (a bad env var renders a named diagnosis, never a white page). Tailwind, lucide icons, light default + dark toggle, PMS visual language: slate-on-white, blue accent, IBM Plex Mono readouts. |
+| Services (`src/lib/`) | `supabase.ts` (client, env repair), `tables.ts` (logical name → schema.table — the only place a table name is written), `data.ts` (load + sync), `auth.ts`, `ai.ts` (askClaude, Drive tool loop, attachments, memory), `drive.ts`, `fireflies.ts`, `meet.ts`, `recordings.ts`, `adminUsers.ts`. |
+| Domain data (`src/data/`) | `stages.ts` (pipeline, gates, KPI metrics, company fields, STAGE_GUIDE), `taxonomy.ts` (industry codes, org sizes, LLD questions, roles), `scrum.ts` (organiser date/time-window logic — unit-tested). |
+| Database | Supabase (Postgres + Auth + RLS). Two schemas: **`core`** (shared with the PMS — people, orgs, trainings, numbering) and **`sales`** (this tool's own tables + the private `sales-recordings` storage bucket). Collections load at login and sync per feature. |
 | AI proxy | `api/claude.js` (Vercel serverless). Model **claude-sonnet-5** by default (`ANTHROPIC_MODEL` overrides), output capped at 8,192 tokens, accepts text + pasted images (client-side downscaled) + PDF attachments. Empty answers come back with the stop reason so failures are diagnosable. |
 | Google Drive | `api/drive.js` — zero-dependency service-account JWT. Actions: `status`, `root`, `list`, `deep`, `search`, `open` (find-or-create company folder), `verify` (loose-match a claimed file inside the company folder + sub-folders), `write` (file a document into the folder, creating sub-folders like `Client-Comms` on first use). |
 | Fireflies | `api/fireflies.js` — GraphQL proxy: `status`, `list` (date-filtered with schema-drift fallbacks), `get` (transcript flattened to "Speaker: text"), `schema`. Needs `FIREFLIES_API_KEY` (paid plan). |
+| Google Meet | Scheduling calls the **PMS's deployed `meet` edge function** on the same Supabase project (it already holds the Google service account + Calendar delegation), so Sales holds no Google credentials for Meet. `api/meet.js` is a complete working copy kept as the escape hatch (`VITE_MEET_URL=/api/meet`). |
+| Login provisioning | `api/admin-users.js` — admins create, reset and **revoke** teammate logins from inside the app (needs `SUPABASE_SERVICE_ROLE_KEY`, server-only). Deactivating on the roster is a UI flag; revoking deletes the auth account and actually ends access. It refuses to revoke your own login or the last signed-in admin. |
+| Tooling | `scripts/check-sales.mjs` (`npm run check`) tells *not deployed* from *not configured* from *working* for every backend; `npm run test:scrum` runs 19 tests over the scrum organiser; `docs/ARCHITECTURE.md` documents the layering; `supabase/README.md` documents SQL run order and rollback (`00-rollback.sql`). |
 
 **Deploy discipline:** every slice is built (`npm run build`), committed to the
 working branch, merged `--no-ff` to `main`, and pushed — Vercel deploys `main`.
@@ -134,7 +139,12 @@ HH:MM:SS counter).
 2. The **Work window** (PMS two-column modal) shows the task's scope card —
    what it is, where its files live, the quality bar, the deadline — and 2–4
    AI **prep questions** specific to the task ("What is this meeting actually
-   about? What will you show?"). Answers persist on blur.
+   about? What will you show?"). Answers persist on blur. A task can be
+   linked to a **pipeline stage** once; the stage guidance then shows what
+   the stage demands (entry/exit questions from the real gates) and what it
+   should produce, and a **task chat** sits alongside — it knows the task,
+   the account, the deal and the stage, and can look in the company's Drive
+   folder.
 3. **Complete Now** opens the close flow: task-specific **close questions**
    (outcomes, names, dates, numbers), then the evidence step. A
    verb/noun classifier plus the AI brief decide what evidence the task owes:
@@ -156,8 +166,11 @@ network is down.
 ### Daily Scrum: the call itself
 
 The scrum view carries the **call card** — Meet link (remembered from the
-last note), attendance chips for the roster, guest names, absent list — and
-two modes. **Write** mode: type/dictate the scrum; the AI organiser
+last note), attendance chips for the roster, guest names, absent list — plus
+**Meet scheduling** (creates the calendar event through the PMS's edge
+function, invites the attendees), a meetings panel for the day, and
+**call-recording upload** into the private `sales-recordings` bucket with
+signed playback links. Two modes for the note itself. **Write** mode: type/dictate the scrum; the AI organiser
 (`SCRUM_JSON`) extracts assigned, time-boxed tasks, matching owners to the
 roster and companies to the book ("the account owner" resolves to that
 company's real owner). **Transcript** mode: paste or upload a `.txt/.vtt/
@@ -231,9 +244,13 @@ browser's stale copy can never wipe a teammate's rows; a load that silently
 degrades to empty poisons pruning for that table; an empty collection never
 becomes a full-table delete.
 
-**Migrations:** `supabase/10…19-*.sql`, with one-paste runbooks
-`RUN-THIS-phase0/2/3.sql`. Phase 3 (18 + 19: scrum call + client comms)
-must be run in the Supabase SQL editor for those features to persist.
+**Migrations:** `supabase/10…22-*.sql` with one-paste runbooks
+`RUN-THIS-phase0/2/3.sql`, a rollback (`00-rollback.sql`) and a run-order
+README. Recent additions: `20-scrum-parity.sql` (scrum brought to the ODM2
+shape), `21-recordings-bucket.sql` (the private `sales-recordings` storage
+bucket), `22-task-stage.sql` (`tasks.stage` for the stage-linked work
+window). Phase 3 (18 + 19) and 20–22 must be run in the Supabase SQL editor
+for those features to persist.
 
 ## 8. How it was built (timeline)
 
@@ -254,24 +271,45 @@ must be run in the Supabase SQL editor for those features to persist.
    matching everywhere.
 5. **Scrum call + Fireflies + Client Comms** — the three features that
    don't exist in the PMS, designed fresh for sales.
-6. **Repair pass** (latest) — full-codebase audit: data-loss guards in the
-   sync layer, Ideas pipeline unfrozen, commitment→task de-duplication,
+6. **Repair pass** — full-codebase audit: data-loss guards in the sync
+   layer, Ideas pipeline unfrozen, commitment→task de-duplication,
    legacy-brief crash guards, dead code removed.
+7. **Structure + three backends** (latest) — App.tsx split into layers
+   (views / `src/lib` services / `src/data` domain constants; `tables.ts`
+   as the single source of table names); health check + scrum tests +
+   rollback + architecture docs; Meet scheduling (via the PMS's edge
+   function), login provisioning with real revoke, call-recording storage;
+   scrum brought fully to the ODM2 shape; the work window gained the stage
+   picker, stage guidance and task chat.
 
 ## 9. Current state & what's outstanding
 
-**Live and working:** everything above, deployed on `main`.
+**Live and working:** everything above, deployed on `main`. `npm run build`
+passes; `npm run test:scrum` (19 tests) passes; `npm run check` reports each
+backend as working / not configured / not deployed. `npm run typecheck`
+reports ~297 pre-existing errors, all one class in `App.tsx` (untyped
+destructured props); every file in `src/lib/` and `src/data/` is clean.
 
 **Needs a one-time action (user side):**
-- Run `supabase/RUN-THIS-phase3.sql` if not yet run (scrum-call and
-  client-comms columns/tables).
+- Run the pending SQL in the Supabase editor per `supabase/README.md`:
+  `RUN-THIS-phase3.sql` (18+19) if not yet run, then `20-scrum-parity.sql`,
+  `21-recordings-bucket.sql`, `22-task-stage.sql`.
 - Google Drive service account needs **Editor** on the root folder for
   `write`/filing to work (Reader covers all read paths).
+- `SUPABASE_SERVICE_ROLE_KEY` in Vercel (server-only, never `VITE_`) to
+  enable login create/reset/revoke from Admin.
 - Optional: `FIREFLIES_API_KEY` in Vercel (paid Fireflies plan) to enable
   "Pull from Fireflies"; make the daily scrum a recurring calendar event so
-  Fireflies auto-joins.
+  Fireflies auto-joins. Meet scheduling needs nothing — it rides the PMS's
+  deployed edge function.
 - Vercel env: ensure no stale `ANTHROPIC_MODEL` override (Sonnet 5 is the
   default).
+
+**Known open item:** whole-collection syncs mean two browsers editing the
+same collection can still overwrite each other's *edits* (deletes are now
+safe for tasks/scrums; six low-churn collections still prune). Per-row
+writes or a Realtime subscription is the eventual fix — tracked in
+`docs/ARCHITECTURE.md`.
 
 **Where the tool's intelligence comes from:** the code is finished scaffolding;
 sharpness depends on what the team feeds it — company records to 100%,
