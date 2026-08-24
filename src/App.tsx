@@ -4630,17 +4630,13 @@ function RfqLinkRow({ l }) {
 function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
   const { deals, rfq, setRfq } = data;
   const [contact, setContact] = useState(company.contactPerson || "");
-  const [title, setTitle] = useState("RFQ — " + company.name);
   const [note, setNote] = useState("");
-  const [give, setGive] = useState({ quote: true, lld: false });
-  const [detail, setDetail] = useState({ quote: { effort: "", time: "", cost: "" }, lld: { effort: "", time: "", cost: "" } });
   const [made, setMade] = useState(null); // the created link id
   const [copied, setCopied] = useState(false);
 
   const create = async () => {
-    const offer = ["quote", "lld"].filter((k) => give[k]).map((k) => ({ kind: k, ...detail[k] }));
-    const l = { id: uid(), companyId: company.id, dealId: deal ? deal.id : "", title: title.trim(),
-      offer, note: note.trim(), contactName: contact.trim(), status: "created", createdBy: me.id, createdAt: nowTS() };
+    const l = { id: uid(), companyId: company.id, dealId: deal ? deal.id : "", title: "RFQ — " + company.name,
+      offer: [], note: note.trim(), contactName: contact.trim(), status: "created", createdBy: me.id, createdAt: nowTS() };
     await saveRfqLink(l);
     setRfq([l, ...(rfq || [])]);
     // An RFQ in flight IS the rfq phase — recorded like any other move.
@@ -4653,12 +4649,12 @@ function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
   };
 
   return (
-    <Modal title={"RFQ link — " + company.name} onClose={onClose} wide
+    <Modal title={"RFQ link — " + company.name} onClose={onClose}
       footer={made
         ? <Btn kind="primary" onClick={onClose}>Done</Btn>
         : <>
             <Btn onClick={onClose}>Cancel</Btn>
-            <Btn kind="primary" disabled={!give.quote && !give.lld} onClick={create}><Send size={14} /> Create the link</Btn>
+            <Btn kind="primary" onClick={create}><Send size={14} /> Create the link</Btn>
           </>}>
       {made ? (
         <div className="text-center py-6">
@@ -4666,147 +4662,185 @@ function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
           <p className="text-sm font-semibold text-slate-800 mb-1">The link is live</p>
           <p className="font-mono text-xs text-blue-700 break-all mb-3">{rfqUrl(made)}</p>
           <Btn kind="primary" onClick={() => { navigator.clipboard?.writeText(rfqUrl(made)); setCopied(true); }}><Copy size={14} /> {copied ? "Copied!" : "Copy link"}</Btn>
-          <p className="text-xs text-slate-400 mt-3 max-w-sm mx-auto">Send it to {contact.trim() || "the client"} on WhatsApp or mail. You'll see it turn to “opened” and then “input received” on the company page and the pipeline card.</p>
+          <p className="text-xs text-slate-400 mt-3 max-w-sm mx-auto">Send it to {contact.trim() || "the client"} on WhatsApp or mail — your only job is getting it filled. You'll see “opened” and “input received” on the company page and the pipeline card.</p>
         </div>
       ) : (
         <div className="space-y-3">
-          <p className="text-xs text-slate-500">The client opens this link, sees exactly what Elecbits will share back, and fills in their requirement — your requirement gathering, done by the client.</p>
-          <div className="grid sm:grid-cols-2 gap-3">
-            <Field label="Send to (client contact)"><Input value={contact} onChange={(e) => setContact(e.target.value)} /></Field>
-            <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
-          </div>
-          <div>
-            <Lbl>What we will share back</Lbl>
-            {[["quote", "Quotation"], ["lld", "LLD (low-level design)"]].map(([k, label]) => (
-              <div key={k} className={cls("border rounded-lg p-3 mt-2", give[k] ? "border-blue-300 bg-blue-50/40" : "border-slate-200")}>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={!!give[k]} onChange={(e) => setGive({ ...give, [k]: e.target.checked })} />
-                  <span className="text-sm font-medium text-slate-800">{label}</span>
-                </label>
-                {give[k] && (
-                  <div className="grid grid-cols-3 gap-2 mt-2">
-                    <Input placeholder="effort — e.g. 2 engineers" value={detail[k].effort} onChange={(e) => setDetail({ ...detail, [k]: { ...detail[k], effort: e.target.value } })} />
-                    <Input placeholder="time — e.g. 5 working days" value={detail[k].time} onChange={(e) => setDetail({ ...detail, [k]: { ...detail[k], time: e.target.value } })} />
-                    <Input placeholder="cost — e.g. free / ₹25k" value={detail[k].cost} onChange={(e) => setDetail({ ...detail, [k]: { ...detail[k], cost: e.target.value } })} />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <Field label="A line to the client (optional)"><TA value={note} onChange={(e) => setNote(e.target.value)} className="min-h-14" placeholder="e.g. Great speaking today — fill this in and we'll have the pilot quote to you within the week." /></Field>
+          <p className="text-xs text-slate-500">The client gets a chat that walks them through their requirement — it tells them what Elecbits will share back as they fill it. You just get this link filled.</p>
+          <Field label="Send to (client contact)"><Input value={contact} onChange={(e) => setContact(e.target.value)} /></Field>
+          <Field label="A line to open the chat with (optional)"><TA value={note} onChange={(e) => setNote(e.target.value)} className="min-h-14" placeholder="e.g. Great speaking today, Rahul — this takes two minutes." /></Field>
         </div>
       )}
     </Modal>
   );
 }
 
-/* The public page the client sees at #rfq/<id> — no login, no app chrome.
-   Everything goes through /api/rfq; the anon key has no access to the table. */
+/* The public page at #rfq/<id> — a CHAT, not a form. A scripted
+   conversation asks one thing at a time, tells the client what Elecbits
+   will share back along the way, and files the answers through /api/rfq.
+   Deterministic (no AI call from a public page), so it never stalls. */
 function RfqPublicPage({ token }) {
   const [link, setLink] = useState(null);
   const [err, setErr] = useState("");
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [f, setF] = useState({ name: "", email: "", phone: "", need: "", qty: "", timeline: "", budget: "", notes: "", services: [], docs: [] });
+  const [step, setStep] = useState(0);
+  const [msgs, setMsgs] = useState([]);     // {who:'bot'|'me', text}
+  const [typing, setTyping] = useState(false);
+  const [input, setInput] = useState("");
+  const [picks, setPicks] = useState([]);   // multi-select buffer for chip steps
+  const f = useRef({ name: "", email: "", phone: "", need: "", qty: "", timeline: "", budget: "", notes: "", services: [], docs: [] });
+  const bodyRef = useRef(null);
+
+  const STEPS = [
+    { key: "name", ask: "First things first — what should we call you?", type: "text", placeholder: "Your name" },
+    { key: "need", ask: (v) => "Nice to meet you, " + v.name + "! Tell us what you need built or supplied — what it does, key specs, standards, anything that matters. The more you give us, the sharper our answer.", type: "textarea", placeholder: "Describe the product or work…" },
+    { key: "services", ask: () => "Got it. Which of these does it involve? Pick all that apply.", type: "chips", options: RFQ_SERVICES },
+    { key: "qty", ask: () => "How many units are we talking? A rough number is fine.", type: "text", placeholder: "e.g. 500 units, pilot of 20", skip: true },
+    { key: "timeline", ask: () => "When do you need it? (Once you finish here, the Elecbits team reviews this and comes back with a detailed quotation — and a low-level design document where design work is involved.)", type: "text", placeholder: "e.g. pilot by November", skip: true },
+    { key: "budget", ask: () => "Do you have a budget range in mind? Skip this if you'd rather not say.", type: "text", placeholder: "e.g. ₹8-10 lakh for the pilot", skip: true },
+    { key: "docs", ask: () => "What can you share with us to speed things up?", type: "chips", options: ["Specifications", "BOM", "Drawings / CAD", "Reference sample", "Nothing yet"] },
+    { key: "contact", ask: () => "Almost done. Where should we reach you — email, phone or WhatsApp?", type: "text", placeholder: "email and/or phone" },
+    { key: "notes", ask: () => "Anything else we should know before we get to work?", type: "textarea", placeholder: "optional", skip: true },
+  ];
 
   useEffect(() => {
     fetch("/api/rfq?id=" + encodeURIComponent(token)).then((r) => r.json())
-      .then((j) => { if (j.error) setErr(j.error); else { setLink(j); if (j.submitted) setSent(true); } })
+      .then((j) => {
+        if (j.error) { setErr(j.error); return; }
+        setLink(j);
+        if (j.submitted) { setSent(true); return; }
+        const hello = [
+          { who: "bot", text: "Hi! You're talking to Elecbits" + (j.company ? " about " + j.company + "'s requirement" : "") + ". This takes about two minutes, and at the end our team gets everything they need to come back to you properly." },
+          ...(j.note ? [{ who: "bot", text: j.note }] : []),
+          { who: "bot", text: STEPS[0].ask },
+        ];
+        setMsgs(hello);
+      })
       .catch(() => setErr("Could not load this link — check your connection."));
   }, [token]);
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, typing, sent]);
 
-  const toggle = (key, v) => setF((cur) => ({ ...cur, [key]: cur[key].includes(v) ? cur[key].filter((x) => x !== v) : [...cur[key], v] }));
-  const submit = async () => {
-    if (busy || !f.need.trim() || !f.name.trim()) return;
+  const botSay = (text, after) => {
+    setTyping(true);
+    setTimeout(() => { setTyping(false); setMsgs((m) => [...m, { who: "bot", text }]); if (after) after(); }, 450);
+  };
+
+  const advance = (echo) => {
+    const cur = STEPS[step];
+    setMsgs((m) => [...m, { who: "me", text: echo }]);
+    const next = step + 1;
+    if (next < STEPS.length) {
+      setStep(next);
+      const q = STEPS[next].ask;
+      botSay(typeof q === "function" ? q(f.current) : q);
+    } else {
+      setStep(next);
+      botSay("That's everything. Hit send and it goes straight to the Elecbits team — you'll hear back with the quotation" + ((f.current.services || []).some((x) => /design|firmware|enclosure|odm|complete/i.test(x)) ? " and the low-level design plan" : "") + ".");
+    }
+  };
+
+  const submitText = () => {
+    const cur = STEPS[step];
+    const v = input.trim();
+    if (!v && !cur.skip) return;
+    if (cur.key === "contact") {
+      const em = v.match(/\S+@\S+\.\S+/); f.current.email = em ? em[0] : "";
+      const ph = v.replace(em ? em[0] : "", "").replace(/[^\d+ ]/g, " ").trim(); f.current.phone = ph;
+      if (!f.current.email && !f.current.phone) { f.current.notes = (f.current.notes || "") + " contact: " + v; }
+    } else {
+      f.current[cur.key] = v;
+    }
+    setInput("");
+    advance(v || "(skipped)");
+  };
+  const submitChips = () => {
+    const cur = STEPS[step];
+    f.current[cur.key] = picks;
+    const echo = picks.length ? picks.join(", ") : "(none)";
+    setPicks([]);
+    advance(echo);
+  };
+
+  const sendAll = async () => {
+    if (busy) return;
     setBusy(true); setErr("");
     try {
       const r = await fetch("/api/rfq?id=" + encodeURIComponent(token), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ response: f }),
+        body: JSON.stringify({ response: f.current }),
       }).then((x) => x.json());
-      if (r.error) setErr(r.error); else setSent(true);
+      if (r.error) setErr(r.error);
+      else { setSent(true); setMsgs((m) => [...m, { who: "bot", text: "Received — thank you" + (f.current.name ? ", " + f.current.name : "") + "! The Elecbits team is on it. 🚀" }]); }
     } catch (e) { setErr("Could not submit — please try again."); }
     setBusy(false);
   };
 
-  const kindName = (k) => (k === "lld" ? "LLD — low-level design document" : "Quotation");
+  const cur = step < STEPS.length ? STEPS[step] : null;
+  const started = msgs.length > 0;
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
-      <div className="max-w-2xl mx-auto px-4 py-8">
-        <Logo height={30} />
-        {err && !link && <p className="text-sm text-red-600 mt-8">{err}</p>}
-        {!err && !link && <p className="text-sm text-slate-400 mt-8 flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> Loading…</p>}
-        {link && sent && (
-          <div className="bg-white border border-slate-200 rounded-xl p-8 mt-6 text-center">
-            <CheckCircle2 size={32} className="mx-auto text-green-600 mb-3" />
-            <p className="font-semibold text-slate-900">Thank you — we have your requirement.</p>
-            <p className="text-sm text-slate-500 mt-1">The Elecbits team{link.contact ? " (" + link.contact + "'s contact)" : ""} will come back to you with {link.offer && link.offer.length ? link.offer.map((o) => kindName(o.kind).split(" —")[0].toLowerCase()).join(" and ") : "the next step"} shortly.</p>
-          </div>
-        )}
-        {link && !sent && (
-          <div className="mt-6 space-y-4">
-            <div>
-              <h1 className="text-xl font-bold text-slate-900">{link.title || "Tell us what you need"}</h1>
-              {link.company && <p className="text-sm text-slate-500 mt-0.5">Prepared for {link.company}</p>}
-              {link.note && <p className="text-sm text-slate-600 mt-2 bg-white border border-slate-200 rounded-lg p-3">{link.note}</p>}
-            </div>
-            {(link.offer || []).length > 0 && (
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                <p className="text-xs font-bold text-blue-800 uppercase tracking-wide mb-2">What you will receive from Elecbits</p>
-                {link.offer.map((o, i) => (
-                  <div key={i} className="flex flex-wrap items-baseline gap-x-3 py-1 text-sm">
-                    <span className="font-semibold text-slate-800">{kindName(o.kind)}</span>
-                    <span className="text-xs text-slate-500">{[o.effort && "effort: " + o.effort, o.time && "time: " + o.time, o.cost && "cost: " + o.cost].filter(Boolean).join(" · ")}</span>
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col">
+      <div className="max-w-xl w-full mx-auto px-4 py-6 flex-1 flex flex-col">
+        <div className="flex items-center gap-3 mb-4"><Logo height={26} /><span className="text-xs text-slate-400 ml-auto font-mono">requirement chat</span></div>
+        {err && !link && <p className="text-sm text-red-600 mt-6">{err}</p>}
+        {!err && !link && <p className="text-sm text-slate-400 mt-6 flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> Loading…</p>}
+        {link && (
+          <div className="bg-white border border-slate-200 rounded-2xl flex-1 flex flex-col min-h-0 shadow-sm">
+            <div ref={bodyRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2.5">
+              {sent && !started && (
+                <div className="text-center py-10">
+                  <CheckCircle2 size={30} className="mx-auto text-green-600 mb-2" />
+                  <p className="text-sm font-semibold">We already have your requirement — thank you!</p>
+                </div>
+              )}
+              {msgs.map((m, i) => (
+                <div key={i} className={cls("flex", m.who === "me" ? "justify-end" : "justify-start")}>
+                  <div className={cls("max-w-[85%] rounded-2xl px-3.5 py-2 text-[14px] whitespace-pre-wrap leading-relaxed",
+                    m.who === "me" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>
+                    {m.text}
                   </div>
-                ))}
+                </div>
+              ))}
+              {typing && <div className="flex"><div className="bg-slate-100 rounded-2xl rounded-bl-md px-3.5 py-2 text-slate-400 text-sm">…</div></div>}
+            </div>
+
+            {!sent && cur && !typing && (
+              <div className="border-t border-slate-100 p-3">
+                {cur.type === "chips" ? (
+                  <div>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {cur.options.map((o) => (
+                        <button key={o} onClick={() => setPicks(picks.includes(o) ? picks.filter((x) => x !== o) : [...picks, o])}
+                          className={cls("px-2.5 py-1.5 rounded-lg text-xs font-medium border", picks.includes(o) ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{o}</button>
+                      ))}
+                    </div>
+                    <Btn kind="primary" size="sm" disabled={!picks.length} onClick={submitChips}><Check size={12} /> That's them</Btn>
+                  </div>
+                ) : (
+                  <div className="flex items-end gap-2">
+                    {cur.type === "textarea"
+                      ? <TA value={input} onChange={(e) => setInput(e.target.value)} className="min-h-16 flex-1" placeholder={cur.placeholder} />
+                      : <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder={cur.placeholder}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitText(); } }} />}
+                    <div className="flex flex-col gap-1">
+                      <Btn kind="primary" size="sm" disabled={!input.trim() && !cur.skip} onClick={submitText}><Send size={13} /></Btn>
+                      {cur.skip && !input.trim() && <button onClick={submitText} className="text-[11px] text-slate-400 hover:text-slate-600">skip</button>}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
-            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
-              <div>
-                <p className="text-sm font-semibold text-slate-800 mb-1.5">What do you need built or supplied? <span className="text-red-500">*</span></p>
-                <TA value={f.need} onChange={(e) => setF({ ...f, need: e.target.value })} className="min-h-24"
-                  placeholder="Describe the product or work — what it does, key specs, standards, anything that matters." />
+            {!sent && !cur && started && (
+              <div className="border-t border-slate-100 p-3">
+                <Btn kind="primary" disabled={busy} onClick={sendAll} className="w-full justify-center">
+                  {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Send to Elecbits
+                </Btn>
+                {err && <p className="text-xs text-red-600 mt-1.5">{err}</p>}
               </div>
-              <div>
-                <p className="text-sm font-semibold text-slate-800 mb-1.5">Which of these does it involve?</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {RFQ_SERVICES.map((sv) => (
-                    <button key={sv} onClick={() => toggle("services", sv)}
-                      className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border", f.services.includes(sv) ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{sv}</button>
-                  ))}
-                </div>
-              </div>
-              <div className="grid sm:grid-cols-3 gap-3">
-                <div><p className="text-xs font-semibold text-slate-600 mb-1">Quantity</p><Input value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} placeholder="e.g. 500 units" /></div>
-                <div><p className="text-xs font-semibold text-slate-600 mb-1">When do you need it?</p><Input value={f.timeline} onChange={(e) => setF({ ...f, timeline: e.target.value })} placeholder="e.g. pilot by Nov" /></div>
-                <div><p className="text-xs font-semibold text-slate-600 mb-1">Budget range</p><Input value={f.budget} onChange={(e) => setF({ ...f, budget: e.target.value })} placeholder="if you can share" /></div>
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-slate-800 mb-1.5">What can you share with us?</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {["Specifications", "BOM", "Drawings / CAD", "Reference sample", "Nothing yet"].map((dv) => (
-                    <button key={dv} onClick={() => toggle("docs", dv)}
-                      className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border", f.docs.includes(dv) ? "bg-slate-700 text-white border-slate-700" : "bg-white text-slate-600 border-slate-300")}>{dv}</button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-slate-600 mb-1">Anything else</p>
-                <TA value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} className="min-h-14" />
-              </div>
-              <div className="grid sm:grid-cols-3 gap-3 border-t border-slate-100 pt-3">
-                <div><p className="text-xs font-semibold text-slate-600 mb-1">Your name <span className="text-red-500">*</span></p><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></div>
-                <div><p className="text-xs font-semibold text-slate-600 mb-1">Email</p><Input value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
-                <div><p className="text-xs font-semibold text-slate-600 mb-1">Phone / WhatsApp</p><Input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} /></div>
-              </div>
-              {err && <p className="text-xs text-red-600">{err}</p>}
-              <Btn kind="primary" disabled={busy || !f.need.trim() || !f.name.trim()} onClick={submit} className="w-full justify-center">
-                {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Send to Elecbits
-              </Btn>
-            </div>
-            <p className="text-[11px] text-slate-400 text-center">Powered by the Elecbits Sales OS. Your details reach only the Elecbits team.</p>
+            )}
           </div>
         )}
+        <p className="text-[11px] text-slate-400 text-center mt-3">Powered by the Elecbits Sales OS. Your details reach only the Elecbits team.</p>
       </div>
     </div>
   );
