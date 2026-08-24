@@ -739,6 +739,7 @@ export default function App() {
           {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} saveTasks={saveTasks} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
           {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "rfqs" && <RfqsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "resources" && <ResourcesView me={me} data={data} saveUsers={saveUsers} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
@@ -859,6 +860,7 @@ function navGroups(me) {
     { label: "Workspace", items: [
       { key: "pipeline", label: "Pipeline", icon: Columns },
       { key: "companies", label: "Companies", icon: Building2 },
+      { key: "rfqs", label: "RFQs", icon: FileText },
       { key: "tasks", label: "My Tasks", icon: ListTodo },
     ] },
     { label: "Personal", items: [
@@ -4604,6 +4606,80 @@ function DriveIntel({ me, company: c, data, saveCompanies }) {
 
 const RFQ_SERVICES = ["PCB design", "Firmware", "Enclosure / mechanical", "Certification", "Assembly / EMS", "Box build", "Complete product (ODM)"];
 const rfqUrl = (id) => window.location.origin + "/#rfq/" + id;
+
+/* Every RFQ link ever generated, across the whole book — who it went to,
+   whether the client opened it, and the filled form when it came back. */
+function RfqsView({ me, data, openCompany }) {
+  const { users, companies, rfq } = data;
+  const [statusF, setStatusF] = useState("all");
+  const [open, setOpen] = useState("");     // expanded link id
+  const [copied, setCopied] = useState(""); // link id just copied
+  const list = (rfq || [])
+    .filter((l) => statusF === "all" || l.status === statusF)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  const compOf = (l) => companies.find((c) => c.id === l.companyId);
+  const F = ({ label, v }) => v ? <p className="text-sm"><span className="font-semibold text-slate-600">{label}:</span> <span className="text-slate-800">{v}</span></p> : null;
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><FileText size={18} className="text-blue-600" /> RFQs</h1>
+        <div className="flex rounded-md border border-slate-300 overflow-hidden">
+          {[["all", "All"], ["created", "Sent"], ["opened", "Opened"], ["submitted", "Input received"]].map(([k, l]) => (
+            <button key={k} onClick={() => setStatusF(k)} className={cls("px-2.5 py-1 text-xs font-medium", statusF === k ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-100")}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">Every requirement link generated from a company page. Your job: get them filled — chase the ones stuck on “sent”.</p>
+      {list.length === 0 ? (
+        <Empty icon={FileText} title="No RFQ links yet" sub="Create one from any company page — the client fills in the requirement themselves." />
+      ) : (
+        <div className="space-y-2">
+          {list.map((l) => {
+            const c = compOf(l);
+            const by = users.find((u) => u.id === l.createdBy);
+            const r = l.response || {};
+            return (
+              <div key={l.id} className="bg-white border border-slate-200 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <Chip color={l.status === "submitted" ? "green" : l.status === "opened" ? "purple" : "slate"}>
+                    {l.status === "submitted" ? "input received" : l.status === "opened" ? "opened" : "sent"}
+                  </Chip>
+                  <button onClick={() => c && openCompany(c.id)} className="font-medium text-sm text-slate-900 hover:text-blue-700">{c ? c.name : "?"}</button>
+                  {l.contactName && <span className="text-xs text-slate-500">→ {l.contactName}</span>}
+                  <span className="mr-auto" />
+                  {by && <span className="text-xs text-slate-400 flex items-center gap-1"><Avatar name={by.name} size="sm" /> {by.name}</span>}
+                  <span className="text-[11px] font-mono text-slate-400">{fmtDate(l.createdAt)}</span>
+                  <button onClick={() => { navigator.clipboard?.writeText(rfqUrl(l.id)); setCopied(l.id); setTimeout(() => setCopied(""), 1500); }}
+                    className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> {copied === l.id ? "copied!" : "copy link"}</button>
+                  {l.status === "submitted" && (
+                    <Btn size="sm" onClick={() => setOpen(open === l.id ? "" : l.id)}>{open === l.id ? "hide form" : "view form"}</Btn>
+                  )}
+                </div>
+                {l.status === "submitted" && (
+                  <p className="text-xs text-slate-500 mt-1.5 line-clamp-1">{r.need || ""}</p>
+                )}
+                {open === l.id && l.status === "submitted" && (
+                  <div className="mt-3 border-t border-slate-100 pt-3 grid sm:grid-cols-2 gap-x-6 gap-y-1.5">
+                    <div className="sm:col-span-2"><F label="Requirement" v={r.need} /></div>
+                    <F label="Services" v={(r.services || []).join(", ")} />
+                    <F label="Quantity" v={r.qty} />
+                    <F label="Timeline" v={r.timeline} />
+                    <F label="Budget" v={r.budget} />
+                    <F label="Can share" v={(r.docs || []).join(", ")} />
+                    <F label="Notes" v={r.notes} />
+                    <div className="sm:col-span-2 text-[11px] text-slate-400 mt-1">
+                      From {r.name || "?"}{r.email ? " · " + r.email : ""}{r.phone ? " · " + r.phone : ""} · submitted {fmtDate(l.submittedAt)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function RfqLinkRow({ l }) {
   const [copied, setCopied] = useState(false);
