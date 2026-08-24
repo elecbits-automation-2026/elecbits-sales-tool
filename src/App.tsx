@@ -16,6 +16,7 @@ import {
   loadTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
+  saveRfqLink,
 } from "./lib/data";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
