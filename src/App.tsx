@@ -1596,6 +1596,16 @@ function rfqBadgeFor(d, rfq) {
 
 /* Moving a deal between phases is a human call, and it is recorded with the
    client behaviour that justifies it — the same ledger the AI writes to. */
+/* Manually move a deal's temperature, with a written reason.
+
+   CURRENTLY UNREFERENCED. It was the drag-and-drop handler for the four-phase
+   board (cold → warm → rfq → hot); that board was reverted to the ten stages,
+   so nothing opens this any more.
+
+   Kept, not deleted, because temperature itself is still live — the AI judge
+   sets it from the conversation, and sending an RFQ link sets it to `rfq`. If
+   someone wants a human override again, this is the modal: give it a trigger
+   and pass {deal, to}. */
 function TempMoveModal({ me, move, deals, saveDeals, onClose }) {
   const [why, setWhy] = useState("");
   const d = move.deal;
@@ -1825,7 +1835,6 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
   const [gate, setGate] = useState(null); // {deal, from, to, mode}
   const [newDeal, setNewDeal] = useState(false);
   const [room, setRoom] = useState(null); // deal id open in the Deal Room
-  const [tempMove, setTempMove] = useState(null); // {deal, to} awaiting the why
   const dragId = useRef(null);
 
   const scopeIds = scope === "mine" ? [me.id]
@@ -1837,8 +1846,9 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
     const d = deals.find((x) => x.id === dragId.current);
     dragId.current = null;
     if (!d || d.lost) return;
-    if ((d.temperature || "cold") === toKey) return;
-    setTempMove({ deal: d, to: toKey });
+    if (d.stage === toKey) return;
+    const fromI = stageIdx(d.stage), toI = stageIdx(toKey);
+    setGate({ deal: d, from: d.stage, to: toKey, mode: toI < fromI ? "back" : "advance" });
   };
 
   const applyMove = (deal, to, entryExtra) => {
@@ -1889,15 +1899,15 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
       <p className="text-xs text-slate-500 mb-3 flex items-center gap-1.5"><Sparkles size={13} className="text-blue-600" /> Cold → Warm → RFQ → Hot. Drag a card to move it — you will be asked what the client did to earn it. Click a card for the Deal Room.</p>
 
       <div className="flex gap-3 overflow-x-auto pb-4 items-start">
-        {PHASES.map(([key, label]) => {
-          const col = visible.filter((d) => (d.temperature || "cold") === key);
+        {STAGES.map((st) => {
+          const key = st.key, label = st.name;
+          const col = visible.filter((d) => d.stage === key);
           const colVal = col.reduce((sum, d) => sum + Number(d.value || 0), 0);
           return (
-            <div key={key} className="flex-1 min-w-56 bg-slate-50 border border-slate-200 rounded-xl"
+            <div key={key} className="w-64 flex-none bg-slate-50 border border-slate-200 rounded-xl"
               onDragOver={(e) => e.preventDefault()} onDrop={() => onDrop(key)}>
-              <div className={cls("px-3 py-2 border-b flex items-center justify-between rounded-t-xl",
-                key === "hot" ? "border-red-200 bg-red-50/60" : key === "rfq" ? "border-purple-200 bg-purple-50/60" : key === "warm" ? "border-amber-200 bg-amber-50/60" : "border-slate-200")}>
-                <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide">{label}</span>
+              <div className="px-3 py-2 border-b border-slate-200 flex items-center justify-between rounded-t-xl">
+                <span className="text-xs font-semibold text-slate-700">{label}</span>
                 <span className="font-mono text-xs text-slate-400 tabular-nums">{col.length}{colVal > 0 ? " · " + fmtINRc(colVal) : ""}</span>
               </div>
               <div className="p-2 space-y-2 min-h-16">
@@ -1938,7 +1948,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
                       <div className="flex items-center justify-between mt-2">
                         <span className="flex items-center gap-1 text-xs text-slate-500">{o && <Avatar name={o.name} size="sm" />}</span>
                         <div className="flex items-center gap-2">
-                          {c && ["rfq", "hot"].includes(d.temperature || "") && !d.lost && (
+                          {c && stageIdx(d.stage) >= stageIdx("rfq") && !d.lost && (
                             <button onClick={(e) => { e.stopPropagation(); openCompany(c.id); }} className="text-xs text-blue-600 hover:underline flex items-center gap-0.5" title="RFQ in hand? Apply for the official Project ID — ULM sanctions it."><Rocket size={11} /> Project ID</button>
                           )}
                           {c && compPct < 70 && <span title="Company data incomplete"><AlertTriangle size={13} className="text-red-500" /></span>}
@@ -1963,7 +1973,6 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
       )}
       {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={() => {}} openCompany={openCompany} />}
-      {tempMove && <TempMoveModal me={me} move={tempMove} deals={deals} saveDeals={saveDeals} onClose={() => setTempMove(null)} />}
       {gate && (gate.mode === "advance" || gate.mode === "lost") && (
         <StageGateModal me={me} data={data} gate={gate} onClose={() => setGate(null)} onComplete={(payload) => applyMove(gate.deal, gate.mode === "lost" ? "lost" : gate.to, payload)} />
       )}
