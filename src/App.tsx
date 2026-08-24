@@ -605,6 +605,7 @@ export default function App() {
   const [llds, setLlds] = useState([]);
   const [questionSets, setQuestionSets] = useState({});
   const [requests, setRequests] = useState([]);
+  const [rfq, setRfq] = useState([]);
 
   // Theme: default light; persisted per browser and applied to <html>.
   const [theme, setTheme] = useState(() => {
@@ -660,6 +661,7 @@ export default function App() {
         setExpenses(ws.expenses); setGates(ws.gates); setScrums(ws.scrums); setMemory(ws.memory);
         setTasks(ws.tasks || []); setLlds(ws.llds || []);
         setQuestionSets(ws.questionSets || {}); setRequests(ws.requests || []);
+        setRfq(ws.rfq || []);
         setMemoryText(memoryTextFrom(ws.memory || []));
       } catch (e) { console.error("loadWorkspace failed", e); }
       if (alive) setLoading(false);
@@ -689,11 +691,16 @@ export default function App() {
   };
 
   const me = (authEmail && users.find((u) => (u.email || "").toLowerCase() === authEmail && u.active !== false)) || null;
-  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests };
+  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests, rfq, setRfq };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
   const logout = () => { signOut(); };
+
+  // The public RFQ page: a client with a link needs no login and no app.
+  const rfqToken = typeof window !== "undefined" && window.location.hash.startsWith("#rfq/")
+    ? window.location.hash.slice(5).split(/[?&]/)[0] : "";
+  if (rfqToken) return <RfqPublicPage token={rfqToken} />;
 
   if (!authReady) return <Splash />;
   if (!authEmail) return <Login />;
@@ -731,10 +738,8 @@ export default function App() {
           {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} saveTasks={saveTasks} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
           {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
-          {tab === "lld" && <LLDView me={me} data={data} saveLlds={saveLlds} />}
           {tab === "resources" && <ResourcesView me={me} data={data} saveUsers={saveUsers} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
-          {tab === "knowledge" && <KnowledgeView me={me} data={data} saveKnowledge={saveKnowledge} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
           {tab === "scrum" && <DailyScrumView me={me} data={data} saveScrums={saveScrums} saveTasks={saveTasks} />}
           {tab === "scrummaster" && <ScrumMasterView me={me} data={data} saveScrums={saveScrums} saveTasks={saveTasks} saveDeals={saveDeals} />}
@@ -854,7 +859,6 @@ function navGroups(me) {
       { key: "pipeline", label: "Pipeline", icon: Columns },
       { key: "companies", label: "Companies", icon: Building2 },
       { key: "tasks", label: "My Tasks", icon: ListTodo },
-      { key: "lld", label: "LLD Creation", icon: PencilRuler },
     ] },
     { label: "Personal", items: [
       { key: "scrummaster", label: "Scrum Master", icon: Mic },
@@ -863,7 +867,6 @@ function navGroups(me) {
     ] },
     { label: "Resources", items: [
       { key: "resources", label: "Resources", icon: Users },
-      { key: "knowledge", label: "Product / Service", icon: BookOpen },
       { key: "expenses", label: "Expenses", icon: Receipt },
     ] },
   ];
@@ -1183,6 +1186,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
   const [newDeal, setNewDeal] = useState(false);
   const [minting, setMinting] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [rfqing, setRfqing] = useState(false);
   const [ctab, setCtab] = useState("overview");
 
   const onRequestSubmitted = (reqId, title) => {
@@ -1227,6 +1231,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
             <p className={cls("font-mono text-2xl tabular-nums", cc === "red" ? "text-red-600" : cc === "amber" ? "text-amber-600" : "text-green-600")}>{comp}%</p>
             <p className="text-xs text-slate-400">data complete</p>
           </div>
+          <Btn onClick={() => setRfqing(true)}><Send size={14} /> RFQ link</Btn>
           <Btn onClick={() => setApplying(true)}><Rocket size={14} /> Apply for Project ID</Btn>
           <Btn onClick={onEdit}><Pencil size={14} /> Edit</Btn>
         </div>
@@ -1238,8 +1243,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
                 <Rocket size={14} className="flex-none" />
                 <span className="font-medium mr-auto">{r.title}</span>
                 <Chip color={r.status === "accepted" ? "green" : r.status === "rejected" ? "red" : "blue"}>{r.status === "submitted" ? "awaiting ULM sanction" : r.status}</Chip>
-                {r.status === "accepted" && r.kind === "odm" && <span className="text-xs">→ sanctioned: create the LLD (menu → LLD Creation)</span>}
-                {r.decisionNote && <span className="text-xs w-full">{r.decisionNote}</span>}
+                                {r.decisionNote && <span className="text-xs w-full">{r.decisionNote}</span>}
               </div>
             ))}
           </div>
@@ -1335,6 +1339,16 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
         </div>
       </div>
 
+      {/* ── RFQ links: requirement gathering, straight from the client ── */}
+      {(data.rfq || []).some((l) => l.companyId === c.id) && (
+        <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
+          <SectionTitle right={<Chip color="purple"><Send size={11} /> the client fills it, you read it</Chip>}>RFQ input status</SectionTitle>
+          <div className="space-y-1.5">
+            {(data.rfq || []).filter((l) => l.companyId === c.id).map((l) => <RfqLinkRow key={l.id} l={l} />)}
+          </div>
+        </div>
+      )}
+
       {/* ── sanctioning: this company's requests to ULM, with live status ── */}
       {(data.requests || []).some((r) => r.companyId === c.id) && (
         <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
@@ -1401,6 +1415,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
       {newDeal && <NewDealModal me={me} data={data} fixedCompany={c} onClose={() => setNewDeal(false)} onCreate={createDeal} />}
       {minting && <MintIdModal company={c} data={data} onClose={() => setMinting(false)} saveCompanies={saveCompanies} me={me} />}
       {applying && <ProjectIdModal me={me} data={data} company={c} deal={myDeals.find((d) => !d.lost)} onClose={() => setApplying(false)} onSubmitted={onRequestSubmitted} />}
+      {rfqing && <RfqLinkModal me={me} data={data} company={c} deal={myDeals.find((d) => !d.lost)} onClose={() => setRfqing(false)} saveDeals={saveDeals} />}
     </div>
   );
 }
@@ -1488,10 +1503,12 @@ function NewDealModal({ me, data, fixedCompany, onClose, onCreate }) {
 const TEMP_CRITERIA = [
   "cold — no client response yet, or polite replies with no intent; we are chasing.",
   "warm — the client is responding with intent: asked questions, shared requirements or specs, agreed to a meeting, named people or dates.",
+  "rfq  — the requirement is being gathered formally: an RFQ link was sent or the client is filling in / has submitted their requirement.",
   "hot  — the client is driving: asking for commercials, timelines or next steps; negotiating; internal approvals in motion; a PO is being discussed.",
 ].join("\n");
 
-const tempColor = (t) => (t === "hot" ? "red" : t === "warm" ? "amber" : "blue");
+const PHASES = [["cold", "Cold"], ["warm", "Warm"], ["rfq", "RFQ"], ["hot", "Hot"]];
+const tempColor = (t) => (t === "hot" ? "red" : t === "rfq" ? "purple" : t === "warm" ? "amber" : "blue");
 
 /* The commitment alarm: RED is "your own committed date passed", never a
    generic clock. No commitment on record is its own (amber) state. */
@@ -1509,16 +1526,17 @@ const tempSystem = (deal, comp, evidence) => [
   "CURRENT READING: " + (deal.temperature || "cold") + (deal.temperatureWhy ? " (" + deal.temperatureWhy + ")" : ""),
   "THE EVIDENCE (recent touches, tasks, commitments — newest first):\n" + (evidence || "(nothing on record)"),
   "Judge ONLY from the evidence. No evidence of client response = cold, however busy our side looks. If the evidence is too thin to move the reading, keep it and say why.",
-  "Reply with ONLY: TEMP_JSON {\"temperature\":\"cold|warm|hot\",\"why\":\"one sentence naming the evidence that decides it\",\"changed\":true}",
+  "Reply with ONLY: TEMP_JSON {\"temperature\":\"cold|warm|rfq|hot\",\"why\":\"one sentence naming the evidence that decides it\",\"changed\":true}",
 ].join("\n");
 
 const planSystem = (deal, comp, req, evidence) => [
-  "You lay out the STAGE PLAN for one sales deal at Elecbits. Every deal is different — the plan is the stages THIS deal will actually pass through, not a generic ladder.",
-  "DEAL: " + (deal.did || "") + " · " + (comp ? comp.name : "") + " · currently " + stageName(deal.stage) + " · value ₹" + (deal.value || 0),
+  "You lay out the plan for one sales deal at Elecbits as EXACTLY THREE CLEAR STAGES — the three outcomes between where this deal is now and a PO. Every deal is different; name the stages for THIS deal.",
+  "Under each stage, decide the ACTIVITIES yourself — 3 to 5 concrete actions that get that stage done ('Send the RFQ link to Rahul', 'Price the pilot BOM'), phrased so a person can do them. These are what the Scrum Master will question the salesperson on.",
+  "DEAL: " + (deal.did || "") + " · " + (comp ? comp.name : "") + " · phase " + (deal.temperature || "cold") + " · value ₹" + (deal.value || 0),
   req ? "THE REQUIREMENT:\n" + req : "",
   "WHAT HAS HAPPENED SO FAR:\n" + (evidence || "(nothing on record)"),
-  "Rules: 4 to 8 stages, first stage reflects where the deal ACTUALLY is now (earlier work is already done — do not re-plan it). Each stage is a concrete outcome ('Pilot pricing agreed'), not an activity ('follow up'). Dates only when the evidence names one — an empty date beats an invented one.",
-  "Reply with ONLY: PLAN_STAGES_JSON {\"summary\":\"one line on the route to the PO\",\"stages\":[{\"name\":\"...\",\"status\":\"done|active|pending\",\"end\":\"YYYY-MM-DD or empty\",\"note\":\"one line, or empty\"}]}",
+  "The first stage reflects where the deal ACTUALLY is (work already done is not re-planned). Dates only when the evidence names one.",
+  "Reply with ONLY: PLAN_STAGES_JSON {\"summary\":\"one line on the route to the PO\",\"stages\":[{\"name\":\"...\",\"status\":\"done|active|pending\",\"end\":\"YYYY-MM-DD or empty\",\"activities\":[\"...\"]}]} — exactly 3 stages.",
 ].join("\n");
 
 const reqSystem = (comp) => [
@@ -1550,7 +1568,7 @@ function dealEvidence(deal, comp, tasks, touches, commits) {
 /* Days spent in each temperature, from the append-only history. */
 function tempVelocity(d) {
   const moves = (d.tempHistory || []).slice().sort((a, b) => (a.at < b.at ? -1 : 1));
-  const out = { cold: 0, warm: 0, hot: 0 };
+  const out = { cold: 0, warm: 0, rfq: 0, hot: 0 };
   let cur = "cold", curAt = new Date(d.createdAt || Date.now()).getTime();
   for (const m of moves) {
     const t = new Date(m.at).getTime();
@@ -1560,7 +1578,45 @@ function tempVelocity(d) {
   const end = d.lost || d.stage === "po" ? new Date(d.updatedAt || Date.now()).getTime() : Date.now();
   if (out[cur] !== undefined) out[cur] += Math.max(0, end - curAt);
   const days = (ms) => Math.round(ms / 86400000);
-  return { cold: days(out.cold), warm: days(out.warm), hot: days(out.hot) };
+  return { cold: days(out.cold), warm: days(out.warm), rfq: days(out.rfq), hot: days(out.hot) };
+}
+
+/* The freshest RFQ link on a deal (or its company), as a card badge. */
+function rfqBadgeFor(d, rfq) {
+  const l = (rfq || []).filter((x) => x.dealId === d.id || (!x.dealId && x.companyId === d.companyId))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0];
+  if (!l) return null;
+  return l.status === "submitted" ? { label: "RFQ input received", color: "green", link: l }
+    : l.status === "opened" ? { label: "RFQ opened, awaiting input", color: "purple", link: l }
+    : l.status === "created" ? { label: "RFQ link sent", color: "purple", link: l } : null;
+}
+
+/* Moving a deal between phases is a human call, and it is recorded with the
+   client behaviour that justifies it — the same ledger the AI writes to. */
+function TempMoveModal({ me, move, deals, saveDeals, onClose }) {
+  const [why, setWhy] = useState("");
+  const d = move.deal;
+  const apply = () => {
+    setTemperature(d.id, { from: d.temperature || "cold", to: move.to, why: why.trim(), decided: "human", by: me.id });
+    saveDeals(deals.map((x) => (x.id === d.id
+      ? { ...x, temperature: move.to, temperatureAt: nowTS(), temperatureWhy: why.trim(), updatedAt: nowTS(),
+          tempHistory: [...(x.tempHistory || []), { from: d.temperature || "cold", to: move.to, why: why.trim(), decided: "human", at: nowTS() }] }
+      : x)));
+    onClose();
+  };
+  return (
+    <Modal title={"Move to " + move.to.toUpperCase()} onClose={onClose}
+      footer={<>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" disabled={why.trim().length < 8} onClick={apply}><Check size={14} /> Move it</Btn>
+      </>}>
+      <p className="text-sm text-slate-700 mb-2">{move.deal.did} → <Chip color={tempColor(move.to)}>{move.to}</Chip></p>
+      <Field label="What did the client say or do that makes this " req hint="The phase is judged from client behaviour, not our effort — this line goes on the deal's record.">
+        <TA value={why} onChange={(e) => setWhy(e.target.value)} className="min-h-16"
+          placeholder={move.to === "hot" ? "e.g. They asked for final pricing and delivery schedule on the call today" : move.to === "rfq" ? "e.g. RFQ link sent to Rahul after the plant visit" : "what happened"} />
+      </Field>
+    </Modal>
+  );
 }
 
 /* ── THE DEAL ROOM — "what is going on with this deal, nothing else" ────── */
@@ -1598,7 +1654,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
       const reply = await withTimeout(askClaude(tempSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits)),
         [{ role: "user", content: "Judge the temperature now." }], { maxTokens: 400 }), 20000);
       const v = extractMarkedJSON(reply, "TEMP_JSON");
-      if (!v || !["cold", "warm", "hot"].includes(v.temperature)) throw new Error("unparseable");
+      if (!v || !["cold", "warm", "rfq", "hot"].includes(v.temperature)) throw new Error("unparseable");
       if (v.temperature !== d.temperature) {
         setTemperature(d.id, { from: d.temperature, to: v.temperature, why: v.why || "", decided: "ai", by: me.id });
         patchDeal({ temperature: v.temperature, temperatureAt: nowTS(), temperatureWhy: v.why || "",
@@ -1626,8 +1682,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
       const keepNames = new Set(keep.map((s) => s.name.toLowerCase()));
       const fresh = list.filter((s) => !keepNames.has(String(s.name).toLowerCase()))
         .map((s) => ({ name: String(s.name), status: ["done", "active"].includes(s.status) && !keep.length ? s.status : "pending",
-          start: "", end: s.end || "", ownerId: d.ownerId, note: s.note || "", evidence: [] }));
-      const plan = [...keep, ...fresh];
+          start: "", end: s.end || "", ownerId: d.ownerId, note: "",
+          evidence: (Array.isArray(s.activities) ? s.activities : []).slice(0, 6).map((a) => ({ text: String(a), done: false })) }));
+      const plan = [...keep, ...fresh].slice(0, 3);
       const entry = { at: nowTS(), by: (me && me.name) || "", why: keep.length ? "Re-planned the pending stages" : "Built the stage plan", what: plan.length + " stages" };
       saveDealPlan(d.id, plan, { summary: v.summary || "", log: [entry, ...(d.planLog || [])] });
       patchDeal({ plan, planSummary: v.summary || "", planUpdatedAt: nowTS(), planLog: [entry, ...(d.planLog || [])].slice(0, 100) });
@@ -1638,6 +1695,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const cycleStage = (i) => {
     const order = ["pending", "active", "done", "blocked"];
     const plan = (d.plan || []).map((s, j) => (j === i ? { ...s, status: order[(order.indexOf(s.status) + 1) % order.length] } : s));
+    saveDealPlan(d.id, plan);
+    patchDeal({ plan });
+  };
+  const toggleActivity = (i, j) => {
+    const plan = (d.plan || []).map((s, k) => (k === i
+      ? { ...s, evidence: (s.evidence || []).map((a, m) => (m === j ? { ...a, done: !a.done } : a)) } : s));
     saveDealPlan(d.id, plan);
     patchDeal({ plan });
   };
@@ -1658,7 +1721,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
     <Modal title={(comp ? comp.name : "Deal") + " · " + d.did} onClose={onClose} wide
       footer={<Btn onClick={onClose}>Close</Btn>}>
       <div className="flex items-center gap-2 flex-wrap -mt-1 mb-4 text-xs text-slate-500">
-        <Chip color="blue">{stageName(d.stage)}</Chip>
+        <Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip>
         <span className="font-mono tabular-nums text-slate-800 text-sm">{fmtINRc(d.value)}</span>
         {owner && <span className="flex items-center gap-1"><Avatar name={owner.name} size="sm" /> {owner.name}</span>}
         {comp && <button onClick={() => { onClose(); openCompany(comp.id); }} className="text-blue-600 hover:underline ml-auto">open the company →</button>}
@@ -1678,7 +1741,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
             </div>
             {d.temperatureWhy && <p className="text-xs text-slate-600 mt-1.5">{d.temperatureWhy}</p>}
             <p className="text-[11px] text-slate-400 mt-2 font-mono tabular-nums">
-              cold {vel.cold}d → warm {vel.warm}d → hot {vel.hot}d
+              cold {vel.cold}d → warm {vel.warm}d → rfq {vel.rfq}d → hot {vel.hot}d
             </p>
             <p className="text-[11px] text-slate-400 mt-1">Judged from the record — touches, promises, tasks. Log the conversation in Client Comms and the reading sharpens.</p>
           </div>
@@ -1715,21 +1778,33 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
         <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
           <div className="flex items-center gap-2">
             <Lbl className="mr-auto">This deal's stages</Lbl>
-            <Btn size="sm" disabled={busyPlan} onClick={buildPlan}>{busyPlan ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {(d.plan || []).length ? "Re-plan pending" : "Build with AI"}</Btn>
+            <Btn size="sm" disabled={busyPlan} onClick={buildPlan}>{busyPlan ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {(d.plan || []).length ? "Re-plan pending" : "Plan 3 stages"}</Btn>
           </div>
           {d.planSummary && <p className="text-xs text-slate-600 mt-1.5">{d.planSummary}</p>}
-          <div className="mt-2.5 space-y-1.5">
+          <div className="mt-2.5 space-y-2">
             {(d.plan || []).map((s, i) => (
-              <div key={s._id || i} className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-2.5 py-1.5">
-                <button onClick={() => cycleStage(i)} title="Click to advance"
-                  className={cls("w-3 h-3 rounded-full flex-none border",
-                    s.status === "done" ? "bg-green-500 border-green-500" : s.status === "active" ? "bg-blue-500 border-blue-500"
-                    : s.status === "blocked" ? "bg-red-500 border-red-500" : "bg-white border-slate-300")} />
-                <span className={cls("text-sm mr-auto", s.status === "done" ? "text-slate-400 line-through" : "text-slate-800")}>{s.name}</span>
-                {s.end && <span className="text-[11px] font-mono text-slate-400">{fmtDate(s.end)}</span>}
+              <div key={s._id || i} className="bg-white border border-slate-200 rounded-md px-2.5 py-2">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => cycleStage(i)} title="Click to advance"
+                    className={cls("w-3 h-3 rounded-full flex-none border",
+                      s.status === "done" ? "bg-green-500 border-green-500" : s.status === "active" ? "bg-blue-500 border-blue-500"
+                      : s.status === "blocked" ? "bg-red-500 border-red-500" : "bg-white border-slate-300")} />
+                  <span className={cls("text-sm font-medium mr-auto", s.status === "done" ? "text-slate-400 line-through" : "text-slate-800")}>{i + 1}. {s.name}</span>
+                  {s.end && <span className="text-[11px] font-mono text-slate-400">{fmtDate(s.end)}</span>}
+                </div>
+                {(s.evidence || []).length > 0 && (
+                  <div className="mt-1.5 ml-5 space-y-0.5">
+                    {s.evidence.map((a, j) => (
+                      <label key={j} className="flex items-start gap-1.5 text-[12.5px] cursor-pointer">
+                        <input type="checkbox" checked={!!a.done} onChange={() => toggleActivity(i, j)} className="mt-0.5" />
+                        <span className={a.done ? "text-slate-400 line-through" : "text-slate-700"}>{a.text}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
-            {!(d.plan || []).length && <p className="text-xs text-slate-400 py-2">No plan yet. Every deal is different — the AI lays out the stages this one will actually pass through, from the requirement and the record.</p>}
+            {!(d.plan || []).length && <p className="text-xs text-slate-400 py-2">No plan yet. Three clear stages to the PO, with the activities under each decided by the AI — and questioned by the Scrum Master.</p>}
           </div>
           {(d.plan || []).some((s) => s.status === "blocked") && <p className="text-[11px] text-red-600 mt-2">A blocked stage is a blocked deal — raise it in the scrum.</p>}
         </div>
@@ -1740,12 +1815,14 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
 }
 
 function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
-  const { users, companies, deals, gates } = data;
+  const { users, companies, deals, gates, rfq } = data;
+  const rfqBadge = (d) => { const b = rfqBadgeFor(d, rfq); return b ? <Chip color={b.color}>{b.label}</Chip> : null; };
   const [scope, setScope] = useState(me.role === "agent" ? "mine" : "team");
   const [showLost, setShowLost] = useState(false);
   const [gate, setGate] = useState(null); // {deal, from, to, mode}
   const [newDeal, setNewDeal] = useState(false);
   const [room, setRoom] = useState(null); // deal id open in the Deal Room
+  const [tempMove, setTempMove] = useState(null); // {deal, to} awaiting the why
   const dragId = useRef(null);
 
   const scopeIds = scope === "mine" ? [me.id]
@@ -1757,9 +1834,8 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
     const d = deals.find((x) => x.id === dragId.current);
     dragId.current = null;
     if (!d || d.lost) return;
-    if (d.stage === toKey) return;
-    const fromI = stageIdx(d.stage), toI = stageIdx(toKey);
-    setGate({ deal: d, from: d.stage, to: toKey, mode: toI < fromI ? "back" : "advance" });
+    if ((d.temperature || "cold") === toKey) return;
+    setTempMove({ deal: d, to: toKey });
   };
 
   const applyMove = (deal, to, entryExtra) => {
@@ -1807,17 +1883,18 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
         <Btn kind="primary" onClick={() => setNewDeal(true)}><Plus size={15} /> New deal</Btn>
       </div>
 
-      <p className="text-xs text-slate-500 mb-3 flex items-center gap-1.5"><Sparkles size={13} className="text-blue-600" /> Drag a card to the next stage — the AI gate will interview you before it moves. No data, no move.</p>
+      <p className="text-xs text-slate-500 mb-3 flex items-center gap-1.5"><Sparkles size={13} className="text-blue-600" /> Cold → Warm → RFQ → Hot. Drag a card to move it — you will be asked what the client did to earn it. Click a card for the Deal Room.</p>
 
       <div className="flex gap-3 overflow-x-auto pb-4 items-start">
-        {STAGES.map((s) => {
-          const col = visible.filter((d) => d.stage === s.key);
+        {PHASES.map(([key, label]) => {
+          const col = visible.filter((d) => (d.temperature || "cold") === key);
           const colVal = col.reduce((sum, d) => sum + Number(d.value || 0), 0);
           return (
-            <div key={s.key} className="w-64 flex-none bg-slate-50 border border-slate-200 rounded-xl"
-              onDragOver={(e) => e.preventDefault()} onDrop={() => onDrop(s.key)}>
-              <div className="px-3 py-2 border-b border-slate-200 flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-700">{s.name}</span>
+            <div key={key} className="flex-1 min-w-56 bg-slate-50 border border-slate-200 rounded-xl"
+              onDragOver={(e) => e.preventDefault()} onDrop={() => onDrop(key)}>
+              <div className={cls("px-3 py-2 border-b flex items-center justify-between rounded-t-xl",
+                key === "hot" ? "border-red-200 bg-red-50/60" : key === "rfq" ? "border-purple-200 bg-purple-50/60" : key === "warm" ? "border-amber-200 bg-amber-50/60" : "border-slate-200")}>
+                <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide">{label}</span>
                 <span className="font-mono text-xs text-slate-400 tabular-nums">{col.length}{colVal > 0 ? " · " + fmtINRc(colVal) : ""}</span>
               </div>
               <div className="p-2 space-y-2 min-h-16">
@@ -1842,7 +1919,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
                       <div className="flex items-center justify-between mt-1.5">
                         <span className="font-mono text-sm tabular-nums text-slate-800">{fmtINRc(d.value)}</span>
                         <span className="flex items-center gap-1.5">
-                          <Chip color={tempColor(d.temperature)}>{d.temperature || "cold"}</Chip>
+                          {rfqBadge(d)}
                           <span className={cls("flex items-center gap-1 font-mono text-xs tabular-nums", stale >= STALE_RED ? "text-red-600 font-semibold" : stale >= STALE_AMBER ? "text-amber-600" : "text-slate-400")}>
                             <Clock size={11} /> {stale}d
                           </span>
@@ -1858,11 +1935,11 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
                       <div className="flex items-center justify-between mt-2">
                         <span className="flex items-center gap-1 text-xs text-slate-500">{o && <Avatar name={o.name} size="sm" />}</span>
                         <div className="flex items-center gap-2">
-                          {c && stageIdx(d.stage) >= stageIdx("rfq") && !d.lost && (
+                          {c && ["rfq", "hot"].includes(d.temperature || "") && !d.lost && (
                             <button onClick={(e) => { e.stopPropagation(); openCompany(c.id); }} className="text-xs text-blue-600 hover:underline flex items-center gap-0.5" title="RFQ in hand? Apply for the official Project ID — ULM sanctions it."><Rocket size={11} /> Project ID</button>
                           )}
                           {c && compPct < 70 && <span title="Company data incomplete"><AlertTriangle size={13} className="text-red-500" /></span>}
-                          {!d.lost && d.stage !== "po" && (
+                          {!d.lost && (
                             <button onClick={(e) => { e.stopPropagation(); setGate({ deal: d, from: d.stage, to: "lost", mode: "lost" }); }}
                               className="text-xs text-slate-400 hover:text-red-600" title="Mark lost">lost?</button>
                           )}
@@ -1883,6 +1960,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
       )}
       {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={() => {}} openCompany={openCompany} />}
+      {tempMove && <TempMoveModal me={me} move={tempMove} deals={deals} saveDeals={saveDeals} onClose={() => setTempMove(null)} />}
       {gate && (gate.mode === "advance" || gate.mode === "lost") && (
         <StageGateModal me={me} data={data} gate={gate} onClose={() => setGate(null)} onComplete={(payload) => applyMove(gate.deal, gate.mode === "lost" ? "lost" : gate.to, payload)} />
       )}
@@ -4507,6 +4585,233 @@ function DriveIntel({ me, company: c, data, saveCompanies }) {
    PROJECT-ID APPLICATION — sales.requests → core.intake → ULM
    ============================================================ */
 
+/* ============================================================
+   THE RFQ LINK — requirement gathering the client does for you.
+   The salesperson picks what Elecbits will share back (Quote /
+   LLD, with effort, time and cost), creates a link, and sends it.
+   The client's browser talks only to /api/rfq. (24-rfq-links.sql)
+   ============================================================ */
+
+const RFQ_SERVICES = ["PCB design", "Firmware", "Enclosure / mechanical", "Certification", "Assembly / EMS", "Box build", "Complete product (ODM)"];
+const rfqUrl = (id) => window.location.origin + "/#rfq/" + id;
+
+function RfqLinkRow({ l }) {
+  const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
+  const r = l.response || {};
+  return (
+    <div className="border border-slate-200 rounded-md px-3 py-2 text-sm">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Chip color={l.status === "submitted" ? "green" : l.status === "opened" ? "purple" : "slate"}>
+          {l.status === "submitted" ? "input received" : l.status === "opened" ? "opened — awaiting input" : "sent, not opened yet"}
+        </Chip>
+        <span className="text-slate-800 mr-auto">{l.title || "RFQ"}{l.contactName ? " → " + l.contactName : ""}</span>
+        {l.status === "submitted" && (
+          <button onClick={() => setOpen(!open)} className="text-xs text-blue-600 hover:underline">{open ? "hide" : "view"} input</button>
+        )}
+        <button onClick={() => { navigator.clipboard?.writeText(rfqUrl(l.id)); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+          className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> {copied ? "copied!" : "copy link"}</button>
+        <span className="text-[11px] font-mono text-slate-400">{fmtDate(l.createdAt)}</span>
+      </div>
+      {open && l.status === "submitted" && (
+        <div className="mt-2 border-t border-slate-100 pt-2 space-y-1 text-[13px]">
+          {r.need && <p><span className="font-semibold text-slate-600">Need:</span> {r.need}</p>}
+          {(r.services || []).length > 0 && <p><span className="font-semibold text-slate-600">Services:</span> {r.services.join(", ")}</p>}
+          <p className="text-xs text-slate-500 font-mono">{[r.qty && "qty " + r.qty, r.timeline && "when: " + r.timeline, r.budget && "budget: " + r.budget].filter(Boolean).join(" · ")}</p>
+          {(r.docs || []).length > 0 && <p className="text-xs text-slate-500">Can share: {r.docs.join(", ")}</p>}
+          {r.notes && <p className="text-xs text-slate-500">{r.notes}</p>}
+          <p className="text-[11px] text-slate-400">From {r.name || "?"}{r.email ? " · " + r.email : ""}{r.phone ? " · " + r.phone : ""} · {fmtDate(l.submittedAt)}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
+  const { deals, rfq, setRfq } = data;
+  const [contact, setContact] = useState(company.contactPerson || "");
+  const [title, setTitle] = useState("RFQ — " + company.name);
+  const [note, setNote] = useState("");
+  const [give, setGive] = useState({ quote: true, lld: false });
+  const [detail, setDetail] = useState({ quote: { effort: "", time: "", cost: "" }, lld: { effort: "", time: "", cost: "" } });
+  const [made, setMade] = useState(null); // the created link id
+  const [copied, setCopied] = useState(false);
+
+  const create = async () => {
+    const offer = ["quote", "lld"].filter((k) => give[k]).map((k) => ({ kind: k, ...detail[k] }));
+    const l = { id: uid(), companyId: company.id, dealId: deal ? deal.id : "", title: title.trim(),
+      offer, note: note.trim(), contactName: contact.trim(), status: "created", createdBy: me.id, createdAt: nowTS() };
+    await saveRfqLink(l);
+    setRfq([l, ...(rfq || [])]);
+    // An RFQ in flight IS the rfq phase — recorded like any other move.
+    if (deal && !deal.lost && ["cold", "warm"].includes(deal.temperature || "cold")) {
+      setTemperature(deal.id, { from: deal.temperature || "cold", to: "rfq", why: "RFQ link sent" + (contact.trim() ? " to " + contact.trim() : ""), decided: "human", by: me.id });
+      saveDeals(deals.map((x) => (x.id === deal.id ? { ...x, temperature: "rfq", temperatureAt: nowTS(), temperatureWhy: "RFQ link sent", updatedAt: nowTS(),
+        tempHistory: [...(x.tempHistory || []), { from: deal.temperature || "cold", to: "rfq", why: "RFQ link sent", decided: "human", at: nowTS() }] } : x)));
+    }
+    setMade(l.id);
+  };
+
+  return (
+    <Modal title={"RFQ link — " + company.name} onClose={onClose} wide
+      footer={made
+        ? <Btn kind="primary" onClick={onClose}>Done</Btn>
+        : <>
+            <Btn onClick={onClose}>Cancel</Btn>
+            <Btn kind="primary" disabled={!give.quote && !give.lld} onClick={create}><Send size={14} /> Create the link</Btn>
+          </>}>
+      {made ? (
+        <div className="text-center py-6">
+          <CheckCircle2 size={30} className="mx-auto text-green-600 mb-2" />
+          <p className="text-sm font-semibold text-slate-800 mb-1">The link is live</p>
+          <p className="font-mono text-xs text-blue-700 break-all mb-3">{rfqUrl(made)}</p>
+          <Btn kind="primary" onClick={() => { navigator.clipboard?.writeText(rfqUrl(made)); setCopied(true); }}><Copy size={14} /> {copied ? "Copied!" : "Copy link"}</Btn>
+          <p className="text-xs text-slate-400 mt-3 max-w-sm mx-auto">Send it to {contact.trim() || "the client"} on WhatsApp or mail. You'll see it turn to “opened” and then “input received” on the company page and the pipeline card.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">The client opens this link, sees exactly what Elecbits will share back, and fills in their requirement — your requirement gathering, done by the client.</p>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="Send to (client contact)"><Input value={contact} onChange={(e) => setContact(e.target.value)} /></Field>
+            <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+          </div>
+          <div>
+            <Lbl>What we will share back</Lbl>
+            {[["quote", "Quotation"], ["lld", "LLD (low-level design)"]].map(([k, label]) => (
+              <div key={k} className={cls("border rounded-lg p-3 mt-2", give[k] ? "border-blue-300 bg-blue-50/40" : "border-slate-200")}>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={!!give[k]} onChange={(e) => setGive({ ...give, [k]: e.target.checked })} />
+                  <span className="text-sm font-medium text-slate-800">{label}</span>
+                </label>
+                {give[k] && (
+                  <div className="grid grid-cols-3 gap-2 mt-2">
+                    <Input placeholder="effort — e.g. 2 engineers" value={detail[k].effort} onChange={(e) => setDetail({ ...detail, [k]: { ...detail[k], effort: e.target.value } })} />
+                    <Input placeholder="time — e.g. 5 working days" value={detail[k].time} onChange={(e) => setDetail({ ...detail, [k]: { ...detail[k], time: e.target.value } })} />
+                    <Input placeholder="cost — e.g. free / ₹25k" value={detail[k].cost} onChange={(e) => setDetail({ ...detail, [k]: { ...detail[k], cost: e.target.value } })} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <Field label="A line to the client (optional)"><TA value={note} onChange={(e) => setNote(e.target.value)} className="min-h-14" placeholder="e.g. Great speaking today — fill this in and we'll have the pilot quote to you within the week." /></Field>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/* The public page the client sees at #rfq/<id> — no login, no app chrome.
+   Everything goes through /api/rfq; the anon key has no access to the table. */
+function RfqPublicPage({ token }) {
+  const [link, setLink] = useState(null);
+  const [err, setErr] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [f, setF] = useState({ name: "", email: "", phone: "", need: "", qty: "", timeline: "", budget: "", notes: "", services: [], docs: [] });
+
+  useEffect(() => {
+    fetch("/api/rfq?id=" + encodeURIComponent(token)).then((r) => r.json())
+      .then((j) => { if (j.error) setErr(j.error); else { setLink(j); if (j.submitted) setSent(true); } })
+      .catch(() => setErr("Could not load this link — check your connection."));
+  }, [token]);
+
+  const toggle = (key, v) => setF((cur) => ({ ...cur, [key]: cur[key].includes(v) ? cur[key].filter((x) => x !== v) : [...cur[key], v] }));
+  const submit = async () => {
+    if (busy || !f.need.trim() || !f.name.trim()) return;
+    setBusy(true); setErr("");
+    try {
+      const r = await fetch("/api/rfq?id=" + encodeURIComponent(token), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ response: f }),
+      }).then((x) => x.json());
+      if (r.error) setErr(r.error); else setSent(true);
+    } catch (e) { setErr("Could not submit — please try again."); }
+    setBusy(false);
+  };
+
+  const kindName = (k) => (k === "lld" ? "LLD — low-level design document" : "Quotation");
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
+      <div className="max-w-2xl mx-auto px-4 py-8">
+        <Logo height={30} />
+        {err && !link && <p className="text-sm text-red-600 mt-8">{err}</p>}
+        {!err && !link && <p className="text-sm text-slate-400 mt-8 flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> Loading…</p>}
+        {link && sent && (
+          <div className="bg-white border border-slate-200 rounded-xl p-8 mt-6 text-center">
+            <CheckCircle2 size={32} className="mx-auto text-green-600 mb-3" />
+            <p className="font-semibold text-slate-900">Thank you — we have your requirement.</p>
+            <p className="text-sm text-slate-500 mt-1">The Elecbits team{link.contact ? " (" + link.contact + "'s contact)" : ""} will come back to you with {link.offer && link.offer.length ? link.offer.map((o) => kindName(o.kind).split(" —")[0].toLowerCase()).join(" and ") : "the next step"} shortly.</p>
+          </div>
+        )}
+        {link && !sent && (
+          <div className="mt-6 space-y-4">
+            <div>
+              <h1 className="text-xl font-bold text-slate-900">{link.title || "Tell us what you need"}</h1>
+              {link.company && <p className="text-sm text-slate-500 mt-0.5">Prepared for {link.company}</p>}
+              {link.note && <p className="text-sm text-slate-600 mt-2 bg-white border border-slate-200 rounded-lg p-3">{link.note}</p>}
+            </div>
+            {(link.offer || []).length > 0 && (
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                <p className="text-xs font-bold text-blue-800 uppercase tracking-wide mb-2">What you will receive from Elecbits</p>
+                {link.offer.map((o, i) => (
+                  <div key={i} className="flex flex-wrap items-baseline gap-x-3 py-1 text-sm">
+                    <span className="font-semibold text-slate-800">{kindName(o.kind)}</span>
+                    <span className="text-xs text-slate-500">{[o.effort && "effort: " + o.effort, o.time && "time: " + o.time, o.cost && "cost: " + o.cost].filter(Boolean).join(" · ")}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-800 mb-1.5">What do you need built or supplied? <span className="text-red-500">*</span></p>
+                <TA value={f.need} onChange={(e) => setF({ ...f, need: e.target.value })} className="min-h-24"
+                  placeholder="Describe the product or work — what it does, key specs, standards, anything that matters." />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-800 mb-1.5">Which of these does it involve?</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {RFQ_SERVICES.map((sv) => (
+                    <button key={sv} onClick={() => toggle("services", sv)}
+                      className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border", f.services.includes(sv) ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{sv}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <div><p className="text-xs font-semibold text-slate-600 mb-1">Quantity</p><Input value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} placeholder="e.g. 500 units" /></div>
+                <div><p className="text-xs font-semibold text-slate-600 mb-1">When do you need it?</p><Input value={f.timeline} onChange={(e) => setF({ ...f, timeline: e.target.value })} placeholder="e.g. pilot by Nov" /></div>
+                <div><p className="text-xs font-semibold text-slate-600 mb-1">Budget range</p><Input value={f.budget} onChange={(e) => setF({ ...f, budget: e.target.value })} placeholder="if you can share" /></div>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-800 mb-1.5">What can you share with us?</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {["Specifications", "BOM", "Drawings / CAD", "Reference sample", "Nothing yet"].map((dv) => (
+                    <button key={dv} onClick={() => toggle("docs", dv)}
+                      className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border", f.docs.includes(dv) ? "bg-slate-700 text-white border-slate-700" : "bg-white text-slate-600 border-slate-300")}>{dv}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-600 mb-1">Anything else</p>
+                <TA value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} className="min-h-14" />
+              </div>
+              <div className="grid sm:grid-cols-3 gap-3 border-t border-slate-100 pt-3">
+                <div><p className="text-xs font-semibold text-slate-600 mb-1">Your name <span className="text-red-500">*</span></p><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></div>
+                <div><p className="text-xs font-semibold text-slate-600 mb-1">Email</p><Input value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
+                <div><p className="text-xs font-semibold text-slate-600 mb-1">Phone / WhatsApp</p><Input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} /></div>
+              </div>
+              {err && <p className="text-xs text-red-600">{err}</p>}
+              <Btn kind="primary" disabled={busy || !f.need.trim() || !f.name.trim()} onClick={submit} className="w-full justify-center">
+                {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Send to Elecbits
+              </Btn>
+            </div>
+            <p className="text-[11px] text-slate-400 text-center">Powered by the Elecbits Sales OS. Your details reach only the Elecbits team.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProjectIdModal({ me, data, company, deal, onClose, onSubmitted }) {
   const { questionSets } = data;
   const criteria = (questionSets.boxbuild_criteria && questionSets.boxbuild_criteria.questions) || [];
@@ -4650,7 +4955,7 @@ function ProjectIdModal({ me, data, company, deal, onClose, onSubmitted }) {
             ))}
           </div>
         )}
-        {kind === "odm" && <p className="text-xs text-slate-500 flex items-center gap-1.5"><PencilRuler size={13} /> ODM route: once ULM sanctions this, the deal will ask for LLD creation (menu → LLD Creation).</p>}
+        
         <p className="text-xs text-slate-500">Attach the RFQ file in the company's Drive folder (Documents card) — reviewers open the same folder.</p>
         {err && <p className="text-xs text-red-600">{err}</p>}
       </div>
@@ -5573,90 +5878,131 @@ function istMinutesNow() {
   } catch (e) { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); }
 }
 
-const smExtractSystem = (comp, deal, me) => [
-  "You are the Scrum Master on the Elecbits Sales OS, reading a salesperson's answer about ONE client company. Extract what actually happened and the committed next step.",
-  "COMPANY: " + comp.name + (deal ? " · deal " + deal.did + " in " + stageName(deal.stage) + ", " + (deal.temperature || "cold") : " · no open deal"),
-  "SALESPERSON: " + me.name + ". Today: " + todayStr() + ".",
-  "Rules: the next step must be concrete and theirs ('send revised quote', not 'follow up'). due = the date THEY committed, normalised YYYY-MM-DD (tomorrow = " + localISO(new Date(Date.now() + 86400000)) + "); empty if none was given. If the answer names no next step or no date, put the ONE question that pins it down in `followup` — otherwise leave followup empty.",
-  "task: only when the next step is work the person must sit down and do (a document, a call, a visit) — then title it action-first.",
-  "Reply with ONLY: SM_JSON {\"summary\":\"one line on where this company actually is\",\"nextStep\":{\"what\":\"...\",\"due\":\"YYYY-MM-DD or empty\"},\"task\":{\"title\":\"... or empty\",\"due\":\"YYYY-MM-DD or empty\"},\"temperature_hint\":\"cold|warm|hot or empty\",\"followup\":\"one question, or empty\"}",
+/* The Scrum Master's brain: one system prompt carrying the person's whole
+   book — phases, plans, pending activities, commitments — and a protocol
+   for acting on what gets said. Tool lines are stripped before display. */
+const smChatSystem = (me, ctx) => [
+  "You are the SCRUM MASTER on the Elecbits Sales OS — a sharp, warm daily interviewer for " + me.name + ". Today is " + todayStr() + ".",
+  "YOUR JOB, in order:",
+  "1. If the team-scrum question is still open (see STATE), start by asking: did the team have its scrum discussion today? If they say yes, ask them to attach the transcript with the buttons under the chat (paste / upload / Fireflies) — a yes without a transcript counts as no. If no, note it without lecturing and move on.",
+  "2. Walk their companies ONE AT A TIME, worst first (overdue commitments, then no committed step). For each: ask where things stand, question the PENDING ACTIVITIES on the deal's stage plan by name, and pin down the next step WITH A DATE in their words. One or two questions per message, never a wall of text.",
+  "3. When they give you something concrete, confirm it in one short line and move to the next thing. Keep the whole check-in under ten minutes of chat.",
+  "THEIR BOOK TODAY:\n" + ctx,
+  "ACTING ON WHAT THEY SAY — end your reply with ONE line when (and only when) something concrete was agreed:",
+  "SM_ACT_JSON {\"actions\":[{\"type\":\"team_scrum\",\"answer\":\"yes|no\"} | {\"type\":\"next_step\",\"company\":\"exact company name\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"activity_done\",\"company\":\"exact company name\",\"activity\":\"the activity text, verbatim\"} | {\"type\":\"task\",\"company\":\"exact company name\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+  "Dates: 'tomorrow' = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date they did not say — ask for it instead. Never show the SM_ACT_JSON line's contents in prose.",
 ].join("\n");
 
 function ScrumMasterView({ me, data, saveScrums, saveTasks, saveDeals }) {
   const { users, companies, deals, tasks, scrums } = data;
-  const [sessions, setSessions] = useState(null);   // last 14 days, all people
-  const [session, setSession] = useState(null);     // mine, today
+  const [session, setSession] = useState(undefined);  // undefined = loading, null = none yet
+  const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [proposal, setProposal] = useState(null);   // SM_JSON awaiting apply
-  const [followupN, setFollowupN] = useState(0);
-  const [tr, setTr] = useState("");                 // transcript proof
+  const [trOpen, setTrOpen] = useState(false);
+  const [tr, setTr] = useState("");
   const [ffOn, setFfOn] = useState(false);
   const [ffBusy, setFfBusy] = useState(false);
   const trFileRef = useRef(null);
+  const bodyRef = useRef(null);
   const today = todayStr();
 
   useEffect(() => {
     let a = true;
-    const since = localISO(new Date(Date.now() - 13 * 86400000));
-    loadScrumSessions(since).then((list) => {
-      if (!a) return;
-      setSessions(list);
-      setSession(list.find((s) => s.personId === me.id && s.date === today) || null);
+    loadScrumSessions(today).then((list) => {
+      if (a) setSession(list.find((x) => x.personId === me.id && x.date === today) || null);
     });
     fetch("/api/fireflies?action=status").then((r) => r.json()).then((j) => a && setFfOn(!!j.connected)).catch(() => {});
     return () => { a = false; };
   }, []);
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [session, busy]);
 
-  const persistSession = async (patch) => {
-    const next = { ...(session || { personId: me.id, date: today, startedAt: nowTS(), onTime: istMinutesNow() <= SM_CUTOFF_MIN, messages: [], covered: [], status: "open", teamScrum: "" }), ...patch };
+  // ── the book the Scrum Master reads from ──
+  const myBook = companies.filter((c) => c.accountOwner === me.id).map((c) => {
+    const d = deals.filter((x) => x.companyId === c.id && !x.lost)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0] || null;
+    return { c, d };
+  });
+  const bookCtx = myBook.length ? myBook.map(({ c, d }) => {
+    if (!d) return "• " + c.name + " — no open deal.";
+    const ns = nextStepState(d);
+    const pend = (d.plan || []).flatMap((st) => (st.evidence || []).filter((a) => !a.done).map((a) => a.text)).slice(0, 6);
+    return "• " + c.name + " — " + (d.temperature || "cold") + ", ₹" + (d.value || 0)
+      + (ns.key === "overdue" ? "; COMMITTED STEP OVERDUE since " + fmtDate(d.nextStepDue) + " ('" + d.nextStep + "')"
+        : ns.key === "none" ? "; no committed next step"
+        : "; next: '" + d.nextStep + "'" + (d.nextStepDue ? " by " + fmtDate(d.nextStepDue) : ""))
+      + (pend.length ? "; pending activities: " + pend.join(" | ") : "; no stage plan yet");
+  }).join("\n") : "(no companies assigned)";
+
+  const persist = (patch) => {
+    const base = session || { personId: me.id, date: today, startedAt: nowTS(), onTime: istMinutesNow() <= SM_CUTOFF_MIN, messages: [], covered: [], status: "open", teamScrum: "" };
+    const next = { ...base, ...patch };
     setSession(next);
-    const saved = await upsertScrumSession(next);
-    if (saved) { setSession((cur) => ({ ...saved, ...((cur && cur.status !== saved.status) ? {} : {}) })); setSessions((ss) => [saved, ...(ss || []).filter((x) => x.id !== saved.id)]); }
-    return saved || next;
+    upsertScrumSession(next).then((saved) => { if (saved) setSession((cur) => (cur === next ? saved : cur)); });
+    return next;
   };
 
-  const say = (role, content) => ({ role, content, at: nowTS() });
+  const stateNote = (sess) => "STATE: team scrum " + (sess.teamScrum ? "answered (" + sess.teamScrum + (sess.scrumNoteId ? ", transcript filed" : ", no transcript yet") + ")" : "NOT asked/answered yet") + ".";
 
-  const start = () => {
-    const late = istMinutesNow() > SM_CUTOFF_MIN;
-    persistSession({
-      onTime: !late,
-      messages: [say("assistant", (late ? "It's past the 10:30 cutoff — today is marked as a late check-in. Still worth doing properly.\n\n" : "Good morning. ")
-        + "First thing: did the team have its scrum discussion today?")],
-    });
-  };
-
-  // ── my companies, in the order they need attention ──
-  const myComps = companies
-    .filter((c) => c.accountOwner === me.id)
-    .map((c) => {
-      const d = deals.filter((x) => x.companyId === c.id && !x.lost && x.stage !== "po")
-        .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0] || null;
-      return { c, d, urgency: d ? (nextStepState(d).key === "overdue" ? 0 : nextStepState(d).key === "none" ? 1 : 2) : 3 };
-    })
-    .sort((a, b) => a.urgency - b.urgency);
-  const covered = new Set(((session && session.covered) || []).map((x) => x.companyId));
-  const current = myComps.find((x) => !covered.has(x.c.id)) || null;
-  const walkDone = !current;
-
-  const answerTeamScrum = async (yes) => {
-    if (!yes) {
-      persistSession({ teamScrum: "no", messages: [...(session.messages || []), say("user", "No"), say("assistant", "Noted as a NO for today — these are counted per week. Now, your companies: " + (myComps.length ? "let's go through them." : "none are assigned to you yet."))] });
-      return;
+  // ── executing what the conversation agreed ──
+  const runActions = (list, sess) => {
+    let nextDeals = deals, nextTasks = tasks, patch = {};
+    for (const a of Array.isArray(list) ? list : []) {
+      try {
+        if (a.type === "team_scrum" && ["yes", "no"].includes(a.answer)) patch.teamScrum = a.answer;
+        const comp = a.company ? (matchCompany(a.company, companies) || companies.find((c) => c.name === a.company)) : null;
+        const deal = comp ? nextDeals.filter((x) => x.companyId === comp.id && !x.lost).sort((x, y) => (x.updatedAt < y.updatedAt ? 1 : -1))[0] : null;
+        if (a.type === "next_step" && deal && a.what) {
+          saveNextStep(deal.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: me.id });
+          nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
+        }
+        if (a.type === "activity_done" && deal && a.activity) {
+          const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const plan = (deal.plan || []).map((st) => ({ ...st,
+            evidence: (st.evidence || []).map((ac) => (norm(ac.text) === norm(a.activity) || norm(ac.text).includes(norm(a.activity)) ? { ...ac, done: true } : ac)) }));
+          saveDealPlan(deal.id, plan);
+          nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, plan } : x));
+        }
+        if (a.type === "task" && a.title) {
+          nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: deal ? deal.id : "", assignee: me.id, author: me.id,
+            title: a.title, details: "From the Scrum Master check-in", due: a.due || today, status: "open", source: "scrum",
+            createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "", scrumNoteId: sess.scrumNoteId || "" }, ...nextTasks];
+        }
+      } catch (e) { /* one bad action never sinks the chat */ }
     }
-    persistSession({ teamScrum: "yes", messages: [...(session.messages || []), say("user", "Yes"), say("assistant", "Then I need the transcript — paste it, upload the file, or pull it from Fireflies. No transcript, and today counts as a no.")] });
+    if (nextDeals !== deals) saveDeals(nextDeals);
+    if (nextTasks !== tasks) saveTasks(nextTasks);
+    return patch;
   };
 
-  const fileTranscript = async (text) => {
+  const converse = async (sess, userText) => {
+    setBusy(true); setErr("");
+    const msgs = userText === null ? sess.messages : [...sess.messages, { role: "user", content: userText, at: nowTS() }];
+    if (userText !== null) persist({ messages: msgs });
+    try {
+      const convo = msgs.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
+      if (!convo.length) convo.push({ role: "user", content: "Start today's check-in." });
+      const reply = await withTimeout(askClaude(smChatSystem(me, bookCtx + "\n" + stateNote(sess)), convo, { maxTokens: 700 }), 30000);
+      const acts = extractMarkedJSON(reply, "SM_ACT_JSON");
+      const patch = runActions(acts && acts.actions, sess);
+      const shown = String(reply).replace(/SM_ACT_JSON[\s\S]*$/, "").trim() || "Noted.";
+      persist({ ...patch, messages: [...msgs, { role: "assistant", content: shown, at: nowTS() }] });
+    } catch (e) { setErr("The Scrum Master couldn't reply — send that again."); }
+    setBusy(false);
+  };
+
+  const start = () => { const sess = persist({}); converse(sess, null); };
+  const send = () => { const t = input.trim(); if (!t || busy || !session) return; setInput(""); converse(session, t); };
+
+  const fileTranscript = (text) => {
     const clean = String(text || "").trim();
-    if (!clean) return;
+    if (!clean || !session) return;
     const noteId = uid();
     saveScrums([{ id: noteId, userId: me.id, date: today, raw: "Team scrum — transcript filed from the Scrum Master check-in.",
       tasks: [], summary: "", createdAt: nowTS(), source: "transcript", transcript: clean, link: "", attendance: {}, blockers: [], decisions: [], ignored: "", transcriptUrl: "" }, ...scrums]);
-    persistSession({ scrumNoteId: noteId, messages: [...(session.messages || []), say("assistant", "Transcript filed (" + clean.split(/\s+/).length + " words) — today's scrum is proven. You can organise it into tasks from Daily Scrum. Now, your companies.")] });
-    setTr("");
+    const sess = persist({ teamScrum: "yes", scrumNoteId: noteId });
+    setTr(""); setTrOpen(false);
+    converse({ ...sess, scrumNoteId: noteId, teamScrum: "yes" }, "(I've attached the team scrum transcript — " + clean.split(/\s+/).length + " words.)");
   };
 
   const pullFireflies = async () => {
@@ -5668,214 +6014,72 @@ function ScrumMasterView({ me, data, saveScrums, saveTasks, saveDeals }) {
       if (!items.length) { setErr("Fireflies has no meeting recorded today."); setFfBusy(false); return; }
       const pick = items.find((x) => /scrum|stand[- ]?up|daily/i.test(x.title || "")) || items[0];
       const t = await fetch("/api/fireflies?action=get&id=" + encodeURIComponent(pick.id)).then((r) => r.json());
-      if (t.error) setErr("Fireflies: " + t.error);
-      else fileTranscript(t.text || "");
+      if (t.error) setErr("Fireflies: " + t.error); else fileTranscript(t.text || "");
     } catch (e) { setErr("Could not reach Fireflies."); }
     setFfBusy(false);
   };
 
-  const submitAnswer = async () => {
-    const text = answer.trim();
-    if (!text || busy || !current) return;
-    setBusy(true); setErr(""); setAnswer("");
-    const msgs = [...(session.messages || []), say("user", "[" + current.c.name + "] " + text)];
-    try {
-      const reply = await withTimeout(askClaude(smExtractSystem(current.c, current.d, me),
-        [{ role: "user", content: text }], { maxTokens: 500 }), 20000);
-      const v = extractMarkedJSON(reply, "SM_JSON");
-      if (!v) throw new Error("unparseable");
-      if (v.followup && followupN < 1) {
-        setFollowupN(followupN + 1);
-        persistSession({ messages: [...msgs, say("assistant", v.followup)] });
-        setProposal({ ...(proposal || {}), summary: v.summary || text.slice(0, 140) });
-      } else {
-        setFollowupN(0);
-        setProposal({ summary: v.summary || text.slice(0, 140),
-          nsWhat: (v.nextStep && v.nextStep.what) || "", nsDue: (v.nextStep && v.nextStep.due) || "",
-          taskTitle: (v.task && v.task.title) || "", taskDue: (v.task && v.task.due) || "",
-          tempHint: v.temperature_hint || "" });
-        persistSession({ messages: msgs });
-      }
-    } catch (e) {
-      // The AI being down never blocks the check-in — the answer stands, the
-      // person types the commitment themselves.
-      setFollowupN(0);
-      setProposal({ summary: text.slice(0, 140), nsWhat: "", nsDue: "", taskTitle: "", taskDue: "", tempHint: "" });
-      persistSession({ messages: msgs });
-    }
-    setBusy(false);
-  };
-
-  const applyProposal = (skip) => {
-    if (!current) return;
-    const p = proposal || {};
-    const entry = { companyId: current.c.id, dealId: current.d ? current.d.id : "", at: nowTS(),
-      summary: skip ? "(skipped — nothing today)" : p.summary || "", nextStep: skip ? "" : p.nsWhat || "", due: skip ? "" : p.nsDue || "" };
-    if (!skip && current.d && p.nsWhat) {
-      saveNextStep(current.d.id, { what: p.nsWhat, due: p.nsDue ? p.nsDue + "T18:30" : "", owner: me.id });
-      saveDeals(deals.map((x) => (x.id === current.d.id ? { ...x, nextStep: p.nsWhat, nextStepDue: p.nsDue ? p.nsDue + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x)));
-    }
-    if (!skip && p.taskTitle) {
-      saveTasks([{ id: uid(), companyId: current.c.id, dealId: current.d ? current.d.id : "", assignee: me.id, author: me.id,
-        title: p.taskTitle, details: "From the Scrum Master check-in", due: p.taskDue || today, status: "open", source: "scrum",
-        createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "", scrumNoteId: session.scrumNoteId || "" }, ...tasks]);
-    }
-    const nextCovered = [...(session.covered || []), entry];
-    const remaining = myComps.filter((x) => !new Set(nextCovered.map((y) => y.companyId)).has(x.c.id));
-    persistSession({
-      covered: nextCovered,
-      status: remaining.length ? "open" : "done",
-      finishedAt: remaining.length ? "" : nowTS(),
-      messages: [...(session.messages || []), say("assistant", remaining.length
-        ? "Logged. Next: " + remaining[0].c.name + " — where are things, and what happens next, by when?"
-        : "That's every company. Check-in complete — " + nextCovered.filter((x) => x.nextStep).length + " committed next steps on record.")],
-    });
-    setProposal(null); setAnswer("");
-  };
-
-  // ── weekly scoreboard (leads and admin) ──
-  const week = [...Array(7)].map((_, i) => localISO(new Date(Date.now() - i * 86400000)));
-  const scoreboardPeople = me.role === "admin" ? users.filter((u) => u.active !== false)
-    : me.role === "dept_head" ? [me, ...teamOf(me, users)] : [];
-
-  const phase = !session ? "start"
-    : session.teamScrum === "" || session.teamScrum === null ? "teamScrum"
-    : session.teamScrum === "yes" && !session.scrumNoteId ? "transcript"
-    : session.status === "done" ? "done" : "walk";
-
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-3xl mx-auto flex flex-col" style={{ height: "calc(100vh - 7rem)" }}>
       <div className="flex items-center gap-2 mb-1">
         <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Mic size={18} className="text-blue-600" /> Scrum Master</h1>
-        <span className="text-xs text-slate-400 font-mono">cutoff 10:30 IST</span>
+        {session && session.scrumNoteId && <Chip color="green">scrum proven</Chip>}
+        {session && session.teamScrum === "no" && <Chip color="red">no team scrum</Chip>}
       </div>
-      <p className="text-xs text-slate-500 mb-4">Interaction is attendance. It asks about the team scrum first — the transcript is the proof — then walks your companies until every one has a committed next step.</p>
+      <p className="text-xs text-slate-500 mb-3">Your daily check-in. It knows your companies, their stage activities and your commitments — talk to it like a person.</p>
 
-      {phase === "start" && (
-        <div className="bg-white border border-slate-200 rounded-xl p-6 text-center">
-          {istMinutesNow() > SM_CUTOFF_MIN && (sessions || []).every((s) => !(s.personId === me.id && s.date === today)) && (
-            <p className="text-xs text-red-600 mb-2 font-semibold">Past the 10:30 cutoff — today counts as late.</p>
+      <div className="bg-white border border-slate-200 rounded-xl flex-1 min-h-0 flex flex-col">
+        <div ref={bodyRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+          {session === undefined && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading…</p>}
+          {session === null && (
+            <div className="text-center py-10">
+              <Mic size={28} className="mx-auto text-blue-600 mb-2" />
+              <p className="text-sm font-semibold text-slate-800">Ready for today's check-in?</p>
+              <p className="text-xs text-slate-400 mt-1 mb-3">{myBook.length} compan{myBook.length === 1 ? "y" : "ies"} on your book.</p>
+              <Btn kind="primary" onClick={start}><Play size={14} /> Start</Btn>
+            </div>
           )}
-          <Mic size={28} className="mx-auto text-blue-600 mb-2" />
-          <p className="text-sm font-semibold text-slate-800">Ready for today's check-in?</p>
-          <p className="text-xs text-slate-400 mt-1 mb-3">{myComps.length} compan{myComps.length === 1 ? "y" : "ies"} on your book to walk through.</p>
-          <Btn kind="primary" onClick={start} disabled={sessions === null}><Play size={14} /> Start the check-in</Btn>
+          {session && (session.messages || []).map((m, i) => (
+            <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cls("max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed",
+                m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>
+                {m.content}
+              </div>
+            </div>
+          ))}
+          {busy && <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> thinking…</p>}
         </div>
-      )}
 
-      {phase !== "start" && session && (
-        <div className="bg-white border border-slate-200 rounded-xl">
-          <div className="p-4 space-y-2.5 max-h-[46vh] overflow-y-auto">
-            {(session.messages || []).map((m, i) => (
-              <div key={i} className={cls("text-sm leading-relaxed", m.role === "user" ? "text-slate-800" : "text-slate-600")}>
-                <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mr-1.5">{m.role === "user" ? "you" : "sm"}</span>
-                <span className="whitespace-pre-wrap">{m.content}</span>
-              </div>
-            ))}
-            {busy && <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> thinking…</p>}
+        {trOpen && session && (
+          <div className="border-t border-slate-100 p-3 space-y-2 bg-slate-50">
+            <TA value={tr} onChange={(e) => setTr(e.target.value)} className="min-h-20" placeholder="Paste the team scrum transcript here…" />
+            <div className="flex items-center gap-2">
+              <Btn kind="primary" size="sm" disabled={!tr.trim()} onClick={() => fileTranscript(tr)}><Check size={12} /> File it</Btn>
+              <Btn size="sm" onClick={() => setTrOpen(false)}>cancel</Btn>
+            </div>
           </div>
+        )}
 
-          <div className="border-t border-slate-100 p-3">
-            {phase === "teamScrum" && (
-              <div className="flex gap-2">
-                <Btn kind="primary" onClick={() => answerTeamScrum(true)}><Check size={14} /> Yes, we had the scrum</Btn>
-                <Btn onClick={() => answerTeamScrum(false)}><X size={14} /> No scrum today</Btn>
-              </div>
-            )}
-
-            {phase === "transcript" && (
-              <div className="space-y-2">
-                <TA value={tr} onChange={(e) => setTr(e.target.value)} className="min-h-20" placeholder="Paste the call transcript here…" />
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Btn kind="primary" size="sm" disabled={!tr.trim()} onClick={() => fileTranscript(tr)}><Check size={12} /> File the transcript</Btn>
-                  <input ref={trFileRef} type="file" accept=".txt,.vtt,.srt,.md,.json" className="hidden"
-                    onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) f.text().then(fileTranscript); e.target.value = ""; }} />
-                  <Btn size="sm" onClick={() => trFileRef.current && trFileRef.current.click()}><Paperclip size={12} /> Upload file</Btn>
-                  {ffOn && <Btn size="sm" disabled={ffBusy} onClick={pullFireflies}>{ffBusy ? <Loader2 size={12} className="animate-spin" /> : <Flame size={12} />} Pull from Fireflies</Btn>}
-                  <button onClick={() => answerTeamScrum(false)} className="text-xs text-slate-400 hover:text-red-600 ml-auto">I can't provide it — count it as a no</button>
-                </div>
-              </div>
-            )}
-
-            {phase === "walk" && current && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 flex-wrap bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-xs text-slate-600">
-                  <span className="font-semibold text-slate-800 text-sm mr-1">{current.c.name}</span>
-                  {current.d ? (<>
-                    <Chip color="blue">{stageName(current.d.stage)}</Chip>
-                    <Chip color={tempColor(current.d.temperature)}>{current.d.temperature || "cold"}</Chip>
-                    {nextStepState(current.d).key === "overdue" && <Chip color="red">committed step overdue</Chip>}
-                    {nextStepState(current.d).key === "none" && <Chip color="amber">no committed step</Chip>}
-                  </>) : <Chip color="slate">no open deal</Chip>}
-                  <span className="ml-auto font-mono text-slate-400">{covered.size}/{myComps.length}</span>
-                </div>
-                {!proposal || proposal.nsWhat === undefined ? (
-                  <div className="flex gap-2">
-                    <TA value={answer} onChange={(e) => setAnswer(e.target.value)} className="min-h-14 flex-1"
-                      placeholder={"Where are things with " + current.c.name + ", and what happens next — by when?"} />
-                    <div className="flex flex-col gap-1.5">
-                      <Btn kind="primary" size="sm" disabled={busy || !answer.trim()} onClick={submitAnswer}><Send size={12} /></Btn>
-                      <Btn size="sm" onClick={() => applyProposal(true)} title="Nothing to report today">skip</Btn>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="border border-blue-200 bg-blue-50/50 rounded-md p-3 space-y-2">
-                    <p className="text-sm text-slate-800">{proposal.summary}</p>
-                    <div className="flex gap-2 items-center flex-wrap">
-                      <Input className="flex-1 min-w-48" value={proposal.nsWhat} onChange={(e) => setProposal({ ...proposal, nsWhat: e.target.value })} placeholder="the committed next step" />
-                      <Input type="date" className="w-40" value={proposal.nsDue} onChange={(e) => setProposal({ ...proposal, nsDue: e.target.value })} />
-                    </div>
-                    {proposal.taskTitle ? <p className="text-xs text-slate-500">+ task: {proposal.taskTitle}{proposal.taskDue ? " · " + fmtDate(proposal.taskDue) : ""}</p> : null}
-                    <div className="flex gap-2">
-                      <Btn kind="primary" size="sm" disabled={!proposal.nsWhat.trim()} onClick={() => applyProposal(false)}><Check size={12} /> Commit &amp; next company</Btn>
-                      <Btn size="sm" onClick={() => setProposal(null)}>rewrite</Btn>
-                    </div>
-                    <p className="text-[11px] text-slate-400">This becomes the deal's committed next step — past its date, the deal turns red everywhere.</p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {phase === "done" && (
-              <p className="text-sm text-green-700 flex items-center gap-2"><CheckCircle2 size={15} /> Done for today — {((session.covered || []).filter((x) => x.nextStep)).length} committed next steps, team scrum: {session.teamScrum === "yes" ? "proven" : "NO"}.</p>
-            )}
+        <div className="border-t border-slate-100 p-3">
+          <div className="flex items-center gap-2">
+            <Input value={input} onChange={(e) => setInput(e.target.value)} disabled={!session}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+              placeholder={session ? "Type your answer…" : "Press Start above"} />
+            <Btn kind="primary" disabled={busy || !session || !input.trim()} onClick={send}><Send size={14} /></Btn>
           </div>
+          {session && !session.scrumNoteId && (
+            <div className="flex items-center gap-3 mt-2 text-[11.5px] text-slate-500">
+              <span>Team scrum transcript:</span>
+              <button onClick={() => setTrOpen(!trOpen)} className="text-blue-600 hover:underline">paste</button>
+              <input ref={trFileRef} type="file" accept=".txt,.vtt,.srt,.md,.json" className="hidden"
+                onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) f.text().then(fileTranscript); e.target.value = ""; }} />
+              <button onClick={() => trFileRef.current && trFileRef.current.click()} className="text-blue-600 hover:underline">upload</button>
+              {ffOn && <button onClick={pullFireflies} disabled={ffBusy} className="text-blue-600 hover:underline">{ffBusy ? "pulling…" : "pull from Fireflies"}</button>}
+            </div>
+          )}
+          {err && <p className="text-xs text-red-600 mt-1.5">{err}</p>}
         </div>
-      )}
-
-      {/* ── the week, person by person — how the team lead is evaluated ── */}
-      {scoreboardPeople.length > 0 && sessions !== null && (
-        <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
-          <SectionTitle right={<span className="text-xs text-slate-400">last 7 days</span>}>Check-in discipline</SectionTitle>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left text-[10.5px] font-bold text-slate-400 uppercase tracking-wide">
-                <th className="py-1.5 pr-3">Person</th><th className="py-1.5 pr-3">On time</th><th className="py-1.5 pr-3">Late</th><th className="py-1.5 pr-3">Absent</th><th className="py-1.5 pr-3">Team scrum: NO</th>
-              </tr></thead>
-              <tbody>
-                {scoreboardPeople.map((u) => {
-                  const mine = (sessions || []).filter((s) => s.personId === u.id && week.includes(s.date));
-                  const onTime = mine.filter((s) => s.onTime).length;
-                  const late = mine.filter((s) => !s.onTime).length;
-                  const absent = week.length - onTime - late;
-                  const nos = mine.filter((s) => s.teamScrum === "no").length;
-                  return (
-                    <tr key={u.id} className="border-t border-slate-100">
-                      <td className="py-1.5 pr-3"><span className="flex items-center gap-1.5"><Avatar name={u.name} size="sm" /> {u.name}</span></td>
-                      <td className="py-1.5 pr-3 font-mono tabular-nums text-green-700">{onTime}</td>
-                      <td className="py-1.5 pr-3 font-mono tabular-nums text-amber-600">{late}</td>
-                      <td className="py-1.5 pr-3 font-mono tabular-nums text-red-600">{absent}</td>
-                      <td className="py-1.5 pr-3 font-mono tabular-nums">{nos > 0 ? <span className="text-red-600 font-semibold">{nos}</span> : 0}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-[11px] text-slate-400 mt-2">A yes with no transcript is a no. Absent = never opened the check-in that day.</p>
-        </div>
-      )}
-      {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
+      </div>
     </div>
   );
 }
@@ -6142,7 +6346,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                     return (
                       <button key={d.id} onClick={() => { setPerson(null); comp && openCompany(comp.id); }} className="w-full text-left flex items-center gap-2 border border-slate-200 rounded-md px-3 py-2 hover:border-blue-400">
                         <span className="font-medium text-sm text-slate-800 mr-auto">{comp ? comp.name : d.did}</span>
-                        <Chip color="blue">{stageName(d.stage)}</Chip>
+                        <Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip>
                         <span className="font-mono text-sm tabular-nums">{fmtINRc(d.value)}</span>
                       </button>
                     );

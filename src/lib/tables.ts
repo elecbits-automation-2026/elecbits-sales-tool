@@ -58,6 +58,7 @@ const WHERE = {
   deal_stages:        ["sales", "deal_stages"],
   temperature_moves:  ["sales", "temperature_moves"],
   scrum_sessions:     ["sales", "scrum_sessions"],
+  rfq_links:          ["sales", "rfq_links"],
 } as const;
 
 export type TableName = keyof typeof WHERE;

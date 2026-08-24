@@ -63,7 +63,7 @@ export async function loadWorkspace() {
     people, details, orgs, orgDetails, activities,
     deals, moves, targets, trainings, worklogs,
     knowledge, expenses, scrums, memory, gates,
-    tasks, llds, questionSets, requests, dealStages, tempMoves,
+    tasks, llds, questionSets, requests, dealStages, tempMoves, rfqLinks,
   ] = await Promise.all([
     rows(tbl(supabase, "people").select("*"), "people"),
     rows(tbl(supabase, "people_detail").select("*"), "people_detail"),
@@ -90,6 +90,8 @@ export async function loadWorkspace() {
     tbl(supabase, "deal_stages").select("*").order("seq")
       .then((r: any) => { if (r.error) degraded.add("deal_stages"); return r.data || []; }),
     tbl(supabase, "temperature_moves").select("*").order("at")
+      .then((r: any) => r.data || []),
+    tbl(supabase, "rfq_links").select("*").order("created_at", { ascending: false })
       .then((r: any) => r.data || []),
   ]);
 
@@ -287,11 +289,21 @@ export async function loadWorkspace() {
     requirement: r.requirement || {}, ai: r.ai || {},
   }));
 
+  const rfqOut = rfqLinks.map((l: any) => ({
+    id: l.id, companyId: l.org_id, dealId: l.deal_id || "",
+    title: l.title || "", offer: Array.isArray(l.offer) ? l.offer : [],
+    note: l.note_to_client || "", contactName: l.contact_name || "",
+    status: l.status, response: l.response || {},
+    openedAt: l.opened_at || "", submittedAt: l.submitted_at || "",
+    createdBy: l.created_by || "", createdAt: l.created_at,
+  }));
+
   return {
     users, companies, deals: dealsOut, kpis, trainings: trainingsOut,
     worklogs: worklogsOut, knowledge: knowledgeOut, expenses: expensesOut,
     scrums: scrumsOut, memory: memoryOut, gates: gatesOut,
     tasks: tasksOut, llds: lldsOut, questionSets: qsetsOut, requests: requestsOut,
+    rfq: rfqOut,
   };
 }
 
@@ -515,7 +527,7 @@ export async function saveDealPlan(dealId: string, stages: any[], meta?: { summa
 export async function setTemperature(dealId: string, move: { from: string; to: string; why?: string; evidence?: string; decided?: string; by?: string }): Promise<boolean> {
   const now = new Date().toISOString();
   const r1 = await tbl(supabase, "deals").update({
-    temperature: ["cold", "warm", "hot"].includes(move.to) ? move.to : undefined,
+    temperature: ["cold", "warm", "rfq", "hot"].includes(move.to) ? move.to : undefined,
     temperature_at: now, temperature_why: move.why || null,
   }).eq("id", dealId);
   const r2 = await tbl(supabase, "temperature_moves").insert({
@@ -536,6 +548,18 @@ export async function saveNextStep(dealId: string, step: { what: string; due?: s
     next_step_done_at: step.doneAt === undefined ? null : step.doneAt,
   }).eq("id", dealId);
   return ok(error, "saveNextStep");
+}
+
+// RFQ links: created/updated from the app (authenticated). The public page
+// reads and submits through /api/rfq — never through this client.
+export async function saveRfqLink(l: any): Promise<boolean> {
+  const { error } = await tbl(supabase, "rfq_links").upsert({
+    id: l.id, org_id: l.companyId, deal_id: l.dealId || null,
+    title: l.title || null, offer: l.offer || [], note_to_client: l.note || null,
+    contact_name: l.contactName || null, status: l.status || "created",
+    created_by: l.createdBy || null,
+  }, { onConflict: "id" });
+  return ok(error, "saveRfqLink");
 }
 
 /* ---------- Scrum Master sessions ---------- */
