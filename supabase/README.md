@@ -39,6 +39,7 @@ whole thing rolls back and the database is untouched.
 | 9 | **`22-task-stage.sql`** | `stage` on `sales.tasks` — which pipeline stage a task advances |
 | 10 | **`23-pipeline-brain.sql`** | dynamic per-deal stage plans, judged temperature + history, the committed next step, requirement jsonb on requests, Scrum Master sessions |
 | 11 | **`24-rfq-links.sql`** | the shareable RFQ link (`sales.rfq_links`, served publicly via /api/rfq) + the cold/warm/rfq/hot phase values |
+| 12 | **`25-service-role-grants.sql`** | schema usage + table grants for `service_role` — without it the public RFQ page gets "permission denied for schema sales" |
 
 ### Step 5 is a real trap
 
