@@ -5946,6 +5946,22 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
   const toggle = (t) => saveTasks(tasks.map((x) => x.id === t.id ? { ...x, status: "open", doneAt: null } : x));
   // Deleting is explicit — the sync layer never prunes, so the DB row must go here.
   const remove = (t) => { deleteTask(t.id); saveTasks(tasks.filter((x) => x.id !== t.id)); };
+
+  /* Carried from the ODM PMS: a row offers only the buttons this viewer is
+     allowed to press. Seeing a task is not the same as owning it — the
+     Mine/Team toggle above decides what is on screen, this decides what can
+     be done to it. Admin acts on anything; a dept head on their own team. */
+  const teamIds = useMemo(() => new Set(teamOf(me, users).map((u) => u.id)), [me, users]);
+  const canAct = (t) => t.assignee === me.id || t.author === me.id || me.role === "admin"
+    || (me.role === "dept_head" && teamIds.has(t.assignee));
+
+  /* Also from the PMS: deleting arms first and deletes second, and looking
+     away for four seconds disarms it. remove() calls deleteTask() straight
+     against the DB with no undo — one stray click must not be enough. One
+     task armed at a time; the id lives here so a parent re-render (a filter
+     change, a sync) cannot strand a row in the armed state. */
+  const [armDel, setArmDel] = useState(null);
+  useEffect(() => { if (!armDel) return; const h = setTimeout(() => setArmDel(null), 4000); return () => clearTimeout(h); }, [armDel]);
   const add = () => {
     if (!f.title.trim()) return;
     saveTasks([{ id: uid(), companyId: f.companyId || "", dealId: "", assignee: f.assignee, author: me.id, title: f.title.trim(), details: "", due: f.due || "", status: "open", source: "manual", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
@@ -5967,15 +5983,18 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
     const who = users.find((u) => u.id === t.assignee);
     const secs = overdueSecs(t);
     const W = t.work || {}, A = t.ai || {};
+    const mayAct = canAct(t);
     return (
       <div>
         <div className="flex items-center gap-2.5 border border-slate-200 rounded-md px-3 py-2 bg-white">
           {t.status === "open" && <span className="w-4 h-4 rounded-full border border-slate-300 flex-none" />}
-          {t.status === "doing" && (
-            <button title="Complete this task" onClick={() => setClosing(t)} className="w-4 h-4 rounded-full border-2 border-blue-500 flex-none hover:bg-blue-50" />
+          {t.status === "doing" && (mayAct
+            ? <button title="Complete this task" onClick={() => setClosing(t)} className="w-4 h-4 rounded-full border-2 border-blue-500 flex-none hover:bg-blue-50" />
+            : <span className="w-4 h-4 rounded-full border-2 border-blue-500 flex-none" />
           )}
-          {t.status === "done" && (
-            <button title="Reopen" onClick={() => toggle(t)} className="w-4 h-4 rounded border bg-green-600 border-green-600 text-white flex-none flex items-center justify-center"><Check size={11} /></button>
+          {t.status === "done" && (mayAct
+            ? <button title="Reopen" onClick={() => toggle(t)} className="w-4 h-4 rounded border bg-green-600 border-green-600 text-white flex-none flex items-center justify-center"><Check size={11} /></button>
+            : <span className="w-4 h-4 rounded border bg-green-600 border-green-600 text-white flex-none flex items-center justify-center"><Check size={11} /></span>
           )}
           <div className="min-w-0 mr-auto">
             <p className={cls("text-sm", t.status === "done" ? "line-through text-slate-400" : "text-slate-800")}>{t.title}
@@ -5995,12 +6014,16 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
               {t.status === "done" && A.verdict === "branched" && <span className="text-purple-600">branched</span>}
             </p>
           </div>
-          {t.status === "open" && <Btn size="sm" kind="primary" onClick={() => startTask(t)}><Play size={12} /> Start</Btn>}
-          {t.status === "doing" && <>
+          {mayAct && t.status === "open" && <Btn size="sm" kind="primary" onClick={() => startTask(t)}><Play size={12} /> Start</Btn>}
+          {mayAct && t.status === "doing" && <>
             <Btn size="sm" onClick={() => setWorking(t)}><FileText size={12} /> Work window</Btn>
             <Btn size="sm" kind="primary" onClick={() => setClosing(t)}><CheckCircle2 size={12} /> Complete Now</Btn>
           </>}
-          <button onClick={() => remove(t)} className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+          {!mayAct && <span className="text-[10px] uppercase tracking-wide text-slate-400 flex-none">view only</span>}
+          {mayAct && (armDel === t.id
+            ? <Btn size="sm" kind="danger" onClick={() => { setArmDel(null); remove(t); }}><Trash2 size={12} /> Sure — delete</Btn>
+            : <button onClick={() => setArmDel(t.id)} title="Delete this task" className="text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+          )}
         </div>
       </div>
     );
