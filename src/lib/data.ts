@@ -286,7 +286,7 @@ export async function loadWorkspace() {
     value: Number(r.value_inr || 0), urgency: r.urgency, status: r.status,
     projectId: r.project_id || "", decidedAt: r.decided_at, decisionNote: r.decision_note || "",
     submittedBy: r.submitted_by, submittedAt: r.submitted_at,
-    requirement: r.requirement || {}, ai: r.ai || {},
+    requirement: r.requirement || {}, ai: r.ai || {}, overtake: r.overtake || "pending",
   }));
 
   const rfqOut = rfqLinks.map((l: any) => ({
@@ -560,6 +560,36 @@ export async function saveRfqLink(l: any): Promise<boolean> {
     created_by: l.createdBy || null,
   }, { onConflict: "id" });
   return ok(error, "saveRfqLink");
+}
+
+// ULM's overtake call on a request — full or semi. Written from our side
+// too (admins), until the ULM tool writes it itself.
+export async function setRequestOvertake(id: string, overtake: string): Promise<boolean> {
+  const { error } = await tbl(supabase, "requests").update({ overtake }).eq("id", id);
+  return ok(error, "setRequestOvertake");
+}
+
+// Deleting a company: try the shared org first — every sales table cascades
+// from core.orgs, so a clean delete sweeps the whole footprint. When another
+// tool still references the org (a PMS project, say), fall back to removing
+// only the SALES footprint: the org survives in core, the company leaves
+// this tool.
+export async function deleteCompany(orgId: string): Promise<"deleted" | "detached" | "failed"> {
+  const { error } = await tbl(supabase, "orgs").delete().eq("id", orgId);
+  if (!error) return "deleted";
+  console.warn("deleteCompany: org kept (" + error.message + ") — detaching the sales footprint");
+  let anyFail = false;
+  for (const t of ["rfq_links", "commitments", "org_activities", "llds", "deals", "chats", "meetings"] as TableName[]) {
+    const { error: e } = await tbl(supabase, t).delete().eq("org_id", orgId);
+    if (e && !/does not exist|column/i.test(e.message || "")) { console.error("deleteCompany." + t, e.message); anyFail = true; }
+  }
+  {
+    const { error: e } = await tbl(supabase, "tasks").delete().eq("org_id", orgId);
+    if (e) { console.error("deleteCompany.tasks", e.message); anyFail = true; }
+  }
+  const { error: e2 } = await tbl(supabase, "org_detail").delete().eq("org_id", orgId);
+  if (e2) { console.error("deleteCompany.detail", e2.message); return "failed"; }
+  return anyFail ? "detached" : "detached";
 }
 
 /* ---------- Scrum Master sessions ---------- */
