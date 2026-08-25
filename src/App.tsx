@@ -16,7 +16,7 @@ import {
   loadTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
-  saveRfqLink,
+  saveRfqLink, setRequestOvertake, deleteCompany,
 } from "./lib/data";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
@@ -1024,10 +1024,34 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
 
   const upsert = (c) => {
     const exists = companies.some((x) => x.id === c.id);
-    const next = exists ? companies.map((x) => (x.id === c.id ? c : x)) : [c, ...companies];
+    const isNew = !exists;
+    const { _dealValue, ...clean } = c;
+    const next = exists ? companies.map((x) => (x.id === c.id ? clean : x)) : [clean, ...companies];
     saveCompanies(next);
     setEditing(null);
     setFocusCompanyId(c.id);
+    if (!isNew) return;
+    // Onboarding in one go: mint the official client ID (when a size was
+    // picked and the industry maps), and put the first deal on the board.
+    (async () => {
+      let acts = [];
+      const ind = industryCodeOf(clean.industry);
+      if (clean.orgSize && ind) {
+        const cid = await mintClientId(clean.id, Number(ind), clean.orgSize);
+        if (cid) {
+          acts.push({ at: nowTS(), by: me.id, text: "Official client ID minted: " + cid });
+          saveCompanies((cur => cur)(next.map((x) => (x.id === clean.id ? { ...x, cid, official: true, activity: [...(x.activity || []), acts[acts.length - 1]] } : x))));
+        }
+      }
+      const val = Number(_dealValue || clean.potential || 0);
+      const d = {
+        id: uid(), did: nextSeq(deals, "did", "EB-D-"), companyId: clean.id, ownerId: clean.accountOwner || me.id,
+        value: val, stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
+        temperature: "cold", tempHistory: [], plan: [], planLog: [],
+        history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created with the company." }],
+      };
+      saveDeals([d, ...deals]);
+    })();
   };
 
   if (open) {
@@ -1124,6 +1148,7 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
   const [f, setF] = useState(() => company ? { ...company, custom: [...(company.custom || [])] } : {
     id: uid(), cid: nextSeq(companies, "cid", "EB-C-"), accountOwner: me.id, createdBy: me.id, createdAt: nowTS(),
     custom: [], activity: [{ at: nowTS(), by: me.id, text: "Company created." }],
+    orgSize: "", _dealValue: "",   // onboarding: mint + first deal happen on save
   });
   const [err, setErr] = useState("");
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
@@ -1158,6 +1183,23 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
           </Sel>
         </Field>
       </div>
+      {!company && (
+        <div className="mt-4 border border-blue-200 bg-blue-50/40 rounded-lg p-3">
+          <Lbl>On save — the client ID and the first deal, in one go</Lbl>
+          <div className="grid sm:grid-cols-2 gap-3 mt-2">
+            <Field label="Company size (for the official client ID)">
+              <Sel value={f.orgSize || ""} onChange={(e) => set("orgSize", e.target.value)}>
+                <option value="">— skip minting for now —</option>
+                {ORG_SIZES.map(([k, l]) => <option key={k} value={k}>{k} — {l}</option>)}
+              </Sel>
+            </Field>
+            <Field label="First deal value (₹)" hint="A deal is created on the board in Cold. Leave blank to use annual potential.">
+              <Input type="number" value={f._dealValue || ""} onChange={(e) => set("_dealValue", e.target.value.replace(/[^\d]/g, ""))} />
+            </Field>
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1.5">Pick a size and the official <span className="font-mono">Eb-&lt;industry&gt;-&lt;size&gt;-&lt;serial&gt;</span> ID is minted from the shared serial the moment you save. The deal lands on the pipeline immediately.</p>
+        </div>
+      )}
       <div className="mt-4">
         <SectionTitle right={<Btn size="sm" onClick={() => setF((p) => ({ ...p, custom: [...p.custom, { k: "", v: "" }] }))}><Plus size={13} /> Add field</Btn>}>
           Custom fields — every minute detail
@@ -1190,6 +1232,20 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
   const [minting, setMinting] = useState(false);
   const [applying, setApplying] = useState(false);
   const [rfqing, setRfqing] = useState(false);
+  const [, bump] = useState(0);
+  const delCompany = async () => {
+    const typed = window.prompt("This deletes " + c.name + " and its deals, tasks, RFQ links and history from the Sales OS. Type the company name to confirm:");
+    if (typed === null) return;
+    if (typed.trim().toLowerCase() !== c.name.trim().toLowerCase()) { window.alert("Name didn't match — nothing deleted."); return; }
+    const res = await deleteCompany(c.id);
+    if (res === "failed") { window.alert("Could not delete — check the connection and try again."); return; }
+    // Local state: the company and its sales footprint disappear everywhere.
+    saveDeals(data.deals.filter((d) => d.companyId !== c.id));
+    saveTasks(data.tasks.filter((t) => t.companyId !== c.id));
+    if (data.setRfq) data.setRfq((data.rfq || []).filter((l) => l.companyId !== c.id));
+    saveCompanies(data.companies.filter((x) => x.id !== c.id));
+    onBack();
+  };
   const [ctab, setCtab] = useState("overview");
 
   const onRequestSubmitted = (reqId, title) => {
@@ -1234,6 +1290,10 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
             <p className={cls("font-mono text-2xl tabular-nums", cc === "red" ? "text-red-600" : cc === "amber" ? "text-amber-600" : "text-green-600")}>{comp}%</p>
             <p className="text-xs text-slate-400">data complete</p>
           </div>
+          {(me.role === "admin" || c.accountOwner === me.id) && (
+            <button title="Delete this company" onClick={delCompany}
+              className="text-slate-300 hover:text-red-600 p-1.5"><Trash2 size={15} /></button>
+          )}
           <Btn onClick={() => setRfqing(true)}><Send size={14} /> RFQ link</Btn>
           <Btn onClick={() => setApplying(true)}><Rocket size={14} /> Apply for Project ID</Btn>
           <Btn onClick={onEdit}><Pencil size={14} /> Edit</Btn>
@@ -1333,7 +1393,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
               return (
                 <div key={i} className="text-sm border-l-2 border-slate-200 pl-3">
                   <p className="text-slate-800 whitespace-pre-wrap">{a.text}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">{by ? by.name : "?"} · {fmtDate(a.at)}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{by ? by.name : "?"} · {fmtDate(a.at)}{fmtTime(a.at) ? " · " + fmtTime(a.at) : ""}</p>
                 </div>
               );
             })}
@@ -1371,6 +1431,18 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
                     {r.decisionNote && <p className="text-xs text-slate-500 mt-0.5">ULM: {r.decisionNote}</p>}
                   </div>
                   {r.projectId && <Chip color="green">project allocated</Chip>}
+                  {["submitted", "accepted"].includes(r.status) && (
+                    me.role === "admin"
+                      ? <Sel className="w-36 text-xs" value={r.overtake || "pending"}
+                          onChange={(e) => { const v = e.target.value; setRequestOvertake(r.id, v); r.overtake = v; bump((x) => x + 1); }}>
+                          <option value="pending">overtake: pending</option>
+                          <option value="full">full overtake</option>
+                          <option value="semi">semi overtake</option>
+                        </Sel>
+                      : <Chip color={r.overtake === "full" ? "purple" : r.overtake === "semi" ? "blue" : "slate"}>
+                          {r.overtake === "full" ? "full overtake" : r.overtake === "semi" ? "semi overtake" : "overtake: pending"}
+                        </Chip>
+                  )}
                   <span className="text-[11px] font-mono text-slate-400 flex-none">{fmtDate(r.submittedAt)}</span>
                 </div>
               ))}
@@ -1510,7 +1582,14 @@ const TEMP_CRITERIA = [
   "hot  — the client is driving: asking for commercials, timelines or next steps; negotiating; internal approvals in motion; a PO is being discussed.",
 ].join("\n");
 
-const PHASES = [["cold", "Cold"], ["warm", "Warm"], ["rfq", "RFQ"], ["hot", "Hot"]];
+const PHASES = [
+  ["cold", "Cold", "No real client response yet — we are reaching out."],
+  ["warm", "Warm", "The client is responding with intent: questions, meetings, requirements."],
+  ["rfq", "RFQ", "Requirement being gathered — link sent / input received. ULM decides the overtake here."],
+  ["hot", "Hot", "The client is driving to commercials: pricing, timelines, negotiation."],
+  ["won", "Closed Won", "PO in hand. The project moves to delivery."],
+  ["lost", "Closed Lost", "Decided against us — post-mortem on record."],
+];
 const tempColor = (t) => (t === "hot" ? "red" : t === "rfq" ? "purple" : t === "warm" ? "amber" : "blue");
 
 /* The commitment alarm: RED is "your own committed date passed", never a
@@ -1627,6 +1706,34 @@ function TempMoveModal({ me, move, deals, saveDeals, onClose }) {
       <Field label="What did the client say or do that makes this " req hint="The phase is judged from client behaviour, not our effort — this line goes on the deal's record.">
         <TA value={why} onChange={(e) => setWhy(e.target.value)} className="min-h-16"
           placeholder={move.to === "hot" ? "e.g. They asked for final pricing and delivery schedule on the call today" : move.to === "rfq" ? "e.g. RFQ link sent to Rahul after the plant visit" : "what happened"} />
+      </Field>
+    </Modal>
+  );
+}
+
+/* Closed Won: the PO is the proof — capture its reference and the deal
+   settles into the won column, stamped on the record. */
+function WonModal({ me, deal: d, deals, saveDeals, companies, saveCompanies, onClose }) {
+  const [note, setNote] = useState("");
+  const apply = () => {
+    setTemperature(d.id, { from: d.temperature || "cold", to: "won", why: note.trim(), decided: "human", by: me.id });
+    saveDeals(deals.map((x) => (x.id === d.id
+      ? { ...x, stage: "po", updatedAt: nowTS(),
+          history: [...(x.history || []), { from: x.stage, to: "po", at: nowTS(), by: me.id, summary: "CLOSED WON. " + note.trim() }],
+          tempHistory: [...(x.tempHistory || []), { from: d.temperature || "cold", to: "won", why: note.trim(), decided: "human", at: nowTS() }] }
+      : x)));
+    const c = companies.find((x) => x.id === d.companyId);
+    if (c) saveCompanies(companies.map((x) => (x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text: "Deal " + d.did + " CLOSED WON. " + note.trim() }] } : x)));
+    onClose();
+  };
+  return (
+    <Modal title={"Closed Won — " + d.did} onClose={onClose}
+      footer={<>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="success" disabled={note.trim().length < 5} onClick={apply}><Check size={14} /> It's won</Btn>
+      </>}>
+      <Field label="The PO — reference, value, what was agreed" req hint="This line is the deal's closing record.">
+        <TA value={note} onChange={(e) => setNote(e.target.value)} className="min-h-16" placeholder="e.g. PO #4471 received, ₹18.5L, 500 units, delivery from Oct" />
       </Field>
     </Modal>
   );
@@ -1831,24 +1938,27 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
   const { users, companies, deals, gates, rfq } = data;
   const rfqBadge = (d) => { const b = rfqBadgeFor(d, rfq); return b ? <Chip color={b.color}>{b.label}</Chip> : null; };
   const [scope, setScope] = useState(me.role === "agent" ? "mine" : "team");
-  const [showLost, setShowLost] = useState(false);
-  const [gate, setGate] = useState(null); // {deal, from, to, mode}
+  const [gate, setGate] = useState(null); // {deal, from, to, mode} — the lost post-mortem
   const [newDeal, setNewDeal] = useState(false);
   const [room, setRoom] = useState(null); // deal id open in the Deal Room
+  const [tempMove, setTempMove] = useState(null); // {deal, to} awaiting the why
+  const [winning, setWinning] = useState(null);   // deal being closed-won
   const dragId = useRef(null);
 
   const scopeIds = scope === "mine" ? [me.id]
     : me.role === "dept_head" ? [me.id, ...teamOf(me, users).map((u) => u.id)]
     : users.map((u) => u.id);
-  const visible = deals.filter((d) => scopeIds.includes(d.ownerId) && (showLost ? d.lost : !d.lost));
+  const visible = deals.filter((d) => scopeIds.includes(d.ownerId));
+  const phaseOf = (d) => d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
 
   const onDrop = (toKey) => {
     const d = deals.find((x) => x.id === dragId.current);
     dragId.current = null;
-    if (!d || d.lost) return;
-    if (d.stage === toKey) return;
-    const fromI = stageIdx(d.stage), toI = stageIdx(toKey);
-    setGate({ deal: d, from: d.stage, to: toKey, mode: toI < fromI ? "back" : "advance" });
+    if (!d || d.lost || d.stage === "po") return;
+    if (phaseOf(d) === toKey) return;
+    if (toKey === "lost") { setGate({ deal: d, from: d.stage, to: "lost", mode: "lost" }); return; }
+    if (toKey === "won") { setWinning(d); return; }
+    setTempMove({ deal: d, to: toKey });
   };
 
   const applyMove = (deal, to, entryExtra) => {
@@ -1890,25 +2000,27 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
             ))}
           </div>
         )}
-        <button onClick={() => setShowLost(!showLost)} className={cls("px-2.5 py-1 text-xs rounded-md border", showLost ? "bg-red-600 text-white border-red-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-100")}>
-          {showLost ? "Showing lost" : "Show lost"}
-        </button>
         <Btn kind="primary" onClick={() => setNewDeal(true)}><Plus size={15} /> New deal</Btn>
       </div>
 
       <p className="text-xs text-slate-500 mb-3 flex items-center gap-1.5"><Sparkles size={13} className="text-blue-600" /> Cold → Warm → RFQ → Hot. Drag a card to move it — you will be asked what the client did to earn it. Click a card for the Deal Room.</p>
 
       <div className="flex gap-3 overflow-x-auto pb-4 items-start">
-        {STAGES.map((st) => {
-          const key = st.key, label = st.name;
-          const col = visible.filter((d) => d.stage === key);
+        {PHASES.map(([key, label, defn]) => {
+          const col = visible.filter((d) => phaseOf(d) === key);
           const colVal = col.reduce((sum, d) => sum + Number(d.value || 0), 0);
           return (
             <div key={key} className="w-64 flex-none bg-slate-50 border border-slate-200 rounded-xl"
               onDragOver={(e) => e.preventDefault()} onDrop={() => onDrop(key)}>
-              <div className="px-3 py-2 border-b border-slate-200 flex items-center justify-between rounded-t-xl">
-                <span className="text-xs font-semibold text-slate-700">{label}</span>
-                <span className="font-mono text-xs text-slate-400 tabular-nums">{col.length}{colVal > 0 ? " · " + fmtINRc(colVal) : ""}</span>
+              <div className={cls("px-3 py-2 border-b rounded-t-xl",
+                key === "hot" ? "border-red-200 bg-red-50/60" : key === "rfq" ? "border-purple-200 bg-purple-50/60"
+                : key === "warm" ? "border-amber-200 bg-amber-50/60" : key === "won" ? "border-green-200 bg-green-50/60"
+                : key === "lost" ? "border-slate-300 bg-slate-100" : "border-slate-200")}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide">{label}</span>
+                  <span className="font-mono text-xs text-slate-400 tabular-nums">{col.length}{colVal > 0 ? " · " + fmtINRc(colVal) : ""}</span>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-snug mt-0.5">{defn}</p>
               </div>
               <div className="p-2 space-y-2 min-h-16">
                 {col.map((d) => {
@@ -1921,7 +2033,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
                     : ns.key === "none" || stale >= STALE_AMBER ? "amber" : "green";
                   const compPct = c ? completeness(c) : 0;
                   return (
-                    <div key={d.id} draggable={!d.lost} onDragStart={() => (dragId.current = d.id)}
+                    <div key={d.id} draggable={!d.lost && d.stage !== "po"} onDragStart={() => (dragId.current = d.id)}
                       onClick={() => setRoom(d.id)}
                       className={cls("bg-white border rounded-md p-2.5 cursor-grab active:cursor-grabbing border-l-4",
                         sc === "red" ? "border-slate-200 border-l-red-600" : sc === "amber" ? "border-slate-200 border-l-amber-500" : "border-slate-200 border-l-green-500")}>
@@ -1973,6 +2085,8 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
       )}
       {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={() => {}} openCompany={openCompany} />}
+      {tempMove && <TempMoveModal me={me} move={tempMove} deals={deals} saveDeals={saveDeals} onClose={() => setTempMove(null)} />}
+      {winning && <WonModal me={me} deal={winning} deals={deals} saveDeals={saveDeals} companies={companies} saveCompanies={saveCompanies} onClose={() => setWinning(null)} />}
       {gate && (gate.mode === "advance" || gate.mode === "lost") && (
         <StageGateModal me={me} data={data} gate={gate} onClose={() => setGate(null)} onComplete={(payload) => applyMove(gate.deal, gate.mode === "lost" ? "lost" : gate.to, payload)} />
       )}
