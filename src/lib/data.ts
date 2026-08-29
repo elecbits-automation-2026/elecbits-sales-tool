@@ -106,6 +106,8 @@ export async function loadWorkspace() {
         id: p.id, name: p.name || "", email: (p.email || "").toLowerCase(),
         role: d.role, dept: d.dept || "Sales",
         active: d.active !== false,
+        // The ODM CAP number: open deals a person can carry at once.
+        capacity: d.capacity == null ? 3 : Number(d.capacity),
         authId: p.auth_id || null, // null = rostered but never signed in
       };
     })
@@ -418,6 +420,14 @@ export async function syncUsers(users: any[]): Promise<boolean> {
     allOk = ok(error, "syncUsers." + (u.email || u.id)) && allOk;
   }
   return allOk;
+}
+
+// Capacity is a plain people_detail column (27-capacity.sql), not part of the
+// upsert_person RPC — a sales admin writes it directly (RLS enforces that).
+export async function setCapacity(personId: string, capacity: number): Promise<boolean> {
+  const { error } = await tbl(supabase, "people_detail")
+    .update({ capacity }).eq("person_id", personId);
+  return ok(error, "setCapacity");
 }
 
 export async function syncCompanies(companies: any[]): Promise<boolean> {

@@ -198,3 +198,8 @@ alter table sales.requests add constraint requests_overtake_check
   check (overtake in ('pending','full','semi'));
 
 select 'sales.requests overtake' as t, count(*) from sales.requests;
+
+
+-- ═══ 27-capacity.sql ══════════════════════════════════════════════════════
+-- The ODM CAP column: open deals a person can carry at once.
+alter table sales.people_detail add column if not exists capacity int not null default 3;
