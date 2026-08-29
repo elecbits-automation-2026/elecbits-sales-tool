@@ -203,3 +203,10 @@ select 'sales.requests overtake' as t, count(*) from sales.requests;
 -- ═══ 27-capacity.sql ══════════════════════════════════════════════════════
 -- The ODM CAP column: open deals a person can carry at once.
 alter table sales.people_detail add column if not exists capacity int not null default 3;
+
+
+-- ═══ 28-task-sources.sql ══════════════════════════════════════════════════
+-- New task origins: stage (phase kickoff) and step (generated from the step).
+alter table sales.tasks drop constraint if exists tasks_source_check;
+alter table sales.tasks add constraint tasks_source_check
+  check (source in ('manual','chat','scrum','system','comms','commitment','transcript','stage','step'));
