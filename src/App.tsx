@@ -5001,29 +5001,51 @@ function WorkChatLogsView({ me, data, openCompany }) {
   const [rows, setRows] = useState(null);
   const [companyF, setCompanyF] = useState("all");
   const [personF, setPersonF] = useState("all");
+  const [dateF, setDateF] = useState("");
   const [open, setOpen] = useState({});
   useEffect(() => { let a = true; loadAllClientLogs().then((x) => a && setRows(x)); return () => { a = false; }; }, []);
   const list = (rows || []).filter((r) =>
-    (companyF === "all" || r.orgId === companyF) && (personF === "all" || r.personId === personF));
+    (companyF === "all" || r.orgId === companyF)
+    && (personF === "all" || r.personId === personF)
+    && (!dateF || r.date === dateF));
+  const nPeople = new Set(list.map((r) => r.personId)).size;
+  const nComps = new Set(list.map((r) => r.orgId)).size;
+  const nConvos = list.reduce((s, r) => s + r.messages.length, 0);
+  const filtered = companyF !== "all" || personF !== "all" || !!dateF;
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-5xl mx-auto">
       <div className="mb-4">
         <h1 className="text-lg font-semibold flex items-center gap-2"><BookOpen size={18} className="text-blue-600" /> Work Chat Logs</h1>
-        <p className="text-xs text-slate-500 mt-0.5">Every AI conversation about every client — deal copilots, stage gates, task chats, Ask-the-AI — date-wise, with the images.</p>
+        <p className="text-xs text-slate-500 mt-0.5">Every AI conversation about every client — who is working with the copilot, on which deal and step, day by day.</p>
       </div>
-      <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-2.5">
+      {/* the ODM filter card: company · person · date · clear, counts right */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3.5 mb-4 flex flex-wrap items-center gap-2.5">
         <Sel className="w-48" value={companyF} onChange={(e) => setCompanyF(e.target.value)}>
           <option value="all">All companies</option>
           {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </Sel>
-        <Sel className="w-44" value={personF} onChange={(e) => setPersonF(e.target.value)}>
-          <option value="all">All people</option>
+        <Sel className="w-40" value={personF} onChange={(e) => setPersonF(e.target.value)}>
+          <option value="all">Everyone</option>
           {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
         </Sel>
-        <span className="ml-auto text-xs text-slate-500"><b className="text-slate-800 font-mono tabular-nums">{list.length}</b> day-log{list.length !== 1 ? "s" : ""}</span>
+        <Input type="date" className="w-40" value={dateF} onChange={(e) => setDateF(e.target.value)} />
+        {filtered && <Btn size="sm" onClick={() => { setCompanyF("all"); setPersonF("all"); setDateF(""); }}>Clear</Btn>}
+        <span className="ml-auto text-xs text-slate-400">
+          <b className="text-slate-700 font-mono tabular-nums">{nConvos}</b> conversations · <b className="text-slate-700 font-mono tabular-nums">{nPeople}</b> people · <b className="text-slate-700 font-mono tabular-nums">{nComps}</b> companies
+        </span>
       </div>
       {rows === null && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> loading the logs…</p>}
-      {rows && !list.length && <Empty icon={BookOpen} title="No logs yet" sub="Talk to any deal copilot, run a stage gate, or use Ask the AI — every conversation lands here, per client, per day." />}
+      {rows && !list.length && (
+        <div className="bg-white border border-slate-200 rounded-xl">
+          <div className="border border-dashed border-slate-200 rounded-xl m-4 py-14 text-center">
+            <BookOpen size={30} className="mx-auto text-slate-300 mb-3" />
+            <p className="text-sm font-semibold text-slate-700">No work chats {filtered ? "match these filters" : "yet"}</p>
+            <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto leading-relaxed">
+              {filtered ? "Widen the date or drop a filter — the log keeps everything." : "Conversations start in a deal room, a stage gate or Ask the AI — they show up here the moment somebody talks to the copilot."}
+            </p>
+          </div>
+        </div>
+      )}
       <div className="space-y-2">
         {list.map((day, i) => {
           const who = users.find((u) => u.id === day.personId);
