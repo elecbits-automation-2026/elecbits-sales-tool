@@ -2436,9 +2436,16 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
               </Chip>
               {rfqB && <Chip color={rfqB.color}>{rfqB.label}</Chip>}
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
               <span className="font-mono tabular-nums text-slate-600">{fmtINRc(d.value)}</span>
-              {owner ? " · " + owner.name : ""}{comp && comp.city ? " · " + comp.city : ""}
+              {owner ? <span>· {owner.name}</span> : (
+                <Sel className="w-40 text-xs py-0.5" value=""
+                  onChange={(e) => e.target.value && patchDeal({ ownerId: e.target.value })}>
+                  <option value="">— assign an owner —</option>
+                  {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </Sel>
+              )}
+              {comp && comp.city ? <span>· {comp.city}</span> : null}
             </p>
           </div>
           {comp && <button onClick={() => { onClose(); openCompany(comp.id); }} className="text-xs text-blue-600 hover:underline">open the company →</button>}
@@ -2630,10 +2637,19 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
   const [winning, setWinning] = useState(null);   // deal being closed-won
   const dragId = useRef(null);
 
+  const [view, setView] = useState("board");      // board | list
+  const [personF, setPersonF] = useState("all");
+  const [companyF, setCompanyF] = useState("all");
   const scopeIds = scope === "mine" ? [me.id]
     : me.role === "dept_head" ? [me.id, ...teamOf(me, users).map((u) => u.id)]
     : users.map((u) => u.id);
-  const visible = deals.filter((d) => scopeIds.includes(d.ownerId));
+  // A deal whose owner left the roster must never vanish — surface it as
+  // unassigned (outside "Mine") so someone can claim it in the Deal Room.
+  const rosterIds = new Set(users.map((u) => u.id));
+  const visible = deals.filter((d) =>
+    (scopeIds.includes(d.ownerId) || (scope !== "mine" && !rosterIds.has(d.ownerId)))
+    && (personF === "all" || d.ownerId === personF)
+    && (companyF === "all" || d.companyId === companyF));
   const phaseOf = (d) => d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
 
   const onDrop = (toKey) => {
@@ -2690,6 +2706,73 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
 
       <p className="text-xs text-slate-500 mb-3 flex items-center gap-1.5"><Sparkles size={13} className="text-blue-600" /> Cold → Warm → RFQ → Hot. Drag a card to move it — you will be asked what the client did to earn it. Click a card for the Deal Room.</p>
 
+      {/* the PMS filter bar: view toggle · person · company · count */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-2.5">
+        <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+          {[["board", "Board", Columns], ["list", "List", ListTodo]].map(([k, l, I]) => (
+            <button key={k} onClick={() => setView(k)} className={cls("px-3 py-1.5 font-medium flex items-center gap-1", view === k ? "bg-blue-600 text-white" : "bg-white text-slate-600")}>
+              <I size={12} /> {l}
+            </button>
+          ))}
+        </div>
+        <Sel className="w-44" value={personF} onChange={(e) => setPersonF(e.target.value)}>
+          <option value="all">All people</option>
+          {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </Sel>
+        <Sel className="w-48" value={companyF} onChange={(e) => setCompanyF(e.target.value)}>
+          <option value="all">All companies</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Sel>
+        <span className="ml-auto text-xs text-slate-500"><b className="text-slate-800 font-mono tabular-nums">{visible.length}</b> deal{visible.length !== 1 ? "s" : ""}</span>
+      </div>
+
+      {view === "list" && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-4">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[10.5px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 bg-slate-50/60">
+                <th className="py-2.5 px-4">Deal</th><th className="py-2.5 px-4">Company</th>
+                <th className="py-2.5 px-4">Phase</th><th className="py-2.5 px-4">Value</th>
+                <th className="py-2.5 px-4">Owner</th><th className="py-2.5 px-4">Next step</th>
+                <th className="py-2.5 px-4">RFQ</th><th className="py-2.5 px-4">Age</th>
+              </tr></thead>
+              <tbody>
+                {[...visible].sort((a, b) => {
+                  const order = { hot: 0, rfq: 1, warm: 2, cold: 3, won: 4, lost: 5 };
+                  return (order[phaseOf(a)] ?? 9) - (order[phaseOf(b)] ?? 9) || Number(b.value || 0) - Number(a.value || 0);
+                }).map((d) => {
+                  const c = companies.find((x) => x.id === d.companyId);
+                  const o = users.find((u) => u.id === d.ownerId);
+                  const ns = nextStepState(d);
+                  const pk = phaseOf(d);
+                  return (
+                    <tr key={d.id} onClick={() => setRoom(d.id)} className="border-b border-slate-100 last:border-0 hover:bg-blue-50/40 cursor-pointer">
+                      <td className="py-2.5 px-4 font-mono text-xs text-slate-500">{d.did}</td>
+                      <td className="py-2.5 px-4 font-medium text-slate-900">{c ? c.name : "?"}</td>
+                      <td className="py-2.5 px-4"><Chip color={pk === "won" ? "green" : pk === "lost" ? "slate" : tempColor(d.temperature)}>{pk === "won" ? "WON" : pk === "lost" ? "LOST" : pk.toUpperCase()}</Chip></td>
+                      <td className="py-2.5 px-4 font-mono tabular-nums">{fmtINRc(d.value)}</td>
+                      <td className="py-2.5 px-4">{o
+                        ? <span className="flex items-center gap-1.5"><Avatar name={o.name} size="sm" /><span className="text-xs">{o.name}</span></span>
+                        : <span className="text-xs font-semibold text-red-600">unassigned</span>}</td>
+                      <td className="py-2.5 px-4 max-w-56">
+                        {d.lost || d.stage === "po" ? <span className="text-slate-300 text-xs">—</span>
+                          : ns.key === "overdue" ? <span className="text-xs font-semibold text-red-600 flex items-center gap-1"><AlertTriangle size={11} /> overdue {fmtDate(d.nextStepDue)}</span>
+                          : ns.key === "none" ? <span className="text-xs text-amber-700">none committed</span>
+                          : <span className="text-xs text-slate-600 truncate block">{d.nextStep}{d.nextStepDue ? " · " + fmtDate(d.nextStepDue) : ""}</span>}
+                      </td>
+                      <td className="py-2.5 px-4">{rfqBadge(d) || <span className="text-slate-300 text-xs">—</span>}</td>
+                      <td className="py-2.5 px-4 font-mono text-xs text-slate-400 tabular-nums">{dealStaleDays(d)}d</td>
+                    </tr>
+                  );
+                })}
+                {visible.length === 0 && <tr><td colSpan={8} className="py-10 text-center text-sm text-slate-400">No deals match these filters.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {view === "board" && (
       <div className="flex gap-3 overflow-x-auto pb-4 items-start">
         {PHASES.map(([key, label, defn]) => {
           const col = visible.filter((d) => phaseOf(d) === key);
@@ -2743,7 +2826,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                         ? <p className="mt-1.5 text-[11px] text-slate-500 truncate">next: {d.nextStep}{d.nextStepDue ? " · " + fmtDate(d.nextStepDue) : ""}</p>
                         : null)}
                       <div className="flex items-center justify-between mt-2">
-                        <span className="flex items-center gap-1 text-xs text-slate-500">{o && <Avatar name={o.name} size="sm" />}</span>
+                        <span className="flex items-center gap-1 text-xs text-slate-500">{o ? <Avatar name={o.name} size="sm" /> : <span className="text-[10px] font-semibold text-red-600 uppercase">unassigned</span>}</span>
                         <div className="flex items-center gap-2">
                           {c && stageIdx(d.stage) >= stageIdx("rfq") && !d.lost && (
                             <button onClick={(e) => { e.stopPropagation(); openCompany(c.id); }} className="text-xs text-blue-600 hover:underline flex items-center gap-0.5" title="RFQ in hand? Apply for the official Project ID — ULM sanctions it."><Rocket size={11} /> Project ID</button>
@@ -2765,6 +2848,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
           );
         })}
       </div>
+      )}
 
       {gate && gate.mode === "back" && (
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
