@@ -2037,9 +2037,17 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
   const converse = async (history) => {
     setBusy(true);
     try {
-      const { reply, notes } = await askWithDrive(dealChatSystem(d, comp, evidence()),
-        history.length ? history.map((m) => ({ role: m.role, content: m.content }))
-          : [{ role: "user", content: "Open the conversation: in two or three sharp lines, where does this deal actually stand and what is the ONE next move?" }]);
+      const convo = history.length ? history.map((m) => ({ role: m.role, content: m.content }))
+        : [{ role: "user", content: "Open the conversation: in two or three sharp lines, where does this deal actually stand and what is the ONE next move?" }];
+      // The Drive-searching loop can stall on a slow lookup — cap it, and fall
+      // back to answering from the record alone rather than spinning forever.
+      let reply, notes;
+      try {
+        ({ reply, notes } = await withTimeout(askWithDrive(dealChatSystem(d, comp, evidence()), convo), 40000));
+      } catch (e1) {
+        reply = await withTimeout(askClaude(dealChatSystem(d, comp, evidence()), convo, { maxTokens: 700 }), 20000);
+        notes = [];
+      }
       const acts = extractMarkedJSON(reply, "DEAL_ACT_JSON");
       const done = runActions(acts && acts.actions);
       const shown = stripToolLines(String(reply).replace(/DEAL_ACT_JSON[\s\S]*$/, "")).trim();
@@ -2092,6 +2100,17 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
 /* ── THE DEAL ROOM — a full-screen sheet, not a cramped modal. One header,
    three answer cards (phase / commitment / RFQ), the three-stage route with
    its activities, and the trail. Everything contained, nothing bleeding. ── */
+/* The AI writes the next step itself — the salesperson only approves it. */
+const stepSystem = (d, comp, ev) => [
+  "You write the ONE next step for a sales deal at Elecbits (electronics design & manufacturing services). Today is " + todayStr() + ".",
+  "Deal: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
+    + (d.nextStep && !d.nextStepDoneAt ? " · currently committed: '" + d.nextStep + "'" : ""),
+  "THE RECORD:\n" + (ev || "(nothing logged yet)"),
+  "Reply with one short line saying the step and the reason, then end with exactly:",
+  'STEP_JSON {"what":"the step, concrete, first person","due":"YYYY-MM-DD","why":"one line of reasoning"}',
+  "The due date must be realistic and within the next 7 days unless the record demands otherwise. Never leave due empty.",
+].join("\n");
+
 function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openCompany }) {
   const { users, companies, deals, tasks } = data;
   const d = deals.find((x) => x.id === dealId);
@@ -2105,6 +2124,8 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const [editStep, setEditStep] = useState(false);
   const [stepWhat, setStepWhat] = useState("");
   const [stepDue, setStepDue] = useState("");
+  const [proposal, setProposal] = useState(null); // {what, due, why} the AI wrote, awaiting approval
+  const [busyStep, setBusyStep] = useState(false);
 
   useEffect(() => {
     if (!comp) return;
@@ -2121,10 +2142,62 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
 
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
-  const vel = tempVelocity(d);
   const ns = nextStepState(d);
   const ph = d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
   const rfqB = rfqBadgeFor(d, data.rfq);
+
+  // The story, phase by phase: what each one actually produced, straight from
+  // the record — no AI call, so the room opens instantly. Segments follow the
+  // temperature history, so a deal that bounced shows every visit.
+  const PH_SET = ["cold", "warm", "rfq", "hot"];
+  const story = (() => {
+    const moves = [...(d.tempHistory || [])].sort((a, b) => (a.at < b.at ? -1 : 1));
+    const segs = [];
+    let cur = moves.length ? (moves[0].from || "cold") : (d.temperature || "cold");
+    let curAt = d.createdAt || "";
+    for (const m of moves) {
+      segs.push({ phase: cur, from: curAt, to: m.at, why: m.why || "", ai: m.decided === "ai" });
+      cur = PH_SET.includes(m.to) ? m.to : cur;
+      curAt = m.at;
+    }
+    if (!d.lost && d.stage !== "po") segs.push({ phase: cur, from: curAt, to: "", current: true });
+    const inWin = (at, s) => at && (!s.from || at >= s.from) && (!s.to || at < s.to);
+    return segs.filter((s) => PH_SET.includes(s.phase)).map((s) => {
+      const items = [];
+      if (s.phase === "cold" && comp && comp.plan && comp.plan.research && comp.plan.research.about)
+        items.push("Research on file: " + String(comp.plan.research.about).slice(0, 130));
+      const tw = (touches || []).filter((t) => inWin(t.at, s));
+      if (tw.length) items.push(tw.length + " client touch" + (tw.length > 1 ? "es" : "") + " — latest: " + (tw[0].subject || tw[0].kind || "logged"));
+      for (const cm of (commits || []).filter((c) => inWin(c.createdAt, s)).slice(0, 2))
+        items.push((cm.side === "us" ? "We promised: " : "They promised: ") + cm.what + (cm.status !== "open" ? " (" + cm.status + ")" : ""));
+      if (s.phase === "rfq" && rfqB && rfqB.link)
+        items.push(rfqB.link.status === "submitted"
+          ? "Client filled the RFQ: " + String((rfqB.link.response || {}).need || "").slice(0, 130)
+          : "RFQ link " + rfqB.link.status + (rfqB.link.contactName ? " to " + rfqB.link.contactName : ""));
+      const days = Math.max(0, Math.round(((s.to ? new Date(s.to).getTime() : Date.now()) - new Date(s.from || Date.now()).getTime()) / 86400000));
+      return { ...s, days, items };
+    });
+  })();
+
+  // AI drafts the step from the record; a person approves and it commits —
+  // the same rows the Scrum Master and My Tasks read.
+  const suggestStep = async () => {
+    setBusyStep(true); setErr("");
+    try {
+      const reply = await withTimeout(askClaude(stepSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits)),
+        [{ role: "user", content: "Write the next step." }], { maxTokens: 300 }), 20000);
+      const v = extractMarkedJSON(reply, "STEP_JSON");
+      if (!v || !v.what) throw new Error("no step");
+      setProposal({ what: String(v.what), due: v.due || "", why: v.why ? String(v.why) : "" });
+    } catch (e) { setErr("Couldn't draft a step — try again."); }
+    setBusyStep(false);
+  };
+  const commitProposal = () => {
+    if (!proposal) return;
+    saveNextStep(d.id, { what: proposal.what, due: proposal.due ? proposal.due + "T18:30" : "", owner: d.ownerId });
+    patchDeal({ nextStep: proposal.what, nextStepDue: proposal.due ? proposal.due + "T18:30" : "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
+    setProposal(null); setEditStep(false);
+  };
 
   const reassess = async () => {
     setBusyTemp(true); setErr("");
@@ -2206,10 +2279,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   };
 
   const doneN = (d.plan || []).filter((x) => x.status === "done").length;
-  const trail = [
-    ...(d.tempHistory || []).map((m) => ({ at: m.at, text: (m.from || "start") + " → " + m.to + (m.why ? " — " + m.why : ""), kind: m.decided === "ai" ? "ai" : "human" })),
-    ...(d.history || []).slice(-3).map((h) => ({ at: h.at, text: (h.summary || (stageName(h.to) + " reached")), kind: "stage" })),
-  ].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 6);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 overflow-y-auto" onClick={onClose}>
@@ -2224,6 +2293,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
               <Chip color={ph === "won" ? "green" : ph === "lost" ? "slate" : tempColor(d.temperature)}>
                 {ph === "won" ? "CLOSED WON" : ph === "lost" ? "CLOSED LOST" : ph.toUpperCase()}
               </Chip>
+              {rfqB && <Chip color={rfqB.color}>{rfqB.label}</Chip>}
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
               <span className="font-mono tabular-nums text-slate-600">{fmtINRc(d.value)}</span>
@@ -2236,71 +2306,86 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
 
         <div className="p-6 grid lg:grid-cols-[1fr,21rem] gap-5 items-start">
         <div className="space-y-5 min-w-0">
-          {/* the three answers */}
-          <div className="grid md:grid-cols-3 gap-4">
-            {/* phase & velocity */}
-            <div className="border border-slate-200 rounded-xl p-4">
-              <div className="flex items-center justify-between">
-                <Lbl>Phase</Lbl>
-                <button onClick={reassess} disabled={busyTemp} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                  {busyTemp ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} reassess
-                </button>
-              </div>
-              <div className="mt-2"><Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip></div>
-              {d.temperatureWhy && <p className="text-xs text-slate-600 mt-2 leading-relaxed">{d.temperatureWhy}</p>}
-              <div className="flex gap-1 mt-3">
-                {[["cold", vel.cold], ["warm", vel.warm], ["rfq", vel.rfq], ["hot", vel.hot]].map(([k, days]) => (
-                  <div key={k} className="flex-1 text-center">
-                    <div className={cls("h-1.5 rounded-full", (d.temperature === k && ph !== "won" && ph !== "lost") ? "bg-blue-500" : days > 0 ? "bg-slate-300" : "bg-slate-100")} />
-                    <p className="text-[10px] font-mono text-slate-400 mt-1">{k} {days}d</p>
+          {/* 1 · what got collected before now — the story, phase by phase */}
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <Lbl className="mr-auto">How it got here</Lbl>
+              {rfqB && rfqB.link && rfqB.link.status !== "submitted" && (
+                <button onClick={() => navigator.clipboard?.writeText(rfqUrl(rfqB.link.id))} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> copy the RFQ link</button>
+              )}
+              <button onClick={reassess} disabled={busyTemp} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                {busyTemp ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} reassess the phase
+              </button>
+            </div>
+            <div>
+              {story.map((s, i) => (
+                <div key={i} className="flex gap-3">
+                  <div className="flex flex-col items-center">
+                    <span className={cls("w-3 h-3 rounded-full border-2 flex-none mt-0.5",
+                      s.current ? "bg-blue-500 border-blue-500" : "bg-white border-slate-300")} />
+                    {i < story.length - 1 && <span className="w-px flex-1 bg-slate-200 my-0.5" />}
                   </div>
-                ))}
+                  <div className="pb-3.5 min-w-0 flex-1 -mt-0.5">
+                    <p className="flex items-center gap-2 flex-wrap">
+                      <span className={cls("font-bold uppercase tracking-wide text-xs", s.current ? "text-blue-700" : "text-slate-500")}>{s.phase}</span>
+                      <span className="text-[11px] font-mono text-slate-400">{s.days}d{s.current ? " · now" : ""}</span>
+                      {s.current && d.temperatureWhy && <span className="text-[11px] text-slate-500">— {d.temperatureWhy}</span>}
+                    </p>
+                    {s.items.map((it, j) => (
+                      <p key={j} className="text-xs text-slate-600 mt-1 leading-snug flex gap-1.5"><span className="text-slate-300 flex-none">▸</span><span className="min-w-0">{it}</span></p>
+                    ))}
+                    {!s.items.length && !s.current && <p className="text-xs text-slate-400 mt-1">nothing on the record from this phase.</p>}
+                    {s.why && !s.current && <p className="text-xs text-slate-500 mt-1 leading-snug flex gap-1.5"><span className="text-green-500 flex-none">↳</span><span>moved on{s.ai ? " (AI)" : ""}: {s.why}</span></p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 2 · the next step — the AI writes it, a person approves it */}
+          <div className={cls("border rounded-xl p-4",
+            ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <Lbl>Next step</Lbl>
+              <div className="flex items-center gap-3">
+                {ns.key === "committed" && <button onClick={stepDone} className="text-xs text-green-700 hover:underline flex items-center gap-0.5"><Check size={11} /> done</button>}
+                {!proposal && <button onClick={suggestStep} disabled={busyStep} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                  {busyStep ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} let the AI write it</button>}
+                <button onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}
+                  className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "write my own"}</button>
               </div>
             </div>
-
-            {/* the commitment */}
-            <div className={cls("border rounded-xl p-4",
-              ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
-              <div className="flex items-center justify-between">
-                <Lbl>Committed next step</Lbl>
-                <div className="flex items-center gap-2">
-                  {ns.key === "committed" && <button onClick={stepDone} className="text-xs text-green-700 hover:underline flex items-center gap-0.5"><Check size={11} /> done</button>}
-                  <button onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}
-                    className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "commit"}</button>
-                </div>
-              </div>
-              {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
-              {ns.key === "none" && !editStep && <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed. A deal nobody has promised to move is a deal going cold.</p>}
-              {d.nextStep && !d.nextStepDoneAt && (
-                <p className="text-sm text-slate-800 mt-1.5 leading-snug">{d.nextStep}
-                  {d.nextStepDue && ns.key !== "overdue" && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(d.nextStepDue)}</span>}
+            {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
+            {ns.key === "none" && !editStep && !proposal && <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed. A deal nobody has promised to move is a deal going cold.</p>}
+            {d.nextStep && !d.nextStepDoneAt && (
+              <p className="text-sm text-slate-800 mt-1.5 leading-snug">{d.nextStep}
+                {d.nextStepDue && ns.key !== "overdue" && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(d.nextStepDue)}</span>}
+              </p>
+            )}
+            {proposal && (
+              <div className="mt-2.5 border border-blue-200 bg-blue-50/60 rounded-lg p-3">
+                <p className="text-[11px] font-bold text-blue-700 uppercase tracking-wide mb-1 flex items-center gap-1"><Sparkles size={11} /> The AI proposes</p>
+                <p className="text-sm text-slate-800 leading-snug">{proposal.what}
+                  {proposal.due && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(proposal.due)}</span>}
                 </p>
-              )}
-              {editStep && (
-                <div className="mt-2 space-y-1.5">
-                  <Input value={stepWhat} onChange={(e) => setStepWhat(e.target.value)} placeholder="what happens next — your words" />
-                  <div className="flex gap-1.5">
-                    <Input type="datetime-local" className="flex-1 text-xs" value={stepDue} onChange={(e) => setStepDue(e.target.value)} />
-                    <Btn kind="primary" size="sm" disabled={!stepWhat.trim()} onClick={commitStep}><Check size={12} /></Btn>
-                  </div>
+                {proposal.why && <p className="text-xs text-slate-500 mt-1 leading-snug">{proposal.why}</p>}
+                <div className="flex items-center gap-2.5 mt-2">
+                  <Btn size="sm" kind="primary" onClick={commitProposal}><Check size={12} /> Commit it</Btn>
+                  <button onClick={() => { setProposal(null); suggestStep(); }} className="text-xs text-blue-600 hover:underline">another</button>
+                  <button onClick={() => setProposal(null)} className="text-xs text-slate-500 hover:underline">discard</button>
                 </div>
-              )}
-            </div>
-
-            {/* RFQ */}
-            <div className="border border-slate-200 rounded-xl p-4">
-              <Lbl>RFQ</Lbl>
-              {rfqB ? (<>
-                <div className="mt-2"><Chip color={rfqB.color}>{rfqB.label}</Chip></div>
-                {rfqB.link && rfqB.link.status === "submitted" && (rfqB.link.response || {}).need &&
-                  <p className="text-xs text-slate-600 mt-2 leading-relaxed line-clamp-3">{rfqB.link.response.need}</p>}
-                {rfqB.link && rfqB.link.status !== "submitted" && (
-                  <button onClick={() => navigator.clipboard?.writeText(rfqUrl(rfqB.link.id))} className="text-xs text-blue-600 hover:underline mt-2 flex items-center gap-1"><Copy size={11} /> copy the link again</button>
-                )}
-              </>) : (
-                <p className="text-xs text-slate-500 mt-2 leading-relaxed">No RFQ link yet — create one from the company page and the client fills the requirement themselves.</p>
-              )}
-            </div>
+              </div>
+            )}
+            {editStep && (
+              <div className="mt-2 space-y-1.5">
+                <Input value={stepWhat} onChange={(e) => setStepWhat(e.target.value)} placeholder="what happens next — your words" />
+                <div className="flex gap-1.5">
+                  <Input type="datetime-local" className="flex-1 text-xs" value={stepDue} onChange={(e) => setStepDue(e.target.value)} />
+                  <Btn kind="primary" size="sm" disabled={!stepWhat.trim()} onClick={commitStep}><Check size={12} /></Btn>
+                </div>
+              </div>
+            )}
+            <p className="text-[10.5px] text-slate-400 mt-2.5">Committing here is the same record the Scrum Master questions and My Tasks shows — one step, three windows.</p>
           </div>
 
           {/* the route: three stages, activities under each */}
@@ -2376,20 +2461,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
             </div>
           </div>
 
-          {/* the trail */}
-          {trail.length > 0 && (
-            <div className="border-t border-slate-100 pt-3">
-              <Lbl>Trail</Lbl>
-              <div className="mt-1.5 space-y-1">
-                {trail.map((t, i) => (
-                  <p key={i} className="text-xs text-slate-500 flex items-baseline gap-2">
-                    <span className="font-mono text-slate-400 flex-none">{fmtDate(t.at)}</span>
-                    <span className="leading-snug">{t.text}{t.kind === "ai" ? " · AI" : ""}</span>
-                  </p>
-                ))}
-              </div>
-            </div>
-          )}
           {err && <p className="text-xs text-red-600">{err}</p>}
         </div>
 
@@ -6845,7 +6916,28 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
       tasks: [], summary: "", createdAt: nowTS(), source: "transcript", transcript: clean, link: "", attendance: {}, blockers: [], decisions: [], ignored: "", transcriptUrl: "" }, ...scrums]);
     const sess = persist({ teamScrum: "yes", scrumNoteId: noteId });
     setTr(""); setTrOpen(false);
-    converse({ ...sess, scrumNoteId: noteId, teamScrum: "yes" }, "(I've attached the team scrum transcript — " + clean.split(/\s+/).length + " words.)");
+    mineTranscript(clean, { ...sess, scrumNoteId: noteId, teamScrum: "yes" });
+  };
+
+  // A filed transcript is not just attendance proof — the decisions in it
+  // belong on the deals. Mine it: next steps with dates, activities finished,
+  // tasks to raise, applied through the same runActions the live chat uses,
+  // so the Deal Room and My Tasks reflect the meeting immediately.
+  const mineTranscript = async (clean, sess) => {
+    setBusy(true); setErr("");
+    const keep = (obj) => { setSession(obj); upsertScrumSession(obj).then((saved) => { if (saved) setSession((cur) => (cur === obj ? saved : cur)); }); return obj; };
+    const userMsg = { role: "user", content: "(Filed the team scrum transcript — " + clean.split(/\s+/).length + " words.)", at: nowTS() };
+    let cur = keep({ ...sess, messages: [...(sess.messages || []), userMsg] });
+    try {
+      const convo = [...cur.messages.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })).slice(0, -1),
+        { role: "user", content: "Team scrum transcript below. Pull out ONLY what was decided about MY companies — next steps with dates, activities completed, new tasks — summarise what you found in a few short lines, and act on all of it via SM_ACT_JSON. Skip companies that are not in my book.\n\n" + clean.slice(0, 9000) }];
+      const reply = await withTimeout(askClaude(smChatSystem(me, bookCtx + "\n" + stateNote(cur)), convo, { maxTokens: 800 }), 40000);
+      const acts = extractMarkedJSON(reply, "SM_ACT_JSON");
+      const patch = runActions(acts && acts.actions, cur);
+      const shown = String(reply).replace(/SM_ACT_JSON[\s\S]*$/, "").trim() || "Transcript filed.";
+      keep({ ...cur, ...patch, messages: [...cur.messages, { role: "assistant", content: shown, at: nowTS() }] });
+    } catch (e) { setErr("Transcript filed, but I couldn't mine it — tell me the decisions in chat instead."); }
+    setBusy(false);
   };
 
   const pullFireflies = async () => {
@@ -6930,13 +7022,18 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
 function ResourcesView({ me, data, saveUsers, openCompany }) {
   const { users, companies, deals, tasks, corePeople } = data;
   const isAdmin = me.role === "admin" || me.role === "dept_head";
+  const [rtab, setRtab] = useState("team");   // team | planning | efficiency
   const [q, setQ] = useState("");
   const [roleF, setRoleF] = useState("all");
+  // Resource Planning window — defaults to the next two months.
+  const [pFrom, setPFrom] = useState(todayStr());
+  const [pTo, setPTo] = useState(localISO(new Date(Date.now() + 61 * 86400000)));
   const [editing, setEditing] = useState(null); // "new" | user object
   const [f, setF] = useState({ name: "", email: "", role: "agent", active: true });
   const [err, setErr] = useState("");
   const [adopted, setAdopted] = useState({});   // core ids just added, hidden from the offer list
   const setCorePeopleAdopted = (id) => setAdopted((a) => ({ ...a, [id]: true }));
+  const [adoptErr, setAdoptErr] = useState("");
 
   const roleChip = (r) => r === "admin" ? "purple" : r === "dept_head" ? "blue" : r === "finance" ? "amber" : "green";
 
@@ -6952,6 +7049,36 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
     : L.overdue > 0 ? ["Overdue work", "red"]
     : L.openDeals + L.openTasks > 0 ? ["Deployed", "amber"]
     : ["Available", "green"];
+
+  // What sits on a person inside the planning window: committed deal steps
+  // due in range + tasks due in range. That IS a salesperson's deployment.
+  const planOf = (u) => {
+    const openDeals = deals.filter((d) => d.ownerId === u.id && !d.lost && d.stage !== "po")
+      .map((d) => ({ d, comp: companies.find((c) => c.id === d.companyId) }));
+    const day = (x) => String(x || "").slice(0, 10);
+    const stepsIn = openDeals.filter(({ d }) => d.nextStep && !d.nextStepDoneAt && d.nextStepDue && day(d.nextStepDue) >= pFrom && day(d.nextStepDue) <= pTo);
+    const tasksIn = tasks.filter((t) => t.assignee === u.id && t.status !== "done" && t.due && t.due >= pFrom && t.due <= pTo);
+    const overdue = openDeals.filter(({ d }) => nextStepState(d).key === "overdue").length
+      + tasks.filter((t) => t.assignee === u.id && t.status !== "done" && t.due && t.due < todayStr()).length;
+    return { openDeals, stepsIn, tasksIn, load: stepsIn.length + tasksIn.length, overdue };
+  };
+  const planStatus = (u, P) => u.active === false ? ["inactive", "slate"]
+    : P.overdue > 0 ? ["Overdue work", "red"]
+    : P.load >= 6 ? ["At capacity", "red"]
+    : P.load > 0 ? ["Deployed", "amber"]
+    : ["Available", "green"];
+
+  // All-time efficiency: companies carried, deals, wins, tasks and completion.
+  const effOf = (u) => {
+    const comps = companies.filter((c) => c.accountOwner === u.id).length;
+    const uDeals = deals.filter((d) => d.ownerId === u.id);
+    const won = uDeals.filter((d) => d.stage === "po").length;
+    const uTasks = tasks.filter((t) => t.assignee === u.id);
+    const done = uTasks.filter((t) => t.status === "done").length;
+    const overdue = uTasks.filter((t) => t.status !== "done" && t.due && t.due < todayStr()).length;
+    const pct = uTasks.length ? Math.round((done / uTasks.length) * 100) : 0;
+    return { comps, deals: uDeals.filter((d) => !d.lost && d.stage !== "po").length, won, tasks: uTasks.length, done, overdue, pct };
+  };
 
   const roster = users
     .filter((u) => roleF === "all" || u.role === roleF)
@@ -6999,20 +7126,142 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
         <p className="text-xs text-slate-500 mt-0.5">Team roster, availability &amp; load — the Sales department, from <span className="font-mono">core.people</span>.</p>
       </div>
 
-      {/* toolbar — the ODM pattern: filters left, count + action right */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
+      {/* the ODM pattern: tabs left · search, count, action right */}
+      <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 mb-3 flex flex-wrap items-center gap-2">
+        <div className="flex items-center text-[13px] font-medium mr-auto">
+          {[["team", "Team View", Users], ["planning", "Resource Planning", CalendarCheck2], ["efficiency", "Efficiency", Gauge]].map(([k, l, I]) => (
+            <button key={k} onClick={() => setRtab(k)}
+              className={cls("px-3 py-1.5 flex items-center gap-1.5 border-b-2 -mb-2 pb-2.5 transition-colors",
+                rtab === k ? "text-blue-700 border-blue-600" : "text-slate-500 border-transparent hover:text-slate-800")}>
+              <I size={14} /> {l}
+            </button>
+          ))}
+        </div>
         <div className="relative">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-          <Input className="w-56 pl-8" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people…" />
+          <Input className="w-52 pl-8" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people…" />
         </div>
-        <Sel className="w-40" value={roleF} onChange={(e) => setRoleF(e.target.value)}>
-          <option value="all">All roles</option>
-          {ROLES.filter(({ key }) => key !== "finance").map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
-        </Sel>
-        <span className="text-xs text-slate-400 font-mono ml-auto">{roster.length} resource{roster.length === 1 ? "" : "s"}</span>
-        {isAdmin && <Btn kind="primary" onClick={openNew}><Plus size={14} /> Add resource</Btn>}
+        <span className="text-xs text-slate-400"><b className="text-slate-700 font-mono tabular-nums">{roster.length}</b> resources</span>
+        {isAdmin && <Btn kind="primary" onClick={openNew}><Plus size={14} /> Add Resource</Btn>}
       </div>
 
+      {/* planning filters — role + the period, PMS-style */}
+      {rtab === "planning" && (
+        <div className="bg-white border border-slate-200 rounded-xl p-4 mb-3 flex flex-wrap items-end gap-4">
+          <Field label="Role"><Sel className="w-44" value={roleF} onChange={(e) => setRoleF(e.target.value)}>
+            <option value="all">All Roles</option>
+            {ROLES.filter(({ key }) => key !== "finance").map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+          </Sel></Field>
+          <Field label="Available from"><Input type="date" className="w-40" value={pFrom} onChange={(e) => setPFrom(e.target.value)} /></Field>
+          <Field label="Available to"><Input type="date" className="w-40" value={pTo} onChange={(e) => setPTo(e.target.value)} /></Field>
+          <p className="text-xs text-slate-500 pb-2.5 ml-auto">Showing availability <b className="text-slate-700">{fmtDate(pFrom)} → {fmtDate(pTo)}</b></p>
+        </div>
+      )}
+      {rtab !== "planning" && (
+        <div className="flex items-center gap-2 mb-3">
+          <Sel className="w-44" value={roleF} onChange={(e) => setRoleF(e.target.value)}>
+            <option value="all">All roles</option>
+            {ROLES.filter(({ key }) => key !== "finance").map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+          </Sel>
+        </div>
+      )}
+
+      {/* ── RESOURCE PLANNING: who is free in the window, who is loaded ── */}
+      {rtab === "planning" && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[10.5px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 bg-slate-50/60">
+                <th className="py-2.5 px-4">Resource</th><th className="py-2.5 px-4">Role</th>
+                <th className="py-2.5 px-4">Availability in period</th>
+                <th className="py-2.5 px-4">Deployed on</th><th className="py-2.5 px-4">Status</th>
+              </tr></thead>
+              <tbody>
+                {roster.map((u) => {
+                  const P = planOf(u);
+                  const [st, sc] = planStatus(u, P);
+                  return (
+                    <tr key={u.id} className={cls("border-b border-slate-100 last:border-0 hover:bg-slate-50/50 align-top", u.active === false && "opacity-50")}>
+                      <td className="py-3 px-4"><span className="flex items-center gap-2.5"><Avatar name={u.name} /><span className="font-medium text-slate-900">{u.name}</span></span></td>
+                      <td className="py-3 px-4"><Chip color={roleChip(u.role)}>{roleLabel(u.role)}</Chip></td>
+                      <td className="py-3 px-4">
+                        {P.load === 0
+                          ? <span className="text-sm font-semibold text-green-700">Fully free {fmtDate(pFrom)} → {fmtDate(pTo)}</span>
+                          : <span className={cls("text-sm font-semibold", P.load >= 6 ? "text-red-600" : "text-slate-800")}>
+                              {P.load >= 6 ? "At capacity in this period" : P.load + " commitment" + (P.load > 1 ? "s" : "") + " in this period"}
+                            </span>}
+                        {(P.stepsIn.length > 0 || P.tasksIn.length > 0) && (
+                          <p className="text-[11px] text-slate-400 mt-0.5 font-mono">{P.stepsIn.length} deal step{P.stepsIn.length !== 1 ? "s" : ""} · {P.tasksIn.length} task{P.tasksIn.length !== 1 ? "s" : ""} due</p>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        {P.openDeals.length ? (
+                          <div className="space-y-1.5">
+                            {P.openDeals.slice(0, 4).map(({ d, comp }) => (
+                              <div key={d.id} className="leading-tight">
+                                <button onClick={() => comp && openCompany(comp.id)} className="text-[13px] font-medium text-slate-800 hover:text-blue-700 hover:underline text-left">{comp ? comp.name : d.did}</button>
+                                <p className="text-[11px] font-mono text-slate-400">
+                                  {(d.temperature || "cold")} · {d.nextStep && !d.nextStepDoneAt && d.nextStepDue ? "step due " + fmtDate(d.nextStepDue) : "no committed step"}
+                                </p>
+                              </div>
+                            ))}
+                            {P.openDeals.length > 4 && <p className="text-[11px] text-slate-400">+{P.openDeals.length - 4} more</p>}
+                          </div>
+                        ) : <span className="text-slate-300 text-xs">None in range</span>}
+                      </td>
+                      <td className="py-3 px-4"><Chip color={sc}>{st}</Chip></td>
+                    </tr>
+                  );
+                })}
+                {roster.length === 0 && <tr><td colSpan={5} className="py-10 text-center text-sm text-slate-400">Nobody matches.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── EFFICIENCY: the numbers a person actually produced ── */}
+      {rtab === "efficiency" && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[10.5px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 bg-slate-50/60">
+                <th className="py-2.5 px-4">Name</th><th className="py-2.5 px-4">Role</th>
+                <th className="py-2.5 px-4 text-center">Companies</th><th className="py-2.5 px-4 text-center">Open deals</th>
+                <th className="py-2.5 px-4 text-center">Won</th><th className="py-2.5 px-4 text-center">Tasks</th>
+                <th className="py-2.5 px-4 text-center">Done</th><th className="py-2.5 px-4 text-center">Overdue</th>
+                <th className="py-2.5 px-4">Completion</th>
+              </tr></thead>
+              <tbody>
+                {roster.map((u) => {
+                  const E = effOf(u);
+                  return (
+                    <tr key={u.id} className={cls("border-b border-slate-100 last:border-0 hover:bg-slate-50/50", u.active === false && "opacity-50")}>
+                      <td className="py-3 px-4"><span className="flex items-center gap-2.5"><Avatar name={u.name} /><span className="font-medium text-slate-900">{u.name}</span></span></td>
+                      <td className="py-3 px-4"><Chip color={roleChip(u.role)}>{roleLabel(u.role)}</Chip></td>
+                      <td className="py-3 px-4 text-center font-mono tabular-nums">{E.comps || <span className="text-slate-300">0</span>}</td>
+                      <td className="py-3 px-4 text-center font-mono tabular-nums">{E.deals || <span className="text-slate-300">0</span>}</td>
+                      <td className="py-3 px-4 text-center font-mono tabular-nums text-green-700">{E.won || <span className="text-slate-300">0</span>}</td>
+                      <td className="py-3 px-4 text-center font-mono tabular-nums">{E.tasks || <span className="text-slate-300">0</span>}</td>
+                      <td className="py-3 px-4 text-center font-mono tabular-nums text-green-700">{E.done || <span className="text-slate-300">0</span>}</td>
+                      <td className="py-3 px-4 text-center font-mono tabular-nums">{E.overdue ? <span className="text-red-600 font-semibold">{E.overdue}</span> : <span className="text-slate-300">0</span>}</td>
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-green-500" style={{ width: E.pct + "%" }} /></div>
+                          <span className="text-[11px] font-mono text-slate-500 tabular-nums">{E.pct}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {roster.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">Nobody matches.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {rtab === "team" && (<>
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -7080,17 +7329,28 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                 <span className="font-medium text-slate-800">{p.name || "(unnamed)"}</span>
                 <span className="font-mono text-xs text-slate-400 mr-auto">{p.email || "no email"}</span>
                 <Btn size="sm" kind="primary" onClick={() => {
-                  saveUsers([...users, { id: p.id, name: p.name || p.email.split("@")[0], email: p.email, role: "agent", dept: "Sales", active: true }]);
-                  setCorePeopleAdopted(p.id);
+                  // Awaited and loud, like the add-new path: a silently failed
+                  // RPC here left people looking adopted but off the roster.
+                  setAdoptErr("");
+                  supabase.rpc("upsert_person", {
+                    p_id: p.id, p_name: p.name || p.email.split("@")[0], p_email: p.email || null,
+                    p_role: "agent", p_dept: "Sales", p_active: true,
+                  }).then(({ error }) => {
+                    if (error) { setAdoptErr((p.name || p.email) + " not added: " + error.message); return; }
+                    saveUsers([...users, { id: p.id, name: p.name || p.email.split("@")[0], email: p.email, role: "agent", dept: "Sales", active: true }]);
+                    setCorePeopleAdopted(p.id);
+                  });
                 }}><Plus size={12} /> Add to sales</Btn>
               </div>
             ))}
           </div>
+          {adoptErr && <p className="text-xs text-red-600 mt-2">{adoptErr}</p>}
           <p className="text-[11px] text-slate-400 mt-2">Adding links the SAME person — no duplicate is created; they keep their identity across every Elecbits tool.</p>
         </div>
       )}
 
       <p className="text-[11px] text-slate-400 mt-2">Removing takes a person off the SALES roster only — their shared core record and everything they did stays. Login provisioning and revocation live in Admin → Users.</p>
+      </>)}
 
       {editing && (
         <Modal title={editing === "new" ? "Add a resource" : "Edit " + editing.name} onClose={() => setEditing(null)}
