@@ -920,6 +920,14 @@ export async function loadChatDates(personId: string, orgId?: string | null): Pr
   const { data } = await q.order("on_date", { ascending: false }).limit(60);
   return (data || []).map((r: any) => r.on_date);
 }
+// The whole work chat log for one client — every person, every date. This is
+// where deal-copilot, stage-gate and Ask-the-AI conversations all land.
+export async function loadClientLog(orgId: string): Promise<any[]> {
+  const { data } = await tbl(supabase, "chats").select("person_id,on_date,messages")
+    .eq("org_id", orgId).order("on_date", { ascending: false }).limit(30);
+  return (data || []).map((r: any) => ({ personId: r.person_id, date: r.on_date, messages: r.messages || [] }));
+}
+
 export async function saveChat(personId: string, date: string, messages: any[], orgId?: string | null): Promise<boolean> {
   const { data } = await chatScope(tbl(supabase, "chats").select("id"), personId, date, orgId).maybeSingle();
   if (data?.id) {
