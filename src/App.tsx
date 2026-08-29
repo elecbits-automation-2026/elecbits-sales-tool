@@ -1829,7 +1829,7 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
 /* ── PHASE MOVE CHAT — the big box on every stage change. It digs into the
    sales collateral folder in Drive and asks the right questions for this
    type of client before the card moves. ─────────────────────────────────── */
-const phaseMoveSystem = (d, comp, to) => [
+const phaseMoveSystem = (d, comp, to, ev) => [
   "You are the STAGE-CHANGE GATE on the Elecbits Sales OS pipeline. A salesperson wants to move a deal to " + to.toUpperCase() + ". Your job, in a short chat:",
   "1. Look in the sales COLLATERAL in Drive — search for 'collateral' and browse the sales folders — and find what fits THIS type of client (industry, size, what they do). Case studies, decks, datasheets.",
   "2. Ask the RIGHT questions for this client type and this move, one or two at a time, grounded in what the phase means:",
@@ -1837,7 +1837,8 @@ const phaseMoveSystem = (d, comp, to) => [
   "3. Recommend which collateral to send next, by file name, when you found something relevant.",
   "CLIENT: " + comp.name + (comp.industry ? " · " + comp.industry : "") + (comp.orgSize ? " · size " + comp.orgSize : "") + (comp.whatTheyDo ? " — " + comp.whatTheyDo : ""),
   "DEAL: " + d.did + " · currently " + (d.temperature || "cold") + " · ₹" + (d.value || 0) + (d.nextStep ? " · committed step: " + d.nextStep : ""),
-  "Keep it tight — 2 to 4 questions total, then close. When you have what you need, end your reply with:",
+  ev ? "WHAT IS ALREADY ON THE RECORD (newest first) — use it, never ask for what is written here:\n" + ev : "",
+  "Keep it tight — 2 to 4 questions total, then close. Sharp and specific beats thorough: reference real names, dates and files from the record. When you have what you need, end your reply with:",
   "PHASE_JSON {\"summary\":\"one line: what the client did that justifies " + to + "\",\"share\":\"collateral to send next, by name — or empty\"}",
 ].join("\n");
 
@@ -1854,6 +1855,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
   const [manual, setManual] = useState("");
   const bodyRef = useRef(null);
   const kicked = useRef(false);
+  const evRef = useRef("");
 
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy, ready]);
   useEffect(() => {
@@ -1866,8 +1868,23 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
     kicked.current = true;
     (async () => {
       setBusy(true);
+      // Everything on the record travels into the gate — touches, promises,
+      // research, the RFQ input — so it questions like someone who read the file.
       try {
-        const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to),
+        const [tch, cms] = await Promise.all([
+          loadTouches(d.companyId).catch(() => []),
+          loadCommitments(d.companyId).catch(() => []),
+        ]);
+        const rfqL = rfqBadgeFor(d, data.rfq);
+        const research = comp.plan && comp.plan.research;
+        evRef.current = [
+          dealEvidence(d, comp, data.tasks || [], tch, cms),
+          rfqL && rfqL.link && (rfqL.link.response || {}).need ? "RFQ input from the client: " + rfqL.link.response.need : "",
+          research ? "Research: " + research.about : "",
+        ].filter(Boolean).join("\n");
+      } catch (e) { evRef.current = ""; }
+      try {
+        const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to, evRef.current),
           [{ role: "user", content: "I want to move this deal to " + move.to + ". Start the gate." }]);
         setMsgs([{ role: "assistant", content: stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim() + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") }]);
       } catch (e) { setMsgs([{ role: "assistant", content: "Couldn't reach the AI — use “skip the chat” below and move it with a line." }]); }
@@ -1882,7 +1899,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
     const next = [...msgs, { role: "user", content: t }];
     setMsgs(next); setBusy(true);
     try {
-      const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to),
+      const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to, evRef.current),
         [{ role: "user", content: "I want to move this deal to " + move.to + ". Start the gate." },
          ...next.map((m) => ({ role: m.role, content: m.content }))]);
       const v = extractMarkedJSON(reply, "PHASE_JSON");
@@ -1968,6 +1985,128 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
             <Check size={14} /> Confirm the move
           </Btn>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── THE DEAL COPILOT — the AI in the room. It has read everything: the
+   record, the phases, the promises, the RFQ input, the research, and it can
+   look in Drive. What gets agreed in chat is executed, not just said. ──── */
+const dealChatSystem = (d, comp, ev) => [
+  "You are the DEAL COPILOT on the Elecbits Sales OS — the sharpest colleague on this one deal. Direct, specific, brief. Today: " + todayStr() + ".",
+  "DEAL: " + d.did + " · " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
+    + (d.nextStep && !d.nextStepDoneAt ? " · committed next step: '" + d.nextStep + "'" + (d.nextStepDue ? " by " + fmtDate(d.nextStepDue) : "") : " · NO committed next step"),
+  "THE STAGE PLAN:\n" + ((d.plan || []).map((st, i) => (i + 1) + ". " + st.name + " [" + st.status + "]"
+    + ((st.evidence || []).length ? " — " + st.evidence.map((a) => (a.done ? "✓" : "○") + " " + a.text).join("; ") : "")).join("\n") || "(no plan yet)"),
+  "EVERYTHING ON THE RECORD (newest first):\n" + (ev || "(nothing yet)"),
+  "You can read the sales Drive for collateral and the client's folder.",
+  "Answer questions from the record, never invent facts. Push toward the ONE next move that advances the deal. When something concrete is agreed in the conversation, end your reply with ONE line:",
+  "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"activity_done\",\"activity\":\"the activity text, verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+  "Dates: tomorrow = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date the person did not say — ask for it. Never show the DEAL_ACT_JSON contents in prose.",
+].join("\n");
+
+function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks }) {
+  const { deals, tasks } = data;
+  const [msgs, setMsgs] = useState([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const bodyRef = useRef(null);
+  const kicked = useRef(false);
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
+
+  const evidence = () => {
+    const rfqL = rfqBadgeFor(d, data.rfq);
+    const research = comp && comp.plan && comp.plan.research;
+    return [
+      dealEvidence(d, comp, tasks, touches, commits),
+      rfqL && rfqL.link && (rfqL.link.response || {}).need ? "RFQ input from the client: " + rfqL.link.response.need : "",
+      research ? "Research: " + research.about + ((research.opportunities || []).length ? " Opportunities: " + research.opportunities.join("; ") : "") : "",
+    ].filter(Boolean).join("\n");
+  };
+
+  const runActions = (list) => {
+    const done = [];
+    let nextDeals = deals, nextTasks = tasks;
+    for (const a of Array.isArray(list) ? list : []) {
+      try {
+        if (a.type === "next_step" && a.what) {
+          saveNextStep(d.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: d.ownerId });
+          nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
+          done.push("✓ committed: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
+        }
+        if (a.type === "activity_done" && a.activity) {
+          const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const cur = nextDeals.find((x) => x.id === d.id) || d;
+          const plan = (cur.plan || []).map((st) => ({ ...st,
+            evidence: (st.evidence || []).map((ac) => (norm(ac.text).includes(norm(a.activity)) || norm(a.activity).includes(norm(ac.text)) ? { ...ac, done: true } : ac)) }));
+          saveDealPlan(d.id, plan);
+          nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, plan } : x));
+          done.push("✓ ticked: " + a.activity);
+        }
+        if (a.type === "task" && a.title) {
+          nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
+            title: a.title, details: "From the Deal Room", due: a.due || todayStr(), status: "open", source: "chat",
+            createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
+          done.push("✓ task: " + a.title);
+        }
+      } catch (e) { /* one bad action never sinks the chat */ }
+    }
+    if (nextDeals !== deals) saveDeals(nextDeals);
+    if (nextTasks !== tasks) saveTasks(nextTasks);
+    return done;
+  };
+
+  const converse = async (history) => {
+    setBusy(true);
+    try {
+      const { reply, notes } = await askWithDrive(dealChatSystem(d, comp, evidence()),
+        history.length ? history.map((m) => ({ role: m.role, content: m.content }))
+          : [{ role: "user", content: "Open the conversation: in two or three sharp lines, where does this deal actually stand and what is the ONE next move?" }]);
+      const acts = extractMarkedJSON(reply, "DEAL_ACT_JSON");
+      const done = runActions(acts && acts.actions);
+      const shown = stripToolLines(String(reply).replace(/DEAL_ACT_JSON[\s\S]*$/, "")).trim();
+      setMsgs([...history, { role: "assistant", content: shown + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") + (done.length ? "\n\n" + done.join("\n") : "") }]);
+    } catch (e) {
+      setMsgs([...history, { role: "assistant", content: "Couldn't reach the AI — send that again." }]);
+    }
+    setBusy(false);
+  };
+
+  useEffect(() => {
+    if (kicked.current) return;
+    kicked.current = true;
+    converse([]);
+  }, []);
+
+  const send = () => {
+    const t = input.trim();
+    if (!t || busy) return;
+    setInput("");
+    converse([...msgs, { role: "user", content: t }]);
+  };
+
+  return (
+    <div className="border border-slate-200 rounded-xl flex flex-col bg-white overflow-hidden lg:sticky lg:top-4" style={{ height: "min(70vh, 34rem)" }}>
+      <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2 bg-slate-50/60">
+        <Bot size={15} className="text-blue-600" />
+        <span className="text-sm font-semibold text-slate-800 mr-auto">Deal copilot</span>
+        <span className="text-[10px] text-slate-400 uppercase tracking-wide">has read the file · can act</span>
+      </div>
+      <div ref={bodyRef} className="flex-1 min-h-0 overflow-y-auto px-3.5 py-3 space-y-2.5">
+        {msgs.map((m, i) => (
+          <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+            <div className={cls("max-w-[90%] rounded-2xl px-3 py-1.5 text-[13px] whitespace-pre-wrap leading-relaxed",
+              m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.content}</div>
+          </div>
+        ))}
+        {busy && <p className="text-[11px] text-slate-400 flex items-center gap-1.5"><Loader2 size={11} className="animate-spin" /> reading the file…</p>}
+      </div>
+      <div className="border-t border-slate-100 p-2.5 flex items-center gap-2">
+        <Input value={input} onChange={(e) => setInput(e.target.value)} className="text-[13px]"
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder="Ask, or agree the next move — it executes…" />
+        <Btn kind="primary" size="sm" disabled={busy || !input.trim()} onClick={send}><Send size={13} /></Btn>
       </div>
     </div>
   );
@@ -2103,7 +2242,8 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1"><X size={18} /></button>
         </div>
 
-        <div className="p-6 space-y-5">
+        <div className="p-6 grid lg:grid-cols-[1fr,21rem] gap-5 items-start">
+        <div className="space-y-5 min-w-0">
           {/* the three answers */}
           <div className="grid md:grid-cols-3 gap-4">
             {/* phase & velocity */}
@@ -2232,6 +2372,10 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
             </div>
           )}
           {err && <p className="text-xs text-red-600">{err}</p>}
+        </div>
+
+        {/* the AI in the room */}
+        <DealChat me={me} d={d} comp={comp} data={data} touches={touches} commits={commits} saveDeals={saveDeals} saveTasks={saveTasks} />
         </div>
       </div>
     </div>
@@ -4683,33 +4827,39 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
   };
   useEffect(() => { reload(); }, [c.id]);
 
-  // ── client email intake: the manager records the addresses, the tool
-  //    fetches the mail and turns it into touches and to-dos. ──
+  // ── email intake: two boxes. WHAT to fetch (a plain-language brief) and
+  //    WHICH mailbox has the access (sales@elecbits.in, comma for several).
+  //    The AI reads the mailbox and keeps only what the brief describes. ──
   const isManager = me.role === "admin" || me.role === "dept_head";
-  const commsEmails = (c.plan && c.plan.commsEmails) || [];
-  const [emailInput, setEmailInput] = useState("");
+  const commsCfg = (c.plan && c.plan.comms) || {};
+  const [about, setAbout] = useState(commsCfg.about || "");
+  const [boxes, setBoxes] = useState(commsCfg.mailboxes || "");
   const [fetching, setFetching] = useState(false);
   const [fetchMsg, setFetchMsg] = useState("");
-  const saveEmails = (list) => saveCompanies(data.companies.map((x) => (x.id === c.id ? { ...x, plan: { ...(x.plan || {}), commsEmails: list } } : x)));
+  const saveCfg = () => saveCompanies(data.companies.map((x) => (x.id === c.id
+    ? { ...x, plan: { ...(x.plan || {}), comms: { about: about.trim(), mailboxes: boxes.trim() } } } : x)));
 
   const fetchMail = async () => {
-    if (!commsEmails.length || fetching) return;
+    if (!boxes.includes("@") || fetching) return;
     setFetching(true); setFetchMsg("");
+    saveCfg();
     try {
-      const r = await fetch("/api/inbox?action=fetch&emails=" + encodeURIComponent(commsEmails.join(","))).then((x) => x.json());
+      const r = await fetch("/api/inbox?action=fetch&mailboxes=" + encodeURIComponent(boxes.trim())).then((x) => x.json());
       if (r.error) { setFetchMsg(r.error); setFetching(false); return; }
       const seen = new Set((touches || []).map((t) => (t.ai || {}).gmailId).filter(Boolean));
       const fresh = (r.messages || []).filter((m) => !seen.has(m.id));
       if (!fresh.length) { setFetchMsg("Nothing new — " + (r.count || 0) + " message(s) checked, all already on the record."); setFetching(false); return; }
       const sys = [
-        "You turn a batch of client emails into the CRM record for " + c.name + " on the Elecbits Sales OS. Today: " + todayStr() + ".",
-        "Our mailbox: " + (r.mailbox || "") + " — mail FROM the client is direction 'in', mail we sent is 'out'.",
-        "For each email worth keeping (skip pure noise), one touch: when it happened (from its Date), a clean subject and a one-line summary of what it means for the deal.",
+        "You read a raw batch of mailbox messages and keep ONLY what belongs on the record of " + c.name + " (" + (c.industry || "") + (c.whatTheyDo ? " — " + c.whatTheyDo : "") + ") on the Elecbits Sales OS. Today: " + todayStr() + ".",
+        "THE BRIEF from the sales manager — this defines what to fetch: " + (about.trim() || "(none given — keep only mail clearly involving this client)"),
+        "A message qualifies only if it matches the brief or clearly involves this client (their people, their domain, their project). Internal chatter, other clients, newsletters: drop silently.",
+        "Direction: mail FROM the client side is 'in'; mail our side sent is 'out'.",
+        "For each kept mail, one touch: when (from its Date), a clean subject, and a one-line summary of what it means for the deal.",
         "todos: ONLY actions the mail actually demands of us — a reply owed, a document promised, a meeting to set. Concrete titles, real dates when the mail names one.",
-        "Reply with ONLY: INBOX_JSON {\"touches\":[{\"gmailId\":\"the id given\",\"direction\":\"in|out\",\"at\":\"ISO datetime\",\"subject\":\"...\",\"summary\":\"one line\"}],\"todos\":[{\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+        "Reply with ONLY: INBOX_JSON {\"touches\":[{\"gmailId\":\"the id given\",\"direction\":\"in|out\",\"at\":\"ISO datetime\",\"subject\":\"...\",\"summary\":\"one line\"}],\"todos\":[{\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}],\"kept\":3,\"dropped\":17}",
       ].join("\n");
       const reply = await withTimeout(askClaude(sys,
-        [{ role: "user", content: JSON.stringify(fresh).slice(0, 60000) }], { maxTokens: 2500 }), 45000);
+        [{ role: "user", content: JSON.stringify(fresh).slice(0, 80000) }], { maxTokens: 3000 }), 60000);
       const v = extractMarkedJSON(reply, "INBOX_JSON");
       if (!v) throw new Error("unparseable");
       for (const t of (v.touches || [])) {
@@ -4722,7 +4872,7 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
           title: td.title, details: "From the client's email", due: td.due || todayStr(), status: "open", source: "comms",
           createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" })), ...tasks]);
       }
-      setFetchMsg("Filed " + (v.touches || []).length + " email(s) on the record" + ((v.todos || []).length ? " and raised " + v.todos.length + " to-do(s)." : "."));
+      setFetchMsg("Filed " + (v.touches || []).length + " email(s) on the record" + ((v.todos || []).length ? ", raised " + v.todos.length + " to-do(s)" : "") + (v.dropped ? " · " + v.dropped + " unrelated dropped." : "."));
       reload();
     } catch (e) { setFetchMsg("Fetch failed — try again."); }
     setFetching(false);
@@ -4844,28 +4994,24 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
 
   return (
     <div className="mt-4 space-y-4">
-      {/* ── client email intake ── */}
+      {/* ── email intake: the brief and the mailbox ── */}
       <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <SectionTitle right={<Btn size="sm" kind="primary" disabled={!commsEmails.length || fetching} onClick={fetchMail}>
-          {fetching ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} Fetch their mail</Btn>}>
-          Client email
+        <SectionTitle right={<Btn size="sm" kind="primary" disabled={!boxes.includes("@") || fetching} onClick={fetchMail}>
+          {fetching ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} Fetch &amp; file</Btn>}>
+          Email intake
         </SectionTitle>
-        <p className="text-xs text-slate-500 mb-2">The addresses this client writes from{isManager ? " — add them once" : " (set by the sales manager)"}. Fetch reads the shared mailbox, files each mail as a touch, and raises to-dos for anything the mail demands.</p>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {commsEmails.map((em) => (
-            <span key={em} className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-700 rounded-full px-2.5 py-1 font-mono">
-              {em}
-              {isManager && <button onClick={() => saveEmails(commsEmails.filter((x) => x !== em))} className="text-slate-400 hover:text-red-500"><X size={11} /></button>}
-            </span>
-          ))}
-          {isManager && (
-            <span className="inline-flex items-center gap-1">
-              <Input className="w-56 text-xs" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="rahul@client.com"
-                onKeyDown={(e) => { if (e.key === "Enter" && emailInput.includes("@")) { saveEmails([...commsEmails, emailInput.trim().toLowerCase()]); setEmailInput(""); } }} />
-              <Btn size="sm" disabled={!emailInput.includes("@")} onClick={() => { saveEmails([...commsEmails, emailInput.trim().toLowerCase()]); setEmailInput(""); }}><Plus size={12} /></Btn>
-            </span>
-          )}
-          {!commsEmails.length && !isManager && <span className="text-xs text-slate-400">none yet</span>}
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">What kind of email to fetch</p>
+            <TA value={about} onChange={(e) => setAbout(e.target.value)} onBlur={saveCfg} disabled={!isManager && !about} className="min-h-16"
+              placeholder={"e.g. Everything about " + c.name + "'s pilot order — mails from S. Iyer or their purchase team, quotes, POs, timelines."} />
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">Mailbox with the access (one or more, comma-separated)</p>
+            <Input value={boxes} onChange={(e) => setBoxes(e.target.value)} onBlur={saveCfg} disabled={!isManager && !boxes}
+              placeholder="sales@elecbits.in" className="font-mono text-xs" />
+            <p className="text-[11px] text-slate-400 mt-1.5">Set by the sales manager. The AI reads the mailbox, keeps only what the brief describes, files each mail as a touch and raises to-dos for what the mail demands.</p>
+          </div>
         </div>
         {fetchMsg && <p className="text-xs text-slate-600 mt-2">{fetchMsg}</p>}
       </div>
@@ -6717,311 +6863,96 @@ function ScrumMasterView({ me, data, saveScrums, saveTasks, saveDeals }) {
 }
 
 function ResourcesView({ me, data, saveUsers, openCompany }) {
-  const { users, companies, deals, tasks, trainings, worklogs, expenses, kpis } = data;
+  const { users, companies, deals, tasks } = data;
   const isAdmin = me.role === "admin" || me.role === "dept_head";
-  const [tab, setTab] = useState("team");
-  const [q, setQ] = useState("");
-  const [roleF, setRoleF] = useState("all");
-  const [deptF, setDeptF] = useState("all");
-  const [avFrom, setAvFrom] = useState(todayStr());
-  const [avTo, setAvTo] = useState(() => localISO(new Date(Date.now() + 14 * 86400000)));
-  const [person, setPerson] = useState(null);
-  const [resModal, setResModal] = useState(null); // null | "new" | user
-  const CAP = 8; // open deals one person can genuinely work
+  const [adding, setAdding] = useState(false);
+  const [f, setF] = useState({ name: "", email: "", role: "agent" });
+  const [err, setErr] = useState("");
 
-  const roles = [...new Set(users.map((u) => u.role))];
-  const depts = [...new Set(users.map((u) => u.dept).filter(Boolean))];
-  const needle = q.trim().toLowerCase();
-  const matchesQ = (u) => !needle || [u.name, u.email, u.dept, roleLabel(u.role)].some((v) => String(v || "").toLowerCase().includes(needle));
-  const filtered = users.filter((u) => (roleF === "all" || u.role === roleF) && (deptF === "all" || u.dept === deptF) && matchesQ(u));
+  // The roster IS core.people — everyone here has a sales.people_detail row
+  // (dept Sales), written through the upsert_person RPC on save.
+  const roster = users.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const loadOf = (u) => ({
+    companies: companies.filter((c) => c.accountOwner === u.id).length,
+    deals: deals.filter((d) => d.ownerId === u.id && !d.lost && d.stage !== "po").length,
+    tasks: tasks.filter((t) => t.assignee === u.id && t.status !== "done").length,
+  });
 
-  const openDealsOf = (id) => deals.filter((d) => d.ownerId === id && !d.lost && d.stage !== "po");
-  const openTasksOf = (id) => tasks.filter((t) => t.assignee === id && t.status !== "done");
-  const travelIn = (id, from, to) => (expenses || []).filter((e) => e.userId === id && e.status !== "rejected" && e.from && e.to && e.from <= to && e.to >= from);
-  const tasksIn = (id, from, to) => tasks.filter((t) => t.assignee === id && t.status !== "done" && t.due && t.due >= from && t.due <= to);
-  const statusOf = (u) => {
-    if (u.active === false) return ["Inactive", "slate"];
-    const n = openDealsOf(u.id).length;
-    return n >= CAP ? ["At Capacity", "red"] : n > 0 ? ["Deployed", "amber"] : ["Available", "green"];
+  const add = () => {
+    if (!f.name.trim()) { setErr("Name is required."); return; }
+    if (!f.email.includes("@")) { setErr("A real email is required — it is how they sign in."); return; }
+    if (users.some((u) => (u.email || "").toLowerCase() === f.email.trim().toLowerCase())) { setErr("That email is already on the roster."); return; }
+    saveUsers([...users, { id: uid(), name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, dept: "Sales", active: true }]);
+    setAdding(false); setF({ name: "", email: "", role: "agent" }); setErr("");
   };
-
-  const upsertUser = (u) => {
-    const exists = users.some((x) => x.id === u.id);
-    saveUsers(exists ? users.map((x) => (x.id === u.id ? u : x)) : [...users, u]);
-    setResModal(null);
-  };
-
-  /* Nobody is emailed automatically, so the admin has to tell them. Hand over
-     the exact words — with the exact address — rather than leaving them to
-     retype it and mistype it. (Same pattern as the ODM PMS.) */
-  const InviteBtn = ({ u }) => {
-    const [done, setDone] = useState(false);
-    if (u.authId || !u.email) return null;
-    const text =
-      "You're set up on the Elecbits Sales OS as " + roleLabel(u.role) + ".\n\n" +
-      "1. Open " + (typeof window !== "undefined" ? window.location.origin : "") + "\n" +
-      "2. Sign in with exactly this email: " + u.email + "\n" +
-      "3. Pick any password — the account is created the first time you press Sign in.\n\n" +
-      "Use that email exactly, or the app won't know it's you.";
-    return (
-      <button title="Copy the joining instructions for this person"
-        onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 2000); }).catch(() => {}); }}
-        className={cls("inline-flex items-center gap-1 border border-slate-300 rounded-md px-2 py-1 text-xs font-medium", done ? "text-green-600" : "text-blue-600 hover:bg-slate-50")}>
-        {done ? <CheckCircle2 size={12} /> : <Send size={12} />} {done ? "Copied" : "Invite"}
-      </button>
-    );
-  };
-
-  const NameCell = ({ u }) => (
-    <button onClick={() => setPerson(u)} className="flex items-center gap-2.5 text-left">
-      <Avatar name={u.name} size="sm" />
-      <span className="min-w-0">
-        <span className="block font-medium text-slate-800 text-sm">{u.name}{u.id === me.id && <span className="text-xs text-slate-400 font-normal"> (you)</span>}</span>
-        {!u.authId && <span className="block text-[11px] text-amber-600">{u.email ? "awaiting sign-up · " + u.email : "awaiting sign-up — no email on file"}</span>}
-      </span>
-    </button>
-  );
-
-  const DealsCell = ({ id }) => {
-    const list = openDealsOf(id);
-    if (!list.length) return <span className="text-slate-300 text-sm">None</span>;
-    return (
-      <div className="space-y-1">
-        {list.slice(0, 4).map((d) => {
-          const comp = companies.find((x) => x.id === d.companyId);
-          return (
-            <div key={d.id} className="text-sm">
-              <button onClick={() => comp && openCompany(comp.id)} className="font-medium text-slate-800 hover:text-blue-700">{comp ? comp.name : d.did}</button>
-              <span className="font-mono text-[11px] text-slate-400 ml-2">{stageName(d.stage)} · {fmtINRc(d.value)}</span>
-            </div>
-          );
-        })}
-        {list.length > 4 && <p className="text-xs text-slate-400">+{list.length - 4} more</p>}
-      </div>
-    );
-  };
-
-  const TABS = [["team", "Team View", Users], ["planning", "Resource Planning", CalendarCheck2], ["efficiency", "Efficiency", TrendingUp]];
-  const th = "text-left py-2.5 px-4 text-[10.5px] font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap";
-  const td = "py-3 px-4 align-middle";
+  const toggleActive = (u) => saveUsers(users.map((x) => (x.id === u.id ? { ...x, active: x.active === false ? true : false } : x)));
 
   return (
-    <div className="max-w-6xl mx-auto space-y-4">
-      {/* toolbar: tabs · search · count · add */}
-      <div className="bg-white border border-slate-200 rounded-xl px-4 flex items-center gap-1 flex-wrap">
-        {TABS.map(([k, l, Ic]) => (
-          <button key={k} onClick={() => setTab(k)}
-            className={cls("flex items-center gap-1.5 px-3.5 py-3 text-sm border-b-2 -mb-px", tab === k ? "border-blue-600 text-blue-700 font-semibold" : "border-transparent text-slate-500 font-medium hover:text-slate-700")}>
-            <Ic size={15} /> {l}
-          </button>
-        ))}
-        <div className="ml-auto relative flex items-center">
-          <Search size={14} className="absolute left-2.5 text-slate-400 pointer-events-none" />
-          <Input className="pl-8 w-52 my-2" placeholder="Search people…" value={q} onChange={(e) => setQ(e.target.value)} />
-        </div>
-        <span className="text-xs text-slate-500 pl-2"><b className="text-slate-800">{filtered.length}</b> resource{filtered.length !== 1 ? "s" : ""}</span>
-        {isAdmin && <Btn size="sm" kind="primary" className="ml-2 my-2" onClick={() => setResModal("new")}><Plus size={13} /> Add Resource</Btn>}
+    <div className="max-w-4xl mx-auto">
+      <div className="flex items-center gap-2 mb-1">
+        <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Users size={18} className="text-blue-600" /> Resources</h1>
+        {isAdmin && <Btn kind="primary" onClick={() => setAdding(true)}><Plus size={14} /> Add resource</Btn>}
       </div>
+      <p className="text-xs text-slate-500 mb-4">The sales roster, straight from <span className="font-mono">core.people</span> — everyone in the Sales department. Adding a resource writes through the shared roster RPC; they sign in with the email you enter.</p>
 
-      {/* filters */}
-      {(tab === "team" || tab === "planning") && (
-        <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-end gap-3 flex-wrap">
-          <Field label="Role"><Sel className="w-44" value={roleF} onChange={(e) => setRoleF(e.target.value)}><option value="all">All roles</option>{roles.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}</Sel></Field>
-          <Field label="Department"><Sel className="w-44" value={deptF} onChange={(e) => setDeptF(e.target.value)}><option value="all">All departments</option>{depts.map((d) => <option key={d} value={d}>{d}</option>)}</Sel></Field>
-          {tab === "planning" && (<>
-            <Field label="Available from"><Input type="date" className="w-40" value={avFrom} onChange={(e) => setAvFrom(e.target.value)} /></Field>
-            <Field label="Available to"><Input type="date" className="w-40" value={avTo} onChange={(e) => setAvTo(e.target.value)} /></Field>
-          </>)}
-        </div>
-      )}
-
-      {/* ── TEAM VIEW ─────────────────────────────────────────── */}
-      {tab === "team" && (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead><tr className="border-b border-slate-100 bg-slate-50/60">
-                <th className={th}>Name</th><th className={th}>Role</th><th className={th}>Dept</th>
-                <th className={th}>Working on — open deals</th><th className={cls(th, "text-center")}>Open tasks</th>
-                <th className={cls(th, "text-center")}>Cap</th><th className={th}>Status</th>
-                {isAdmin && <th className={th}>Actions</th>}
-              </tr></thead>
-              <tbody>
-                {filtered.map((u) => {
-                  const n = openDealsOf(u.id).length; const ot = openTasksOf(u.id).length;
-                  const [sl, sc] = statusOf(u);
-                  return (
-                    <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className={td}><NameCell u={u} /></td>
-                      <td className={td}><Chip color="blue">{roleLabel(u.role)}</Chip></td>
-                      <td className={cls(td, "text-sm text-slate-600")}>{u.dept}</td>
-                      <td className={td}><DealsCell id={u.id} /></td>
-                      <td className={cls(td, "text-center font-mono text-sm tabular-nums", ot ? "text-blue-600 font-semibold" : "text-slate-300")}>{ot}</td>
-                      <td className={cls(td, "text-center font-mono text-sm font-bold tabular-nums", n >= CAP ? "text-red-600" : "text-green-600")}>{n}/{CAP}</td>
-                      <td className={td}><Chip color={sc}>{sl}</Chip></td>
-                      {isAdmin && <td className={cls(td, "whitespace-nowrap")}><InviteBtn u={u} /> <button title="Edit resource" onClick={(e) => { e.stopPropagation(); setResModal(u); }} className="inline-flex border border-slate-300 rounded-md p-1.5 text-blue-600 hover:bg-slate-50 align-middle"><Pencil size={13} /></button></td>}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── RESOURCE PLANNING ─────────────────────────────────── */}
-      {tab === "planning" && (
-        <div className="space-y-3">
-          <div className="bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-600">
-            Showing availability in the period <b className="text-blue-700">{fmtDate(avFrom)}</b> → <b className="text-blue-700">{fmtDate(avTo)}</b> — travel bookings, tasks due, and deal load all count.
-          </div>
-          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead><tr className="border-b border-slate-100 bg-slate-50/60">
-                  <th className={th}>Resource</th><th className={th}>Role</th><th className={th}>Availability in period</th>
-                  <th className={th}>Travel in period</th><th className={cls(th, "text-center")}>Tasks due</th><th className={th}>Status</th>
-                </tr></thead>
-                <tbody>
-                  {filtered.map((u) => {
-                    const trips = travelIn(u.id, avFrom, avTo);
-                    const due = tasksIn(u.id, avFrom, avTo).length;
-                    const nDeals = openDealsOf(u.id).length;
-                    const busy = nDeals >= CAP; const partly = trips.length > 0 || due > 0 || nDeals > 0;
-                    const label = busy ? "At capacity in this period" : trips.length ? "Travelling — check the dates" : partly ? "Partially available — check load" : "Fully free " + fmtDate(avFrom) + " → " + fmtDate(avTo);
-                    return (
-                      <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                        <td className={td}><NameCell u={u} /></td>
-                        <td className={td}><Chip color="blue">{roleLabel(u.role)}</Chip></td>
-                        <td className={cls(td, "text-sm font-semibold", busy ? "text-red-600" : partly ? "text-amber-600" : "text-green-600")}>{label}</td>
-                        <td className={td}>
-                          {trips.length === 0 ? <span className="text-slate-300 text-sm">None</span> : trips.map((t) => {
-                            const comp = companies.find((c) => c.id === t.companyId);
-                            return <div key={t.id} className="text-sm"><span className="font-medium text-slate-800">{t.city || t.purpose}</span><span className="font-mono text-[11px] text-slate-400 ml-2">{fmtDate(t.from)} – {fmtDate(t.to)}{comp ? " · " + comp.name : ""}</span></div>;
-                          })}
-                        </td>
-                        <td className={cls(td, "text-center font-mono text-sm tabular-nums", due ? "text-blue-600 font-semibold" : "text-slate-300")}>{due}</td>
-                        <td className={td}><Chip color={busy ? "red" : partly ? "amber" : "green"}>{busy ? "At Capacity" : partly ? "Partially Deployed" : "Available"}</Chip></td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── EFFICIENCY ────────────────────────────────────────── */}
-      {tab === "efficiency" && (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead><tr className="border-b border-slate-100 bg-slate-50/60">
-                <th className={th}>Name</th><th className={th}>Role</th>
-                <th className={cls(th, "text-center")}>Open deals</th><th className={cls(th, "text-center")}>Won (PO)</th>
-                <th className={cls(th, "text-center")}>Tasks</th><th className={cls(th, "text-center")}>Done</th><th className={cls(th, "text-center")}>Overdue</th>
-                <th className={cls(th, "w-40")}>Completion</th><th className={cls(th, "text-center")}>Health</th>
-              </tr></thead>
-              <tbody>
-                {filtered.map((u) => {
-                  const mine = tasks.filter((t) => t.assignee === u.id);
-                  const done = mine.filter((t) => t.status === "done").length;
-                  const overdue = mine.filter((t) => t.status !== "done" && t.due && t.due < todayStr()).length;
-                  const pct = mine.length ? Math.round((done / mine.length) * 100) : 0;
-                  const won = deals.filter((d) => d.ownerId === u.id && d.stage === "po" && !d.lost).length;
-                  const h = healthOf(u, data);
-                  return (
-                    <tr key={u.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className={td}><NameCell u={u} /></td>
-                      <td className={td}><Chip color="blue">{roleLabel(u.role)}</Chip></td>
-                      <td className={cls(td, "text-center font-mono text-sm tabular-nums")}>{openDealsOf(u.id).length}</td>
-                      <td className={cls(td, "text-center font-mono text-sm tabular-nums text-green-600 font-semibold")}>{won}</td>
-                      <td className={cls(td, "text-center font-mono text-sm tabular-nums")}>{mine.length}</td>
-                      <td className={cls(td, "text-center font-mono text-sm tabular-nums text-green-600")}>{done}</td>
-                      <td className={cls(td, "text-center font-mono text-sm tabular-nums", overdue ? "text-red-600 font-semibold" : "text-slate-300")}>{overdue}</td>
-                      <td className={td}>
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className={cls("h-full rounded-full", pct >= 70 ? "bg-green-500" : pct >= 40 ? "bg-amber-500" : "bg-red-500")} style={{ width: pct + "%" }} /></div>
-                          <span className="font-mono text-xs tabular-nums text-slate-500 w-9 text-right">{pct}%</span>
-                        </div>
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-[10.5px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-200">
+              <th className="py-2.5 px-4">Person</th><th className="py-2.5 px-4">Role</th><th className="py-2.5 px-4">Email</th>
+              <th className="py-2.5 px-4">Companies</th><th className="py-2.5 px-4">Open deals</th><th className="py-2.5 px-4">Open tasks</th>
+              {isAdmin && <th className="py-2.5 px-4"></th>}
+            </tr></thead>
+            <tbody>
+              {roster.map((u) => {
+                const L = loadOf(u);
+                return (
+                  <tr key={u.id} className={cls("border-b border-slate-100 last:border-0", u.active === false && "opacity-50")}>
+                    <td className="py-2.5 px-4"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" /> <span className="font-medium text-slate-900">{u.name}</span>
+                      {u.active === false && <Chip color="slate">inactive</Chip>}
+                      {!u.authId && <span title="Rostered but never signed in" className="text-[10px] text-amber-600 uppercase">no login yet</span>}</span></td>
+                    <td className="py-2.5 px-4 text-slate-600">{roleLabel(u.role)}</td>
+                    <td className="py-2.5 px-4 font-mono text-xs text-slate-500">{u.email || "—"}</td>
+                    <td className="py-2.5 px-4 font-mono tabular-nums">{L.companies}</td>
+                    <td className="py-2.5 px-4 font-mono tabular-nums">{L.deals}</td>
+                    <td className="py-2.5 px-4 font-mono tabular-nums">{L.tasks}</td>
+                    {isAdmin && (
+                      <td className="py-2.5 px-4 text-right">
+                        {u.id !== me.id && <button onClick={() => toggleActive(u)} className="text-xs text-slate-400 hover:text-slate-700">{u.active === false ? "reactivate" : "deactivate"}</button>}
                       </td>
-                      <td className={cls(td, "text-center")}>{h == null ? <span className="text-slate-300">—</span> : <span className={cls("font-mono text-sm tabular-nums", h < 60 ? "text-red-600" : h < 80 ? "text-amber-600" : "text-green-600")}>{h}%</span>}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      <p className="text-xs text-slate-400">Deployment = open deals owned (capacity {CAP}). Tasks flow in from Daily Scrum and the company chat. Health = KPI pace + training + work-update discipline.</p>
-
-      {/* person profile — deals, tasks, trainings, recent work updates */}
-      {person && (
-        <Modal title={person.name + " — deployment"} onClose={() => setPerson(null)} wide>
-          <div className="space-y-4">
-            <div className="flex flex-wrap gap-3 items-center text-sm">
-              <Chip color="blue">{roleLabel(person.role)}</Chip>
-              <span className="text-slate-500">{person.dept}</span>
-              <span className="font-mono text-xs text-slate-400">{person.email}</span>
-              {!person.authId && <Chip color="amber">awaiting sign-up</Chip>}
-              {isAdmin && <span className="ml-auto"><InviteBtn u={person} /></span>}
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Working on — open deals ({openDealsOf(person.id).length}/{CAP})</p>
-              {openDealsOf(person.id).length === 0 ? <p className="text-sm text-slate-400">Nothing on the board.</p> : (
-                <div className="space-y-1.5">
-                  {openDealsOf(person.id).map((d) => {
-                    const comp = companies.find((x) => x.id === d.companyId);
-                    return (
-                      <button key={d.id} onClick={() => { setPerson(null); comp && openCompany(comp.id); }} className="w-full text-left flex items-center gap-2 border border-slate-200 rounded-md px-3 py-2 hover:border-blue-400">
-                        <span className="font-medium text-sm text-slate-800 mr-auto">{comp ? comp.name : d.did}</span>
-                        <Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip>
-                        <span className="font-mono text-sm tabular-nums">{fmtINRc(d.value)}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Open tasks ({openTasksOf(person.id).length})</p>
-              {openTasksOf(person.id).slice(0, 10).map((t) => {
-                const comp = companies.find((x) => x.id === t.companyId);
-                return <p key={t.id} className="text-sm text-slate-700 py-0.5">• {t.title} {comp && <span className="text-xs text-slate-400">({comp.name})</span>} {t.due && <span className={cls("text-xs", t.due < todayStr() ? "text-red-600 font-semibold" : "text-slate-400")}>due {fmtDate(t.due)}</span>} <span className="text-[10px] uppercase text-slate-300">{t.source}</span></p>;
+                    )}
+                  </tr>
+                );
               })}
-              {openTasksOf(person.id).length === 0 && <p className="text-sm text-slate-400">No open tasks.</p>}
-            </div>
-            <div className="grid sm:grid-cols-2 gap-4">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Trainings</p>
-                {trainings.filter((t) => t.assignedTo === person.id).map((t) => (
-                  <p key={t.id} className="text-sm text-slate-700 py-0.5">• {t.title} <Chip color={t.status === "done" ? "green" : "amber"}>{t.status}</Chip></p>
-                ))}
-                {trainings.filter((t) => t.assignedTo === person.id).length === 0 && <p className="text-sm text-slate-400">None assigned.</p>}
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Recent work updates</p>
-                {(worklogs || []).filter((w) => w.userId === person.id).slice(0, 3).map((w) => (
-                  <p key={w.id} className="text-sm text-slate-700 py-0.5 truncate">• <span className="font-mono text-xs text-slate-400">{fmtDate(w.date)}</span> {w.progress}</p>
-                ))}
-                {(worklogs || []).filter((w) => w.userId === person.id).length === 0 && <p className="text-sm text-slate-400">Nothing logged.</p>}
-              </div>
-            </div>
+              {roster.length === 0 && <tr><td colSpan={7} className="py-8 text-center text-sm text-slate-400">Nobody on the roster yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p className="text-[11px] text-slate-400 mt-2">Deactivating hides a person from the tool; actually revoking their login is Admin → Users. Logins are provisioned there too.</p>
+
+      {adding && (
+        <Modal title="Add a resource" onClose={() => setAdding(false)}
+          footer={<>
+            <span className="mr-auto text-xs text-red-600">{err}</span>
+            <Btn onClick={() => setAdding(false)}>Cancel</Btn>
+            <Btn kind="primary" onClick={add}><Check size={14} /> Add to the roster</Btn>
+          </>}>
+          <div className="space-y-3">
+            <Field label="Full name" req><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+            <Field label="Email (their sign-in)" req><Input value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="name@elecbits.in" /></Field>
+            <Field label="Role" req>
+              <Sel value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
+                {ROLES.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+              </Sel>
+            </Field>
+            <p className="text-xs text-slate-500">If this email already belongs to someone in core.people (a PMS engineer, say), the roster adopts that person instead of duplicating them.</p>
           </div>
         </Modal>
       )}
-
-      {resModal && <UserModal user={resModal === "new" ? null : resModal} me={me} onClose={() => setResModal(null)} onSave={upsertUser} />}
     </div>
   );
 }
-
-/* ============================================================
-   LLD CREATION — 30-question capture, per company/deal
-   ============================================================ */
 
 function LLDView({ me, data, saveLlds }) {
   const { companies, llds, users } = data;

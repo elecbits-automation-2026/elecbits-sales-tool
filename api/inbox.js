@@ -100,34 +100,38 @@ export default async function handler(req, res) {
   }
 
   if (action === "fetch") {
-    if (!sa || !mailbox) {
-      return res.status(501).json({ error: "Email intake is not configured. Set INBOX_GMAIL_USER (the mailbox to read) in Vercel — the Drive service account is reused, plus one Google Admin delegation step (gmail.readonly)." });
+    if (!sa) {
+      return res.status(501).json({ error: "Email intake needs GOOGLE_SERVICE_ACCOUNT_JSON (already used for Drive) plus one Google Admin delegation step (gmail.readonly) for the mailbox you name." });
     }
-    const emails = (req.query.emails || "").toString().split(",").map((x) => x.trim()).filter((x) => x.includes("@"));
-    if (!emails.length) return res.status(400).json({ error: "emails required (comma-separated)" });
-    const extra = (req.query.q || "").toString().trim();
-    const max = Math.min(parseInt(req.query.max, 10) || 25, 50);
-    try {
-      const token = await gmailToken(sa, mailbox);
-      const who = emails.map((e) => "from:" + e + " OR to:" + e).join(" OR ");
-      const q = "(" + who + ")" + (extra ? " " + extra : "");
-      const list = await gm(token, mailbox, "messages", { q, maxResults: String(max) });
-      const out = [];
-      for (const m of (list.messages || []).slice(0, max)) {
-        try {
-          const msg = await gm(token, mailbox, "messages/" + m.id, { format: "metadata", metadataHeaders: "From,To,Subject,Date" });
-          out.push({
-            id: m.id, threadId: msg.threadId,
-            from: header(msg, "From"), to: header(msg, "To"),
-            subject: header(msg, "Subject"), date: header(msg, "Date"),
-            snippet: msg.snippet || "",
-          });
-        } catch (e) { /* one bad message never sinks the fetch */ }
-      }
-      return res.status(200).json({ mailbox, query: q, count: out.length, messages: out });
-    } catch (e) {
-      return res.status(502).json({ error: String(e.message || e) });
+    // The mailbox(es) with access come from the request (e.g. sales@elecbits.in,
+    // comma-separated); INBOX_GMAIL_USER is only the fallback default.
+    const boxes = ((req.query.mailboxes || mailbox || "").toString())
+      .split(",").map((x) => x.trim().toLowerCase()).filter((x) => x.includes("@")).slice(0, 4);
+    if (!boxes.length) return res.status(400).json({ error: "mailboxes required — the address(es) with access, e.g. sales@elecbits.in" });
+    const extra = (req.query.q || "").toString().trim();   // optional Gmail search terms
+    const max = Math.min(parseInt(req.query.max, 10) || 30, 60);
+    const out = [];
+    const errors = [];
+    for (const box of boxes) {
+      try {
+        const token = await gmailToken(sa, box);
+        const q = extra || "newer_than:45d -category:promotions -category:social";
+        const list = await gm(token, box, "messages", { q, maxResults: String(max) });
+        for (const m of (list.messages || []).slice(0, max)) {
+          try {
+            const msg = await gm(token, box, "messages/" + m.id, { format: "metadata", metadataHeaders: "From,To,Subject,Date" });
+            out.push({
+              id: m.id, threadId: msg.threadId, mailbox: box,
+              from: header(msg, "From"), to: header(msg, "To"),
+              subject: header(msg, "Subject"), date: header(msg, "Date"),
+              snippet: msg.snippet || "",
+            });
+          } catch (e) { /* one bad message never sinks the fetch */ }
+        }
+      } catch (e) { errors.push(box + ": " + String(e.message || e)); }
     }
+    if (!out.length && errors.length) return res.status(502).json({ error: errors.join(" · ") });
+    return res.status(200).json({ mailboxes: boxes, count: out.length, messages: out, errors: errors.length ? errors : undefined });
   }
 
   return res.status(400).json({ error: "unknown action" });
