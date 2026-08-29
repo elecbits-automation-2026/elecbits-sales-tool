@@ -2937,7 +2937,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
               </span>
               <div className="flex items-center gap-3">
                 <button onClick={() => setEditStep(true)}
-                  className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "next prospect steps"}</button>
+                  className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Sparkles size={11} /> next prospect steps</button>
               </div>
             </div>
             {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
