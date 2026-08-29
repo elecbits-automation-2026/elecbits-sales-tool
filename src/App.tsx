@@ -2066,19 +2066,28 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
         .then((reply) => {
           const v = extractMarkedJSON(reply, "KICKOFF_JSON");
           if (!v) return;
+          const rows = [];
           if (v.next_step && v.next_step.what && !(d.nextStep && !d.nextStepDoneAt)) {
+            const what = String(v.next_step.what);
             const due = v.next_step.due ? v.next_step.due + "T18:30" : "";
-            saveNextStep(d.id, { what: String(v.next_step.what), due, owner: d.ownerId });
+            saveNextStep(d.id, { what, due, owner: d.ownerId });
             saveDeals(moved.map((x) => (x.id === d.id
-              ? { ...x, nextStep: String(v.next_step.what), nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" } : x)));
+              ? { ...x, nextStep: what, nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" } : x)));
+            // the step's own task, always
+            if (!openTaskDupe(data.tasks, d.companyId, what)) rows.push({
+              id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: what,
+              details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
+              due: v.next_step.due || "", status: "open", source: "step",
+              createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" });
           }
           const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title)
-            .filter((t) => !openTaskDupe(data.tasks, d.companyId, t.title)).slice(0, 4);
-          if (list.length) saveTasks([...list.map((t) => ({
+            .filter((t) => !openTaskDupe([...rows, ...(data.tasks || [])], d.companyId, t.title)).slice(0, 4);
+          rows.push(...list.map((t) => ({
             id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
             title: String(t.title), details: "Raised when the deal reached " + move.to + ".", due: t.due || "",
             status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "",
-          })), ...(data.tasks || [])]);
+          })));
+          if (rows.length) saveTasks([...rows, ...(data.tasks || [])]);
         }).catch(() => { /* the move itself already stands */ });
     }
   };
@@ -2175,7 +2184,8 @@ const dealChatSystem = (d, comp, ev) => [
   "BE MATURE: when the record is thin or something is unclear, ASK a sharp question first and recommend after the answer — recommendation follows evidence. Answer from the record, never invent facts. Push toward the ONE next move. You WRITE the next step yourself when the conversation shows it — no permission-asking, just commit it via the action line and say so in a word.",
   "NEVER take 'done' on faith. When they claim a step or task is DONE, get evidence first — what exactly happened, with whom, when, where the artefact lives (a document name, a mail thread, a pasted screenshot — they can paste images right into this chat). Only emit task_done once the evidence is stated.",
   "When something concrete lands in the conversation, end your reply with ONE line:",
-  "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"} | {\"type\":\"fact\",\"field\":\"contactPerson|designation|phone|email\",\"value\":\"...\"}]}",
+  "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"} | {\"type\":\"task_due\",\"task\":\"the open task's title, close to verbatim\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"fact\",\"field\":\"contactPerson|designation|phone|email\",\"value\":\"...\"}]}",
+  "task_due moves an existing task's date — use it when they ask to reschedule a task, instead of committing a new step.",
   "When they name a stakeholder or contact detail, SAVE it with a fact action — it lands on the company record, editable later on the Overview.",
   "OPEN TASKS ON THIS DEAL:\n" + ((d._openTasks || []).join("\n") || "(none)"),
   "Dates: tomorrow = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date the person did not say — ask for it. Never show the DEAL_ACT_JSON contents in prose.",
@@ -2234,6 +2244,13 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
           saveNextStep(d.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: d.ownerId });
           nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
           done.push("✓ committed: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
+          // every step carries its task
+          if (!openTaskDupe(nextTasks, d.companyId, a.what)) {
+            nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: a.what,
+              details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
+              due: a.due || "", status: "open", source: "step",
+              createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
+          }
         }
         if ((a.type === "task_done" || a.type === "activity_done") && (a.task || a.activity)) {
           const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -2245,6 +2262,17 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
             return x;
           });
           if (hit) done.push("✓ task done: " + hit);
+        }
+        if (a.type === "task_due" && a.task && a.due) {
+          const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const want = norm(a.task);
+          let hit = "";
+          nextTasks = nextTasks.map((x) => {
+            if (hit || x.status === "done" || !(x.dealId === d.id || (!x.dealId && x.companyId === d.companyId))) return x;
+            if (norm(x.title).includes(want) || want.includes(norm(x.title))) { hit = x.title; return { ...x, due: a.due }; }
+            return x;
+          });
+          if (hit) done.push("✓ moved: " + hit + " → " + fmtDate(a.due));
         }
         if (a.type === "task" && a.title) {
           if (openTaskDupe(nextTasks, d.companyId, a.title)) {
@@ -2536,6 +2564,46 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // The AI thinks the step itself: opening a deal that has NO committed next
+  // step makes it write one from the record — with its task — and the chat on
+  // the right is where you improvise it. Once per open, silent on failure.
+  const [drafting, setDrafting] = useState(false);
+  const draftedRef = useRef("");
+  useEffect(() => {
+    const dd = deals.find((x) => x.id === dealId);
+    if (!dd || dd.lost || dd.stage === "po") return;
+    if (dd.nextStep && !dd.nextStepDoneAt) return;
+    if (draftedRef.current === dealId) return;
+    draftedRef.current = dealId;
+    const cc = companies.find((x) => x.id === dd.companyId);
+    setDrafting(true);
+    askClaude(stageKickoffSystem(dd, cc, dd.temperature || "cold", dealEvidence(dd, cc, tasks, touches, commits)),
+      [{ role: "user", content: "Write the kickoff." }], { maxTokens: 500 })
+      .then((reply) => {
+        const v = extractMarkedJSON(reply, "KICKOFF_JSON");
+        if (!v || !v.next_step || !v.next_step.what) return;
+        const what = String(v.next_step.what);
+        const due = v.next_step.due ? v.next_step.due + "T18:30" : "";
+        saveNextStep(dd.id, { what, due, owner: dd.ownerId });
+        saveDeals(deals.map((x) => (x.id === dd.id ? { ...x, nextStep: what, nextStepDue: due, nextStepOwner: dd.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x)));
+        const rows = [];
+        if (!openTaskDupe(tasks, dd.companyId, what)) rows.push({
+          id: uid(), companyId: dd.companyId, dealId: dd.id, assignee: dd.ownerId || me.id, author: me.id, title: what,
+          details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
+          due: v.next_step.due || "", status: "open", source: "step",
+          createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" });
+        const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title)
+          .filter((t) => !openTaskDupe([...rows, ...tasks], dd.companyId, t.title)).slice(0, 3);
+        rows.push(...list.map((t) => ({
+          id: uid(), companyId: dd.companyId, dealId: dd.id, assignee: dd.ownerId || me.id, author: me.id,
+          title: String(t.title), details: "Planned for the " + (dd.temperature || "cold") + " phase.", due: t.due || "",
+          status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" })));
+        if (rows.length) saveTasks([...rows, ...tasks]);
+      })
+      .catch(() => { /* the chat on the right can still write it */ })
+      .finally(() => setDrafting(false));
+  }, [deals, dealId]);
+
   // When the step's task closes in My Tasks (evidence checked there), the
   // committed step marks itself done here — one loop, no second click.
   useEffect(() => {
@@ -2607,8 +2675,16 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 
   const commitStep = () => {
     if (!stepWhat.trim()) return;
-    saveNextStep(d.id, { what: stepWhat.trim(), due: stepDue || "", owner: d.ownerId });
-    patchDeal({ nextStep: stepWhat.trim(), nextStepDue: stepDue || "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
+    const what = stepWhat.trim();
+    saveNextStep(d.id, { what, due: stepDue || "", owner: d.ownerId });
+    patchDeal({ nextStep: what, nextStepDue: stepDue || "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
+    // Every step carries its task, from every path — no separate click.
+    if (!openTaskDupe(tasks, d.companyId, what)) {
+      saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: what,
+        details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
+        due: stepDue ? String(stepDue).slice(0, 10) : "", status: "open", source: "step",
+        createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+    }
     setEditStep(false); setStepWhat(""); setStepDue("");
   };
   // The step becomes a TASK — the evidence check lives in the task's closure
@@ -2727,7 +2803,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
               </div>
             </div>
             {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
-            {ns.key === "none" && !editStep && <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed — tell the chat on the right where this stands and it writes the step itself.</p>}
+            {ns.key === "none" && !editStep && (drafting
+              ? <p className="text-xs text-blue-700 mt-2 leading-relaxed flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> The AI is reading the record and writing the next step — improvise it in the chat on the right.</p>
+              : <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed — tell the chat on the right where this stands and it writes the step itself.</p>)}
             {d.nextStep && !d.nextStepDoneAt && (
               <p className="text-sm text-slate-800 mt-1.5 leading-snug">{d.nextStep}
                 {d.nextStepDue && ns.key !== "overdue" && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(d.nextStepDue)}</span>}
@@ -2758,7 +2836,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                       {t.source === "scrum" && <span className="ml-1.5 text-[9.5px] uppercase text-purple-500">scrum</span>}
                     </span>
                     {who && who.id !== me.id && <span className="text-[10px] text-slate-400 flex-none">{who.name}</span>}
-                    {t.due && <span className={cls("text-[10px] font-mono flex-none", late ? "text-red-600 font-semibold" : "text-slate-400")}>{late ? "overdue " : ""}{fmtDate(t.due)}</span>}
+                    {late && <span className="text-[10px] font-mono font-semibold text-red-600 flex-none">overdue</span>}
+                    {/* the date is editable right here */}
+                    <input type="date" value={t.due || ""} title="Edit the due date"
+                      onChange={(e) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, due: e.target.value } : x)))}
+                      className={cls("text-[10px] font-mono border border-transparent hover:border-slate-300 focus:border-blue-400 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem] cursor-pointer",
+                        late ? "text-red-600 font-semibold" : "text-slate-500")} />
                   </div>
                 );
               })}
@@ -7505,7 +7588,7 @@ const smChatSystem = (me, ctx) => [
   "4. NEVER take 'done' on faith. Before emitting an activity_done action, get one line of evidence — what exactly happened, with whom, when, and where the artefact lives (document name, mail thread). If they finished a committed step, tell them to close it in the Deal Room, where the AI checks the evidence (they can attach the doc or pull the mail chain there). A bare 'yes, done' gets a follow-up question, not an action.",
   "THEIR BOOK TODAY:\n" + ctx,
   "ACTING ON WHAT THEY SAY — end your reply with ONE line when (and only when) something concrete was agreed:",
-  "SM_ACT_JSON {\"actions\":[{\"type\":\"team_scrum\",\"answer\":\"yes|no\"} | {\"type\":\"next_step\",\"company\":\"exact company name\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"company\":\"exact company name\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task\",\"company\":\"exact company name\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+  "SM_ACT_JSON {\"actions\":[{\"type\":\"team_scrum\",\"answer\":\"yes|no\"} | {\"type\":\"next_step\",\"company\":\"exact company name\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"company\":\"exact company name\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task_due\",\"company\":\"exact company name\",\"task\":\"the open task's title\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task\",\"company\":\"exact company name\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
   "Dates: 'tomorrow' = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date they did not say — ask for it instead. Never show the SM_ACT_JSON line's contents in prose.",
 ].join("\n");
 
@@ -7582,6 +7665,13 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
         if (a.type === "next_step" && deal && a.what) {
           saveNextStep(deal.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: me.id });
           nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
+          // every step carries its task
+          if (!openTaskDupe(nextTasks, comp.id, a.what)) {
+            nextTasks = [{ id: uid(), companyId: comp.id, dealId: deal.id, assignee: me.id, author: me.id, title: a.what,
+              details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
+              due: a.due || "", status: "open", source: "step",
+              createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "", scrumNoteId: sess.scrumNoteId || "" }, ...nextTasks];
+          }
         }
         if ((a.type === "task_done" || a.type === "activity_done") && comp && (a.task || a.activity)) {
           const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -7590,6 +7680,16 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
           nextTasks = nextTasks.map((x) => {
             if (hit || x.status === "done" || x.companyId !== comp.id) return x;
             if (norm(x.title).includes(want) || want.includes(norm(x.title))) { hit = true; return { ...x, status: "done", doneAt: nowTS() }; }
+            return x;
+          });
+        }
+        if (a.type === "task_due" && comp && a.task && a.due) {
+          const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const want = norm(a.task);
+          let hit = false;
+          nextTasks = nextTasks.map((x) => {
+            if (hit || x.status === "done" || x.companyId !== comp.id) return x;
+            if (norm(x.title).includes(want) || want.includes(norm(x.title))) { hit = true; return { ...x, due: a.due }; }
             return x;
           });
         }
