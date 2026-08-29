@@ -16,7 +16,7 @@ import {
   loadTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
-  saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster,
+  saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity,
 } from "./lib/data";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
@@ -1183,7 +1183,8 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
         ))}
         <Field label="Account owner">
           <Sel value={f.accountOwner} onChange={(e) => set("accountOwner", e.target.value)} disabled={!canPickOwner}>
-            {users.filter((u) => u.role === "agent" || u.role === "dept_head").map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            {!users.some((u) => u.id === f.accountOwner) && <option value={f.accountOwner || ""}>— pick the owner —</option>}
+            {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </Sel>
         </Field>
       </div>
@@ -1347,7 +1348,17 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
           ))}
           <div>
             <p className="text-xs text-slate-400">Account owner</p>
-            <p className="text-sm mt-0.5 flex items-center gap-1.5">{owner && <Avatar name={owner.name} size="sm" />}{owner ? owner.name : "—"}</p>
+            <div className="mt-0.5 flex items-center gap-1.5">
+              {owner && <Avatar name={owner.name} size="sm" />}
+              {/* live-assignable: a company whose owner left the roster showed
+                 "—" with no way to fix it from here */}
+              <Sel className="w-44 text-sm py-1" value={owner ? owner.id : ""}
+                onChange={(e) => e.target.value && saveCompanies(companies.map((x) => (x.id === c.id
+                  ? { ...x, accountOwner: e.target.value, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text: "Account owner set to " + ((users.find((u) => u.id === e.target.value) || {}).name || "?") + "." }] } : x)))}>
+                {!owner && <option value="">— unassigned, pick —</option>}
+                {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </Sel>
+            </div>
           </div>
         </div>
         {(c.custom || []).length > 0 && (
@@ -1979,6 +1990,7 @@ const dealChatSystem = (d, comp, ev) => [
   "EVERYTHING ON THE RECORD (newest first):\n" + (ev || "(nothing yet)"),
   "You can read the sales Drive for collateral and the client's folder.",
   "Answer questions from the record, never invent facts. Push toward the ONE next move that advances the deal. When something concrete is agreed in the conversation, end your reply with ONE line:",
+  "NEVER take 'done' on faith. When they claim a step or activity is DONE, get evidence first — what exactly happened, with whom, when, and where the artefact lives (a document name, a mail thread). Tell them they can attach the file or pull the mail chain when closing the step in this room, or CC the shared sales mailbox so the AI can read it. Only emit activity_done once the evidence is stated.",
   "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"activity_done\",\"activity\":\"the activity text, verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
   "Dates: tomorrow = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date the person did not say — ask for it. Never show the DEAL_ACT_JSON contents in prose.",
 ].join("\n");
@@ -2100,6 +2112,129 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
 /* ── THE DEAL ROOM — a full-screen sheet, not a cramped modal. One header,
    three answer cards (phase / commitment / RFQ), the three-stage route with
    its activities, and the trail. Everything contained, nothing bleeding. ── */
+/* Done is not claimed, it is proven. The AI reads the person's account, the
+   attached documents and the mail chain, and only a believable step closes. */
+const stepProofSystem = (d, comp, account, mailCtx, ev) => [
+  "You are the EVIDENCE CHECKER on the Elecbits Sales OS. Today is " + todayStr() + ".",
+  "A salesperson says this committed next step on the " + (comp ? comp.name : "client") + " deal is DONE:",
+  "THE STEP: " + (d.nextStep || "(unnamed)") + (d.nextStepDue ? " — was due " + fmtDate(d.nextStepDue) : ""),
+  "THEIR ACCOUNT OF WHAT THEY DID:\n" + (account || "(none given)"),
+  mailCtx ? "PULLED FROM THE MAIL CHAIN (shared sales mailbox):\n" + mailCtx : "No mail evidence was pulled.",
+  "THE DEAL RECORD (newest first):\n" + (ev || "(empty)"),
+  "Any attached files are part of the evidence — read them.",
+  "Judge it like a sharp sales manager. Believe it only when the evidence actually shows the step happened — the who, the when, the outcome. A vague claim with no document, no mail and no verifiable specifics does NOT pass; late is fine, unproven is not.",
+  'Reply with two or three plain lines addressed to the salesperson, then end with exactly: STEP_VERDICT_JSON {"believe":true,"score":7,"why":"one line","missing":"what would make it believable — empty if believed"}',
+].join("\n");
+
+function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose }) {
+  const { tasks } = data;
+  const [account, setAccount] = useState("");
+  const [atts, setAtts] = useState([]);
+  const [mailCtx, setMailCtx] = useState("");
+  const [mailMsg, setMailMsg] = useState("");
+  const [mailBusy, setMailBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [verdict, setVerdict] = useState(null);
+  const fileRef = useRef(null);
+  const addFiles = (files) => { [...files].forEach((f) => fileToBlock(f).then((b) => b && setAtts((a) => [...a, b]))); };
+  const boxes = ((comp && comp.plan && comp.plan.comms && comp.plan.comms.mailboxes) || "").trim();
+
+  // "Add the AI to the mail chain": CC the shared mailbox, and this pulls the
+  // thread so the checker reads it as evidence.
+  const pullMail = async () => {
+    if (!boxes.includes("@") || mailBusy) return;
+    setMailBusy(true); setMailMsg("");
+    try {
+      const q = "newer_than:45d " + ((comp && (comp.email || comp.name)) || "");
+      const r = await fetch("/api/inbox?action=fetch&mailboxes=" + encodeURIComponent(boxes) + "&q=" + encodeURIComponent(q.trim()) + "&max=15").then((x) => x.json());
+      if (r.error) setMailMsg(r.error);
+      else if (!(r.messages || []).length) setMailMsg("Nothing in the mailbox mentions " + (comp ? comp.name : "this client") + " in the last 45 days — CC " + boxes.split(",")[0] + " on the thread and pull again.");
+      else {
+        setMailCtx(r.messages.slice(0, 12).map((m) => m.date + " · " + m.from + " → " + m.to + " · " + (m.subject || "(no subject)") + " — " + (m.snippet || "")).join("\n"));
+        setMailMsg(r.messages.length + " message(s) pulled — the checker reads them as evidence.");
+      }
+    } catch (e) { setMailMsg("Could not reach the mailbox."); }
+    setMailBusy(false);
+  };
+
+  const judge = async () => {
+    if (busy || (!account.trim() && !atts.length && !mailCtx)) return;
+    setBusy(true); setVerdict(null);
+    try {
+      const content = atts.length
+        ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: "Judge the claim on this evidence." }]
+        : "Judge the claim.";
+      const reply = await withTimeout(askClaude(
+        stepProofSystem(d, comp, account.trim(), mailCtx, dealEvidence(d, comp, tasks, touches, commits)),
+        [{ role: "user", content }], { maxTokens: 500 }), 30000);
+      const v = extractMarkedJSON(reply, "STEP_VERDICT_JSON");
+      if (!v || typeof v.believe !== "boolean") throw new Error("unparseable");
+      const out = { believe: v.believe, score: Number(v.score) || (v.believe ? 7 : 3),
+        why: String(v.why || ""), missing: String(v.missing || ""), offline: false,
+        text: stripToolLines(String(reply).replace(/STEP_VERDICT_JSON[\s\S]*$/, "")).trim() };
+      setVerdict(out);
+      if (out.believe) onBelieved(out);
+    } catch (e) {
+      // AI unreachable: strict but not a trap — a real account PLUS a document
+      // or the mail chain passes; a bare claim never does.
+      const solid = account.trim().length >= 30 && (atts.length > 0 || !!mailCtx);
+      const out = { believe: solid, score: solid ? 6 : 3, offline: true, why: solid ? "Checked offline — account plus attached evidence." : "",
+        missing: solid ? "" : "The AI was unreachable. Offline it needs a real account of what happened AND a document or the mail chain.", text: "" };
+      setVerdict(out);
+      if (out.believe) onBelieved(out);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <Modal title="Close the step — with evidence" onClose={onClose}
+      footer={verdict && verdict.believe
+        ? <><span className="mr-auto text-xs text-green-700 font-mono">believed · {verdict.score}/10{verdict.offline ? " · offline" : ""}</span><Btn kind="primary" onClick={onClose}><Check size={14} /> Done — commit the next one</Btn></>
+        : <>
+            <span className="mr-auto text-[11px] text-slate-400">The AI needs evidence to believe it.</span>
+            <Btn onClick={onClose}>Cancel</Btn>
+            <Btn kind="primary" disabled={busy || (!account.trim() && !atts.length && !mailCtx)} onClick={judge}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {verdict ? "Check again" : "Check it"}
+            </Btn>
+          </>}>
+      <div className="space-y-3">
+        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+          <p className="text-[10.5px] font-bold text-slate-400 uppercase tracking-wide">The committed step</p>
+          <p className="text-sm text-slate-800 mt-0.5">{d.nextStep}{d.nextStepDue && <span className="text-[11px] font-mono text-slate-400"> · was due {fmtDate(d.nextStepDue)}</span>}</p>
+        </div>
+        <Field label="What exactly did you do?" req hint="The who, the when, the outcome — in your words.">
+          <TA value={account} onChange={(e) => setAccount(e.target.value)} className="min-h-20"
+            placeholder="e.g. Called Rahul at 3pm, walked him through the revised quote, he confirmed the 8-week timeline works and will send the PO draft by Friday." />
+        </Field>
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files || []); e.target.value = ""; }} />
+          <button onClick={() => fileRef.current && fileRef.current.click()} className="text-blue-600 hover:underline flex items-center gap-1"><Paperclip size={12} /> attach a document</button>
+          {boxes.includes("@")
+            ? <button onClick={pullMail} disabled={mailBusy} className="text-blue-600 hover:underline flex items-center gap-1">
+                {mailBusy ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />} pull the mail chain ({boxes.split(",")[0]})
+              </button>
+            : <span className="text-slate-400">No shared mailbox on this company yet — add one in Client Comms and the AI can read the mail chain.</span>}
+        </div>
+        {atts.length > 0 && <p className="text-xs text-slate-500">{atts.map((a, i) => <span key={i} className="inline-flex items-center gap-1 mr-3">📎 {a._name}<button onClick={() => setAtts(atts.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500"><X size={11} /></button></span>)}</p>}
+        {mailMsg && <p className="text-xs text-slate-500">{mailMsg}</p>}
+        {verdict && !verdict.believe && (
+          <div className="border border-red-200 bg-red-50/60 rounded-lg p-3">
+            <p className="text-xs font-bold text-red-700 flex items-center gap-1"><XCircle size={13} /> Not believed{verdict.offline ? " (offline check)" : " · " + verdict.score + "/10"}</p>
+            {verdict.text && <p className="text-xs text-slate-700 mt-1 whitespace-pre-wrap leading-relaxed">{verdict.text}</p>}
+            {verdict.missing && <p className="text-xs text-slate-600 mt-1"><b>To make it believable:</b> {verdict.missing}</p>}
+          </div>
+        )}
+        {verdict && verdict.believe && (
+          <div className="border border-green-200 bg-green-50/60 rounded-lg p-3">
+            <p className="text-xs font-bold text-green-700 flex items-center gap-1"><CheckCircle2 size={13} /> Believed · {verdict.score}/10</p>
+            {(verdict.text || verdict.why) && <p className="text-xs text-slate-700 mt-1 whitespace-pre-wrap leading-relaxed">{verdict.text || verdict.why}</p>}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 /* The AI writes the next step itself — the salesperson only approves it. */
 const stepSystem = (d, comp, ev) => [
   "You write the ONE next step for a sales deal at Elecbits (electronics design & manufacturing services). Today is " + todayStr() + ".",
@@ -2126,6 +2261,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const [stepDue, setStepDue] = useState("");
   const [proposal, setProposal] = useState(null); // {what, due, why} the AI wrote, awaiting approval
   const [busyStep, setBusyStep] = useState(false);
+  const [proving, setProving] = useState(false);  // the evidence gate for "done"
+  const [closingTask, setClosingTask] = useState(null);
+  const [quickTask, setQuickTask] = useState("");
 
   useEffect(() => {
     if (!comp) return;
@@ -2257,10 +2395,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
     patchDeal({ nextStep: stepWhat.trim(), nextStepDue: stepDue || "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
     setEditStep(false); setStepWhat(""); setStepDue("");
   };
-  const stepDone = () => {
+  // "Done" opens the evidence gate; only a believed claim lands here.
+  const applyStepDone = (v) => {
     saveNextStep(d.id, { what: d.nextStep, due: d.nextStepDue, owner: d.nextStepOwner, doneAt: nowTS() });
-    patchDeal({ nextStepDoneAt: nowTS() });
-    setEditStep(true);
+    patchDeal({ nextStepDoneAt: nowTS(),
+      history: [...(d.history || []), { from: d.stage, to: d.stage, at: nowTS(), by: me.id,
+        summary: "Next step done — AI-verified " + v.score + "/10" + (v.why ? ": " + v.why : "") + (v.offline ? " (offline check)" : "") }] });
   };
 
   // The deal's to-dos: tasks pinned to this deal, plus the company's loose
@@ -2268,8 +2408,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const dealTasks = tasks
     .filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)))
     .sort((a, b) => ((a.due || "9999") < (b.due || "9999") ? -1 : 1)).slice(0, 8);
-  const finishTask = (t) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, status: "done", doneAt: nowTS() } : x)));
-  const [quickTask, setQuickTask] = useState("");
+  // Completing goes through the same AI gate as My Tasks — done is proven,
+  // never just clicked.
+  const finishTask = (t) => setClosingTask(t);
   const addQuickTask = () => {
     const title = quickTask.trim();
     if (!title) return;
@@ -2348,7 +2489,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <Lbl>Next step</Lbl>
               <div className="flex items-center gap-3">
-                {ns.key === "committed" && <button onClick={stepDone} className="text-xs text-green-700 hover:underline flex items-center gap-0.5"><Check size={11} /> done</button>}
+                {(ns.key === "committed" || ns.key === "overdue") && <button onClick={() => setProving(true)} className="text-xs text-green-700 hover:underline flex items-center gap-0.5"><Check size={11} /> done — show the evidence</button>}
                 {!proposal && <button onClick={suggestStep} disabled={busyStep} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
                   {busyStep ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} let the AI write it</button>}
                 <button onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}
@@ -2467,6 +2608,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
         {/* the AI in the room */}
         <DealChat me={me} d={d} comp={comp} data={data} touches={touches} commits={commits} saveDeals={saveDeals} saveTasks={saveTasks} />
         </div>
+
+        {proving && <StepProof me={me} d={d} comp={comp} data={data} touches={touches} commits={commits}
+          onBelieved={applyStepDone}
+          onClose={() => { setProving(false); if (d.nextStepDoneAt) setEditStep(true); }} />}
+        {closingTask && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closingTask.id) || closingTask}
+          onClose={() => setClosingTask(null)} saveTasks={saveTasks} />}
       </div>
     </div>
   );
@@ -6801,6 +6948,7 @@ const smChatSystem = (me, ctx) => [
   "1. If the team-scrum question is still open (see STATE), start by asking: did the team have its scrum discussion today? If they say yes, ask them to attach the transcript with the buttons under the chat (paste / upload / Fireflies) — a yes without a transcript counts as no. If no, note it without lecturing and move on.",
   "2. Walk their companies ONE AT A TIME, worst first (overdue commitments, then no committed step). For each: ask where things stand, question the PENDING ACTIVITIES on the deal's stage plan by name, and pin down the next step WITH A DATE in their words. One or two questions per message, never a wall of text.",
   "3. When they give you something concrete, confirm it in one short line and move to the next thing. Keep the whole check-in under ten minutes of chat.",
+  "4. NEVER take 'done' on faith. Before emitting an activity_done action, get one line of evidence — what exactly happened, with whom, when, and where the artefact lives (document name, mail thread). If they finished a committed step, tell them to close it in the Deal Room, where the AI checks the evidence (they can attach the doc or pull the mail chain there). A bare 'yes, done' gets a follow-up question, not an action.",
   "THEIR BOOK TODAY:\n" + ctx,
   "ACTING ON WHAT THEY SAY — end your reply with ONE line when (and only when) something concrete was agreed:",
   "SM_ACT_JSON {\"actions\":[{\"type\":\"team_scrum\",\"answer\":\"yes|no\"} | {\"type\":\"next_step\",\"company\":\"exact company name\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"activity_done\",\"company\":\"exact company name\",\"activity\":\"the activity text, verbatim\"} | {\"type\":\"task\",\"company\":\"exact company name\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
@@ -7029,7 +7177,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
   const [pFrom, setPFrom] = useState(todayStr());
   const [pTo, setPTo] = useState(localISO(new Date(Date.now() + 61 * 86400000)));
   const [editing, setEditing] = useState(null); // "new" | user object
-  const [f, setF] = useState({ name: "", email: "", role: "agent", active: true });
+  const [f, setF] = useState({ name: "", email: "", role: "agent", active: true, capacity: 3 });
   const [err, setErr] = useState("");
   const [adopted, setAdopted] = useState({});   // core ids just added, hidden from the offer list
   const setCorePeopleAdopted = (id) => setAdopted((a) => ({ ...a, [id]: true }));
@@ -7045,8 +7193,11 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
       + openTasks.filter((t) => t.due && t.due < todayStr()).length;
     return { comps, openDeals: openDeals.length, openTasks: openTasks.length, overdue };
   };
+  // The ODM CAP number: open deals vs. what the person can carry.
+  const capOf = (u) => (Number(u.capacity) > 0 ? Number(u.capacity) : 3);
   const statusOf = (u, L) => u.active === false ? ["inactive", "slate"]
     : L.overdue > 0 ? ["Overdue work", "red"]
+    : L.openDeals >= capOf(u) ? ["At Capacity", "red"]
     : L.openDeals + L.openTasks > 0 ? ["Deployed", "amber"]
     : ["Available", "green"];
 
@@ -7064,7 +7215,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
   };
   const planStatus = (u, P) => u.active === false ? ["inactive", "slate"]
     : P.overdue > 0 ? ["Overdue work", "red"]
-    : P.load >= 6 ? ["At capacity", "red"]
+    : P.openDeals.length >= capOf(u) ? ["At Capacity", "red"]
     : P.load > 0 ? ["Deployed", "amber"]
     : ["Available", "green"];
 
@@ -7085,8 +7236,8 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
     .filter((u) => !q.trim() || (u.name + " " + (u.email || "")).toLowerCase().includes(q.trim().toLowerCase()))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const openEdit = (u) => { setEditing(u); setF({ name: u.name, email: u.email || "", role: u.role, active: u.active !== false }); setErr(""); };
-  const openNew = () => { setEditing("new"); setF({ name: "", email: "", role: "agent", active: true }); setErr(""); };
+  const openEdit = (u) => { setEditing(u); setF({ name: u.name, email: u.email || "", role: u.role, active: u.active !== false, capacity: capOf(u) }); setErr(""); };
+  const openNew = () => { setEditing("new"); setF({ name: "", email: "", role: "agent", active: true, capacity: 3 }); setErr(""); };
   const save = () => {
     if (!f.name.trim()) { setErr("Name is required."); return; }
     if (!f.email.includes("@")) { setErr("A real email is required — it is how they sign in."); return; }
@@ -7099,12 +7250,16 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
         p_role: f.role, p_dept: "Sales", p_active: true,
       }).then(({ data: newId, error }) => {
         if (error) { setErr("Not saved: " + error.message); return; }
-        saveUsers([...users, { id: newId || uid(), name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, dept: "Sales", active: true }]);
+        const cap = Number(f.capacity) > 0 ? Number(f.capacity) : 3;
+        if (newId && cap !== 3) setCapacity(newId, cap);
+        saveUsers([...users, { id: newId || uid(), name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, dept: "Sales", active: true, capacity: cap }]);
         setEditing(null);
       });
       return;
     } else {
-      saveUsers(users.map((u) => (u.id === editing.id ? { ...u, name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, active: f.active } : u)));
+      const cap = Number(f.capacity) > 0 ? Number(f.capacity) : 3;
+      if (cap !== capOf(editing)) setCapacity(editing.id, cap);
+      saveUsers(users.map((u) => (u.id === editing.id ? { ...u, name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, active: f.active, capacity: cap } : u)));
     }
     setEditing(null);
   };
@@ -7187,8 +7342,8 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                       <td className="py-3 px-4">
                         {P.load === 0
                           ? <span className="text-sm font-semibold text-green-700">Fully free {fmtDate(pFrom)} → {fmtDate(pTo)}</span>
-                          : <span className={cls("text-sm font-semibold", P.load >= 6 ? "text-red-600" : "text-slate-800")}>
-                              {P.load >= 6 ? "At capacity in this period" : P.load + " commitment" + (P.load > 1 ? "s" : "") + " in this period"}
+                          : <span className={cls("text-sm font-semibold", P.openDeals.length >= capOf(u) ? "text-red-600" : "text-slate-800")}>
+                              {P.openDeals.length >= capOf(u) ? "At capacity in this period" : P.load + " commitment" + (P.load > 1 ? "s" : "") + " in this period"}
                             </span>}
                         {(P.stepsIn.length > 0 || P.tasksIn.length > 0) && (
                           <p className="text-[11px] text-slate-400 mt-0.5 font-mono">{P.stepsIn.length} deal step{P.stepsIn.length !== 1 ? "s" : ""} · {P.tasksIn.length} task{P.tasksIn.length !== 1 ? "s" : ""} due</p>
@@ -7268,7 +7423,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
             <thead><tr className="text-left text-[10.5px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 bg-slate-50/60">
               <th className="py-2.5 px-4">Name</th><th className="py-2.5 px-4">Role</th>
               <th className="py-2.5 px-4">Companies</th><th className="py-2.5 px-4">Open deals</th>
-              <th className="py-2.5 px-4">Open tasks</th><th className="py-2.5 px-4">Status</th>
+              <th className="py-2.5 px-4">Open tasks</th><th className="py-2.5 px-4">Cap</th><th className="py-2.5 px-4">Status</th>
               {isAdmin && <th className="py-2.5 px-4 text-right">Actions</th>}
             </tr></thead>
             <tbody>
@@ -7299,6 +7454,9 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                     </td>
                     <td className="py-3 px-4 font-mono tabular-nums">{L.openDeals || <span className="text-slate-300">0</span>}</td>
                     <td className="py-3 px-4 font-mono tabular-nums">{L.openTasks || <span className="text-slate-300">0</span>}</td>
+                    <td className="py-3 px-4 font-mono tabular-nums">
+                      <span className={cls("font-semibold", L.openDeals >= capOf(u) ? "text-red-600" : L.openDeals > 0 ? "text-amber-600" : "text-green-700")}>{L.openDeals}/{capOf(u)}</span>
+                    </td>
                     <td className="py-3 px-4"><Chip color={sc}>{st}</Chip></td>
                     {isAdmin && (
                       <td className="py-3 px-4">
@@ -7313,7 +7471,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                   </tr>
                 );
               })}
-              {roster.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400">Nobody matches.</td></tr>}
+              {roster.length === 0 && <tr><td colSpan={8} className="py-10 text-center text-sm text-slate-400">Nobody matches.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -7366,6 +7524,10 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
               <Sel value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
                 {ROLES.filter(({ key }) => key !== "finance").map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
               </Sel>
+            </Field>
+            <Field label="Capacity" hint="Open deals this person can carry at once — at or over it, the roster shows At Capacity.">
+              <Input type="number" min={1} max={20} className="w-24" value={f.capacity}
+                onChange={(e) => setF({ ...f, capacity: e.target.value.replace(/[^\d]/g, "") })} />
             </Field>
             {editing !== "new" && (
               <label className="flex items-center gap-2 text-sm cursor-pointer">

@@ -41,8 +41,9 @@ whole thing rolls back and the database is untouched.
 | 11 | **`24-rfq-links.sql`** | the shareable RFQ link (`sales.rfq_links`, served publicly via /api/rfq) + the cold/warm/rfq/hot phase values |
 | 12 | **`25-service-role-grants.sql`** | schema usage + table grants for `service_role` — without it the public RFQ page gets "permission denied for schema sales" |
 | 13 | **`26-overtake.sql`** | `overtake` on `sales.requests` — the ULM's full/semi overtake decision once a deal reaches RFQ |
+| 14 | **`27-capacity.sql`** | `capacity` on `sales.people_detail` — the ODM CAP column (used/max on Resources) |
 
-Steps 10–13 are also bundled as **`RUN-THIS-phase4.sql`** (23+24+25+26, one
+Steps 10–14 are also bundled as **`RUN-THIS-phase4.sql`** (23+24+25+26+27, one
 paste, same idempotence rules).
 
 ### Step 5 is a real trap
