@@ -2185,6 +2185,21 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
   const openTaskTitles = tasks
     .filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)))
     .map((t) => "• " + t.title + (t.due ? " (due " + fmtDate(t.due) + ")" : "")).slice(0, 10);
+
+  // The date option: pick a day and read that day's logged conversation on
+  // this deal from the work chat log — the live chat is one click back.
+  const [histDate, setHistDate] = useState("");
+  const [hist, setHist] = useState(null);
+  useEffect(() => {
+    if (!histDate) { setHist(null); return; }
+    let a = true;
+    loadClientLog(d.companyId).then((rows) => {
+      if (!a) return;
+      setHist(rows.filter((r) => r.date === histDate)
+        .flatMap((r) => r.messages).filter((m) => String(m.kind || "").startsWith("deal " + d.did)));
+    }).catch(() => a && setHist([]));
+    return () => { a = false; };
+  }, [histDate]);
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
 
   const evidence = () => {
@@ -2285,16 +2300,43 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
       <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2 bg-slate-50/60">
         <Bot size={15} className="text-blue-600" />
         <span className="text-sm font-semibold text-slate-800 mr-auto">Deal copilot</span>
-        <span className="text-[10px] text-slate-400 uppercase tracking-wide">has read the file · can act</span>
+        {/* pick a day to read that day's logged conversation on this deal */}
+        <input type="date" value={histDate} onChange={(e) => setHistDate(e.target.value)} max={todayStr()}
+          className="text-[10.5px] border border-slate-200 rounded-md px-1.5 py-0.5 text-slate-500 bg-white" title="Read a past day's conversation" />
+        {!histDate && <span className="text-[10px] text-slate-400 uppercase tracking-wide">can act</span>}
       </div>
+      {histDate && (
+        <div className="px-3.5 py-1.5 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+          <span className="text-[11px] text-amber-800 mr-auto">Reading the log for {fmtDate(histDate)}</span>
+          <button onClick={() => setHistDate("")} className="text-[11px] text-blue-600 hover:underline">back to live →</button>
+        </div>
+      )}
       <div ref={bodyRef} className="flex-1 min-h-0 overflow-y-auto px-3.5 py-3 space-y-2.5">
-        {msgs.map((m, i) => (
-          <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-            <div className={cls("max-w-[90%] rounded-2xl px-3 py-1.5 text-[13px] whitespace-pre-wrap leading-relaxed",
-              m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.display || (typeof m.content === "string" ? m.content : "📎")}</div>
-          </div>
-        ))}
-        {busy && <p className="text-[11px] text-slate-400 flex items-center gap-1.5"><Loader2 size={11} className="animate-spin" /> reading the file…</p>}
+        {histDate ? (<>
+          {hist === null && <p className="text-[11px] text-slate-400 flex items-center gap-1.5"><Loader2 size={11} className="animate-spin" /> opening the log…</p>}
+          {hist && !hist.length && <p className="text-[11.5px] text-slate-400">Nothing logged on this deal for {fmtDate(histDate)}.</p>}
+          {(hist || []).map((m, i) => (
+            <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cls("max-w-[90%] rounded-2xl px-3 py-1.5 text-[13px] whitespace-pre-wrap leading-relaxed",
+                m.role === "user" ? "bg-blue-600/80 text-white rounded-br-md" : "bg-slate-100 text-slate-700 rounded-bl-md")}>
+                {typeof m.content === "string" ? m.content : (m.display || "📎")}
+                {(m.images || []).length > 0 && (
+                  <span className="flex gap-1.5 mt-1 flex-wrap">
+                    {m.images.slice(0, 4).map((src, k) => <a key={k} href={src} target="_blank" rel="noreferrer"><img src={src} alt="attachment" className="h-16 rounded-md border border-slate-200 object-cover" /></a>)}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </>) : (<>
+          {msgs.map((m, i) => (
+            <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cls("max-w-[90%] rounded-2xl px-3 py-1.5 text-[13px] whitespace-pre-wrap leading-relaxed",
+                m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.display || (typeof m.content === "string" ? m.content : "📎")}</div>
+            </div>
+          ))}
+          {busy && <p className="text-[11px] text-slate-400 flex items-center gap-1.5"><Loader2 size={11} className="animate-spin" /> reading the file…</p>}
+        </>)}
       </div>
       <div className="border-t border-slate-100 p-2.5">
         {atts.length > 0 && (
@@ -2455,8 +2497,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const [editStep, setEditStep] = useState(false);
   const [stepWhat, setStepWhat] = useState("");
   const [stepDue, setStepDue] = useState("");
-  const [proving, setProving] = useState(false);  // the evidence gate for "done"
-  const [quickTask, setQuickTask] = useState("");
 
   useEffect(() => {
     if (!comp) return;
@@ -2470,6 +2510,16 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // When the step's task closes in My Tasks (evidence checked there), the
+  // committed step marks itself done here — one loop, no second click.
+  useEffect(() => {
+    const dd = deals.find((x) => x.id === dealId);
+    if (!dd || !dd.nextStep || dd.nextStepDoneAt) return;
+    const lt = tasks.find((t) => t.dealId === dd.id && t.source === "step" && t.title === dd.nextStep && t.status === "done");
+    if (!lt) return;
+    saveNextStep(dd.id, { what: dd.nextStep, due: dd.nextStepDue, owner: dd.nextStepOwner, doneAt: lt.doneAt || nowTS() });
+    saveDeals(deals.map((x) => (x.id === dd.id ? { ...x, nextStepDoneAt: lt.doneAt || nowTS(), updatedAt: nowTS() } : x)));
+  }, [tasks, deals, dealId]);
 
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
@@ -2535,12 +2585,19 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
     patchDeal({ nextStep: stepWhat.trim(), nextStepDue: stepDue || "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
     setEditStep(false); setStepWhat(""); setStepDue("");
   };
-  // "Done" opens the evidence gate; only a believed claim lands here.
-  const applyStepDone = (v) => {
-    saveNextStep(d.id, { what: d.nextStep, due: d.nextStepDue, owner: d.nextStepOwner, doneAt: nowTS() });
-    patchDeal({ nextStepDoneAt: nowTS(),
-      history: [...(d.history || []), { from: d.stage, to: d.stage, at: nowTS(), by: me.id,
-        summary: "Next step done — AI-verified " + v.score + "/10" + (v.why ? ": " + v.why : "") + (v.offline ? " (offline check)" : "") }] });
+  // The step becomes a TASK — the evidence check lives in the task's closure
+  // (My Tasks), not here. The card just shows the task's live status, and the
+  // step marks itself done when its task closes.
+  const stepTask = d.nextStep && !d.nextStepDoneAt
+    ? tasks.find((t) => t.dealId === d.id && t.source === "step" && t.title === d.nextStep)
+    : null;
+  const genStepTask = () => {
+    if (!d.nextStep || stepTask) return;
+    saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id,
+      assignee: d.nextStepOwner || d.ownerId || me.id, author: me.id, title: d.nextStep,
+      details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
+      due: d.nextStepDue ? String(d.nextStepDue).slice(0, 10) : "", status: "open", source: "step",
+      createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
   };
 
   // The deal's NEXT TASKS: raised by scrums or when the deal reached this
@@ -2549,14 +2606,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const dealTasks = tasks
     .filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)))
     .sort((a, b) => ((a.due || "9999") < (b.due || "9999") ? -1 : 1)).slice(0, 8);
-  const addQuickTask = () => {
-    const title = quickTask.trim();
-    if (!title) return;
-    saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: me.id, author: me.id, title, details: "",
-      due: "", status: "open", source: "manual", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
-    setQuickTask("");
-  };
-
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 overflow-y-auto" onClick={onClose}>
       <div className="max-w-5xl mx-auto my-4 md:my-8 bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -2632,9 +2681,21 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
           <div className={cls("border rounded-xl p-4",
             ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <Lbl>Next step</Lbl>
+              <span className="flex items-center gap-2">
+                <Lbl>Next step</Lbl>
+                {/* the step's task carries the status — and the evidence check
+                   happens when THAT closes in My Tasks */}
+                {stepTask && (
+                  <Chip color={stepTask.status === "done" ? "green" : stepTask.status === "doing" ? "blue" : "slate"}>
+                    {stepTask.status === "done" ? "task done" : stepTask.status === "doing" ? "task in progress" : "task open"}
+                    {stepTask.status === "done" && (stepTask.ai || {}).score != null ? " · " + stepTask.ai.score + "/10" : ""}
+                  </Chip>
+                )}
+              </span>
               <div className="flex items-center gap-3">
-                {(ns.key === "committed" || ns.key === "overdue") && <button onClick={() => setProving(true)} className="text-xs text-green-700 hover:underline flex items-center gap-0.5"><Check size={11} /> done — show the evidence</button>}
+                {d.nextStep && !d.nextStepDoneAt && !stepTask && (
+                  <button onClick={genStepTask} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Plus size={11} /> generate the task</button>
+                )}
                 <button onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}
                   className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "write my own"}</button>
               </div>
@@ -2675,12 +2736,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
                   </div>
                 );
               })}
-              {!dealTasks.length && <p className="text-xs text-slate-400">Nothing open — the next scrum or the next stage change writes them.</p>}
-              <div className="flex items-center gap-1.5 pt-0.5">
-                <Input value={quickTask} onChange={(e) => setQuickTask(e.target.value)} placeholder="Add a task on this deal…" className="text-xs"
-                  onKeyDown={(e) => { if (e.key === "Enter") addQuickTask(); }} />
-                <Btn size="sm" disabled={!quickTask.trim()} onClick={addQuickTask}><Plus size={12} /></Btn>
-              </div>
+              {!dealTasks.length && <p className="text-xs text-slate-400">Nothing open — the next scrum, the next stage change, or the copilot on the right writes them.</p>}
               <p className="text-[10.5px] text-slate-400 pt-1">Completed only from My Tasks — the AI checks the evidence there, and this list updates itself.</p>
             </div>
             </div>
@@ -2693,9 +2749,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
         <DealChat me={me} d={d} comp={comp} data={data} touches={touches} commits={commits} saveDeals={saveDeals} saveTasks={saveTasks} />
         </div>
 
-        {proving && <StepProof me={me} d={d} comp={comp} data={data} touches={touches} commits={commits}
-          onBelieved={applyStepDone}
-          onClose={() => { setProving(false); if (d.nextStepDoneAt) setEditStep(true); }} />}
       </div>
     </div>
   );
