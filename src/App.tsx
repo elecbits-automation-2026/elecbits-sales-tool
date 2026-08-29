@@ -740,7 +740,7 @@ export default function App() {
         <main key={tab} className="flex-1 min-w-0 p-4 md:p-6 overflow-x-hidden fade">
           {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} saveTasks={saveTasks} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
           {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
-          {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} saveScrums={saveScrums} saveDeals={saveDeals} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} saveScrums={saveScrums} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "rfqs" && <RfqsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "chatlogs" && <WorkChatLogsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "resources" && <ResourcesView me={me} data={data} saveUsers={saveUsers} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
@@ -2163,12 +2163,13 @@ const dealChatSystem = (d, comp, ev) => [
   "BE MATURE: when the record is thin or something is unclear, ASK a sharp question first and recommend after the answer — recommendation follows evidence. Answer from the record, never invent facts. Push toward the ONE next move. You WRITE the next step yourself when the conversation shows it — no permission-asking, just commit it via the action line and say so in a word.",
   "NEVER take 'done' on faith. When they claim a step or task is DONE, get evidence first — what exactly happened, with whom, when, where the artefact lives (a document name, a mail thread, a pasted screenshot — they can paste images right into this chat). Only emit task_done once the evidence is stated.",
   "When something concrete lands in the conversation, end your reply with ONE line:",
-  "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+  "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"} | {\"type\":\"fact\",\"field\":\"contactPerson|designation|phone|email\",\"value\":\"...\"}]}",
+  "When they name a stakeholder or contact detail, SAVE it with a fact action — it lands on the company record, editable later on the Overview.",
   "OPEN TASKS ON THIS DEAL:\n" + ((d._openTasks || []).join("\n") || "(none)"),
   "Dates: tomorrow = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date the person did not say — ask for it. Never show the DEAL_ACT_JSON contents in prose.",
 ].join("\n");
 
-function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks }) {
+function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, saveCompanies }) {
   const { deals, tasks } = data;
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
@@ -2238,6 +2239,15 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
             title: a.title, details: "From the Deal Room", due: a.due || todayStr(), status: "open", source: "chat",
             createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
           done.push("✓ task: " + a.title);
+        }
+        if (a.type === "fact" && comp && saveCompanies && a.value != null && String(a.value).trim()) {
+          const FIELDS = { contactPerson: "contact person", designation: "designation", phone: "phone", email: "email" };
+          if (FIELDS[a.field]) {
+            const v = String(a.value).trim();
+            saveCompanies(data.companies.map((c) => (c.id === comp.id
+              ? { ...c, [a.field]: v, activity: [...(c.activity || []), { at: nowTS(), by: me.id, text: "Set " + FIELDS[a.field] + " = " + v + " (from the deal chat)." }] } : c)));
+            done.push("✓ saved: " + FIELDS[a.field] + " = " + v + " — edit any time on the company Overview.");
+          }
         }
       } catch (e) { /* one bad action never sinks the chat */ }
     }
@@ -2485,7 +2495,7 @@ function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose })
   );
 }
 
-function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openCompany }) {
+function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveCompanies, openCompany }) {
   const { users, companies, deals, tasks } = data;
   const d = deals.find((x) => x.id === dealId);
   const comp = d && companies.find((x) => x.id === d.companyId);
@@ -2746,7 +2756,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
         </div>
 
         {/* the AI in the room */}
-        <DealChat me={me} d={d} comp={comp} data={data} touches={touches} commits={commits} saveDeals={saveDeals} saveTasks={saveTasks} />
+        <DealChat me={me} d={d} comp={comp} data={data} touches={touches} commits={commits} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} />
         </div>
 
       </div>
@@ -2982,7 +2992,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
       {gate && gate.mode === "back" && (
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
       )}
-      {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={saveTasks} openCompany={openCompany} />}
+      {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} openCompany={openCompany} />}
       {tempMove && <PhaseMoveChat me={me} move={tempMove} data={data} deals={deals} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} onClose={() => setTempMove(null)} />}
       {winning && <PhaseMoveChat me={me} move={{ deal: winning, to: "won" }} data={data} deals={deals} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} onClose={() => setWinning(null)} />}
       {gate && (gate.mode === "advance" || gate.mode === "lost") && (
@@ -5276,11 +5286,40 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
     setBusy(false);
   };
 
+  // The date option: reopen any previous day's thread with this company.
+  const [histDate, setHistDate] = useState("");
+  const [hist, setHist] = useState(null);
+  useEffect(() => {
+    if (!histDate || histDate === todayStr()) { setHist(null); if (histDate === todayStr()) setHistDate(""); return; }
+    let a = true;
+    loadChat(me.id, histDate, c.id).then((m) => a && setHist(m || [])).catch(() => a && setHist([]));
+    return () => { a = false; };
+  }, [histDate]);
+
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col">
-      <SectionTitle>Record assistant — chat, notes & tasks</SectionTitle>
+      <SectionTitle right={
+        <input type="date" value={histDate} onChange={(e) => setHistDate(e.target.value)} max={todayStr()}
+          className="text-[10.5px] border border-slate-200 rounded-md px-1.5 py-0.5 text-slate-500 bg-white" title="Reopen a previous day's chat" />
+      }>Record assistant — chat, notes & tasks</SectionTitle>
       <p className="text-xs text-slate-500 mb-3">Talk to the record. Everything you write is filed as activity; the AI works the trained question set ({qset.length} questions, editable in Admin) and proposes tasks — accepted tasks land in <span className="font-medium">My Tasks</span> and on this company.</p>
+      {histDate && (
+        <div className="px-3 py-1.5 mb-2 bg-amber-50 border border-amber-200 rounded-md flex items-center gap-2">
+          <span className="text-[11px] text-amber-800 mr-auto">Chat from {fmtDate(histDate)}</span>
+          <button onClick={() => setHistDate("")} className="text-[11px] text-blue-600 hover:underline">back to today →</button>
+        </div>
+      )}
       <div className="space-y-2 max-h-72 overflow-y-auto pr-1 mb-3">
+        {histDate ? (<>
+          {hist === null && <p className="text-sm text-slate-400 flex items-center gap-1.5"><Loader2 size={13} className="animate-spin" /> opening…</p>}
+          {hist && !hist.length && <p className="text-sm text-slate-400">Nothing on {fmtDate(histDate)}.</p>}
+          {(hist || []).map((m, i) => (
+            <div key={i} className={cls("text-sm rounded-lg px-3 py-2 max-w-[92%] whitespace-pre-wrap", m.role === "user" ? "bg-blue-50 text-slate-800 ml-auto" : "bg-slate-50 text-slate-700")}>
+              {m.kind && <span className="text-[9px] font-bold uppercase tracking-wide text-purple-500 mr-1.5">{m.kind}</span>}
+              {m.display || (typeof m.content === "string" ? m.content : contentText(m.content))}
+            </div>
+          ))}
+        </>) : (<>
         {msgs.length === 0 && <p className="text-sm text-slate-400">Start with what happened — “spoke to {c.contactPerson || "the client"}, they want…”</p>}
         {msgs.map((m, i) => (
           <div key={i} className={cls("text-sm rounded-lg px-3 py-2 max-w-[92%] whitespace-pre-wrap", m.role === "user" ? "bg-blue-50 text-slate-800 ml-auto" : "bg-slate-50 text-slate-700")}>{m.display || contentText(m.content)}</div>
@@ -5296,6 +5335,7 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
             ))}
           </div>
         )}
+        </>)}
         <div ref={endRef} />
       </div>
       <div className="mt-auto">
@@ -6940,14 +6980,36 @@ function StageGuidance({ task, comp, onPick }) {
    Kept ON the task (t.workChat), not in the chats table: this is working
    context for one job, and it should die with the task rather than turn into
    another thread somebody has to keep. Trimmed to the last 60 turns.        */
-function TaskChat({ task: t, comp, data, saveTasks }) {
+function TaskChat({ task: t, comp, data, saveTasks, saveCompanies }) {
   const { users, deals, tasks } = data;
   const [msgs, setMsgs] = useState((t.work || {}).chat || []);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [atts, setAtts] = useState([]);
+  const fileRef = useRef(null);
   const scrollRef = useRef(null);
   useEffect(() => { scrollRef.current?.scrollTo({ top: 1e6 }); }, [msgs, busy]);
+  const addFiles = (files) => { [...files].forEach((f) => fileToBlock(f).then((b) => b && setAtts((a) => [...a, b]))); };
+  const onPaste = (e) => {
+    const files = [...(e.clipboardData?.items || [])].map((it) => it.getAsFile && it.getAsFile()).filter(Boolean);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  };
+
+  // Recover a previous day's chat about this company from the work log.
+  const [histDate, setHistDate] = useState("");
+  const [hist, setHist] = useState(null);
+  useEffect(() => {
+    if (!histDate || !t.companyId) { setHist(null); return; }
+    let a = true;
+    loadClientLog(t.companyId).then((rows) => {
+      if (!a) return;
+      const all = rows.filter((r) => r.date === histDate).flatMap((r) => r.messages);
+      const taskOnly = all.filter((m) => String(m.kind || "").startsWith("task"));
+      setHist(taskOnly.length ? taskOnly : all);
+    }).catch(() => a && setHist([]));
+    return () => { a = false; };
+  }, [histDate]);
 
   const persist = (next) => {
     setMsgs(next);
@@ -6955,10 +7017,46 @@ function TaskChat({ task: t, comp, data, saveTasks }) {
     saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, work: { ...(x.work || {}), chat: trimmed } } : x)));
   };
 
+  // Executing what the conversation produced: facts onto the company record,
+  // notes onto the activity trail, documents into the client's Drive folder.
+  const runActs = async (list) => {
+    const done = [];
+    let nextCompanies = null;
+    const FIELDS = { contactPerson: "contact person", designation: "designation", phone: "phone", email: "email", website: "website", address: "address", city: "city" };
+    for (const a of Array.isArray(list) ? list : []) {
+      try {
+        if (a.type === "fact" && comp && FIELDS[a.field] && a.value != null && String(a.value).trim()) {
+          const v = String(a.value).trim();
+          nextCompanies = (nextCompanies || data.companies).map((c) => (c.id === comp.id
+            ? { ...c, [a.field]: v, activity: [...(c.activity || []), { at: nowTS(), by: t.assignee, text: "Set " + FIELDS[a.field] + " = " + v + " (from the task chat)." }] } : c));
+          done.push("✓ saved: " + FIELDS[a.field] + " = " + v + " — edit any time on the company Overview.");
+        }
+        if (a.type === "note" && comp && a.text) {
+          nextCompanies = (nextCompanies || data.companies).map((c) => (c.id === comp.id
+            ? { ...c, activity: [...(c.activity || []), { at: nowTS(), by: t.assignee, text: String(a.text).slice(0, 500) }] } : c));
+          done.push("✓ noted on the company record.");
+        }
+        if (a.type === "file" && comp && a.fileName && a.content) {
+          const okd = await drive.write(driveFolderName(comp), "", String(a.fileName), String(a.content));
+          done.push(okd ? "✓ filed in Drive: " + a.fileName + " → " + driveFolderName(comp)
+            : "✗ couldn't file " + a.fileName + " — is the client folder shared with the tool?");
+        }
+      } catch (e) { /* one bad action never sinks the chat */ }
+    }
+    if (nextCompanies && saveCompanies) saveCompanies(nextCompanies);
+    return done;
+  };
+
   const send = async () => {
     const q = draft.trim();
-    if (!q || busy) return;
-    const next = [...msgs, { role: "user", content: q, at: nowTS() }];
+    if ((!q && !atts.length) || busy) return;
+    const content = atts.length
+      ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: q || "See the attached." }]
+      : q;
+    const display = (q || "") + (atts.length ? (q ? "\n" : "") + atts.map((a) => "📎 " + a._name).join("  ") : "");
+    const sentAtts = atts.map(({ _name, ...b }) => b);
+    setAtts([]);
+    const next = [...msgs, { role: "user", content, display, at: nowTS() }];
     persist(next); setDraft(""); setBusy(true); setNote("");
 
     const deal = deals.find((d) => d.companyId === t.companyId && !d.lost);
@@ -6983,16 +7081,25 @@ function TaskChat({ task: t, comp, data, saveTasks }) {
       "",
       DRIVE_TOOL_PROMPT,
       "",
+      "YOUR REAL JOB — carry this task to done:",
+      "1. TAKE the information the person has (ask for what is missing — the who, the when, the number; they can paste screenshots and attach files right here).",
+      "2. CHECK its quality against what this task must produce. Thin or mismatched data gets a follow-up question, not a filing.",
+      "3. When the data is good, ACT — file it. End your reply with ONE line:",
+      'TASK_ACT_JSON {"actions":[{"type":"fact","field":"contactPerson|designation|phone|email|website|address|city","value":"..."} | {"type":"note","text":"a dated note for the company activity trail"} | {"type":"file","fileName":"e.g. Stakeholder-Notes-' + todayStr() + '.txt","content":"the document text, complete"}]}',
+      "fact = updates the company record (the person can edit it later on the Overview). note = the activity trail. file = creates the document in the client's Drive folder. Never emit the line when nothing was collected; never show its contents in prose.",
       "Answer from what you are given. If you genuinely do not know, say so and say what would settle it — never invent a file, a figure or a commitment.",
     ].filter(Boolean).join("\n");
 
     try {
       const convo = next.slice(-12).map((m) => ({ role: m.role, content: m.content }));
       const { reply, notes } = await askWithDrive(system, convo);
-      const shown = stripToolLines(reply);
+      const acts = extractMarkedJSON(reply, "TASK_ACT_JSON");
+      const done = await runActs(acts && acts.actions);
+      const shown = stripToolLines(String(reply).replace(/TASK_ACT_JSON[\s\S]*$/, "")).trim()
+        + (done.length ? "\n\n" + done.join("\n") : "");
       persist([...next, { role: "assistant", content: shown, at: nowTS() }]);
       if (t.companyId) logClientChat(t.assignee, t.companyId, "task: " + String(t.title).slice(0, 40),
-        [{ role: "user", content: q }, { role: "assistant", content: shown }]);
+        [{ role: "user", content: display, atts: sentAtts }, { role: "assistant", content: shown }]);
       if (notes.length) setNote(notes.join(" · "));
     } catch (e) {
       persist([...next, { role: "assistant", content: "Could not reach the assistant. Your message is kept — try again.", at: nowTS() }]);
@@ -7005,30 +7112,64 @@ function TaskChat({ task: t, comp, data, saveTasks }) {
       <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-2">
         <Bot size={13} className="text-blue-600" />
         <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mr-auto">Talk it through</span>
-        {msgs.length > 0 && (
+        {t.companyId && <input type="date" value={histDate} onChange={(e) => setHistDate(e.target.value)} max={todayStr()}
+          className="text-[10px] border border-slate-200 rounded px-1 py-0.5 text-slate-500 bg-white" title="Read a previous day's chat" />}
+        {msgs.length > 0 && !histDate && (
           <button onClick={() => persist([])} className="text-[11px] text-slate-400 hover:text-red-500">clear</button>
         )}
       </div>
+      {histDate && (
+        <div className="px-3 py-1 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+          <span className="text-[10.5px] text-amber-800 mr-auto">log · {fmtDate(histDate)}</span>
+          <button onClick={() => setHistDate("")} className="text-[10.5px] text-blue-600 hover:underline">back to live →</button>
+        </div>
+      )}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-2" style={{ maxHeight: 260 }}>
-        {msgs.length === 0 && (
-          <p className="text-[11.5px] text-slate-400">
-            It knows this task, the account, the deal and what the stage has to produce — and it can look in {comp ? "their" : "the"} Drive folder. Ask what to do next, what the gate will want, or what is already filed.
-          </p>
-        )}
-        {msgs.map((m, i) => (
-          <div key={i} className={cls("text-[12.5px] leading-relaxed", m.role === "user" ? "text-slate-800" : "text-slate-600")}>
-            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mr-1.5">{m.role === "user" ? "you" : "ai"}</span>
-            <span className="whitespace-pre-wrap">{m.content}</span>
-          </div>
-        ))}
-        {busy && <p className="text-[11.5px] text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> thinking…</p>}
-        {note && !busy && <p className="text-[10.5px] text-slate-400 italic">{note}</p>}
+        {histDate ? (<>
+          {hist === null && <p className="text-[11.5px] text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> opening the log…</p>}
+          {hist && !hist.length && <p className="text-[11.5px] text-slate-400">Nothing logged for {fmtDate(histDate)}.</p>}
+          {(hist || []).map((m, i) => (
+            <div key={i} className={cls("text-[12.5px] leading-relaxed", m.role === "user" ? "text-slate-800" : "text-slate-600")}>
+              {m.kind && <span className="text-[9px] font-bold uppercase tracking-wide text-purple-500 mr-1.5">{m.kind}</span>}
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mr-1.5">{m.role === "user" ? "you" : "ai"}</span>
+              <span className="whitespace-pre-wrap">{typeof m.content === "string" ? m.content : "📎"}</span>
+              {(m.images || []).length > 0 && <span className="flex gap-1.5 mt-1 flex-wrap">
+                {m.images.slice(0, 4).map((src, k) => <a key={k} href={src} target="_blank" rel="noreferrer"><img src={src} alt="attachment" className="h-16 rounded border border-slate-200 object-cover" /></a>)}
+              </span>}
+            </div>
+          ))}
+        </>) : (<>
+          {msgs.length === 0 && (
+            <p className="text-[11.5px] text-slate-400">
+              It knows this task, the account, the deal and what the stage has to produce — and it can look in {comp ? "their" : "the"} Drive folder. Give it what you have (paste a screenshot straight in) — it checks the quality, then files it: the record, the trail, or a document in the client's folder.
+            </p>
+          )}
+          {msgs.map((m, i) => (
+            <div key={i} className={cls("text-[12.5px] leading-relaxed", m.role === "user" ? "text-slate-800" : "text-slate-600")}>
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mr-1.5">{m.role === "user" ? "you" : "ai"}</span>
+              <span className="whitespace-pre-wrap">{m.display || (typeof m.content === "string" ? m.content : "📎")}</span>
+            </div>
+          ))}
+          {busy && <p className="text-[11.5px] text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> thinking…</p>}
+          {note && !busy && <p className="text-[10.5px] text-slate-400 italic">{note}</p>}
+        </>)}
       </div>
-      <div className="border-t border-slate-100 p-2 flex items-center gap-2">
-        <Input value={draft} onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-          placeholder="what should I do next?" className="text-[12.5px]" />
-        <Btn size="sm" kind="primary" disabled={busy || !draft.trim()} onClick={send}><Send size={12} /></Btn>
+      <div className="border-t border-slate-100 p-2">
+        {atts.length > 0 && (
+          <p className="text-[10.5px] text-slate-500 mb-1">{atts.map((a, i) => (
+            <span key={i} className="inline-flex items-center gap-1 mr-2.5">📎 {a._name}
+              <button onClick={() => setAtts(atts.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500"><X size={10} /></button></span>
+          ))}</p>
+        )}
+        <div className="flex items-center gap-1.5">
+          <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files || []); e.target.value = ""; }} />
+          <button title="Attach a file or image" onClick={() => fileRef.current && fileRef.current.click()}
+            className="text-slate-400 hover:text-blue-600 p-1 flex-none"><Paperclip size={14} /></button>
+          <Input value={draft} onChange={(e) => setDraft(e.target.value)} onPaste={onPaste}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            placeholder="what should I do next? (paste an image straight in)" className="text-[12.5px]" />
+          <Btn size="sm" kind="primary" disabled={busy || (!draft.trim() && !atts.length)} onClick={send}><Send size={12} /></Btn>
+        </div>
       </div>
     </div>
   );
@@ -7063,7 +7204,7 @@ function DealPosition({ data, companyId }) {
   );
 }
 
-function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
+function WorkWindow({ task: t, data, saveTasks, saveCompanies, onClose, onComplete }) {
   const { users, companies, tasks } = data;
   const comp = companies.find((c) => c.id === t.companyId);
   const who = users.find((u) => u.id === t.assignee);
@@ -7097,7 +7238,7 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
           <DealPosition data={data} companyId={t.companyId} />
         </div>
         <div className="space-y-3">
-          <TaskChat task={t} comp={comp} data={data} saveTasks={saveTasks} />
+          <TaskChat task={t} comp={comp} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies} />
         </div>
       </div>
     </Modal>
@@ -7108,7 +7249,7 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
    the left (free-flowing — it files next steps, marks activities, raises
    tasks), and the live task list on the right, where anything can also be
    finished by plain clicking. Same data, two doors. */
-function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, openCompany }) {
+function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies, openCompany }) {
   const { users, companies, tasks } = data;
   const [scope, setScope] = useState("mine");
   const [showDone, setShowDone] = useState(false);
@@ -7291,9 +7432,9 @@ function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, openCompany }
           ))}
         </div>
       )}
-      {working && !closing && <WorkWindow task={tasks.find((x) => x.id === working.id) || working} data={data} saveTasks={saveTasks}
+      {working && !closing && <WorkWindow task={tasks.find((x) => x.id === working.id) || working} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies}
         onClose={() => setWorking(null)} onComplete={() => { const t = tasks.find((x) => x.id === working.id) || working; setWorking(null); setClosing(t); }} />}
-      {closing && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closing.id) || closing} onClose={() => setClosing(null)} saveTasks={saveTasks} />}
+      {closing && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closing.id) || closing} onClose={() => setClosing(null)} saveTasks={saveTasks} saveCompanies={saveCompanies} />}
       {adding && (
         <Modal title="New task" onClose={() => setAdding(false)}
           footer={<><Btn onClick={() => setAdding(false)}>Cancel</Btn><Btn kind="primary" disabled={!f.title.trim()} onClick={add}><Check size={14} /> Add</Btn></>}>
@@ -7372,6 +7513,17 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
     fetch("/api/fireflies?action=status").then((r) => r.json()).then((j) => a && setFfOn(!!j.connected)).catch(() => {});
     return () => { a = false; };
   }, []);
+  // The date option: read a previous day's check-in, read-only.
+  const [histDate, setHistDate] = useState("");
+  const [histSess, setHistSess] = useState(null);
+  useEffect(() => {
+    if (!histDate || histDate === today) { setHistSess(null); if (histDate === today) setHistDate(""); return; }
+    let a = true;
+    loadScrumSessions(histDate).then((list) => {
+      if (a) setHistSess(list.find((x) => x.personId === me.id && x.date === histDate) || { messages: [] });
+    }).catch(() => a && setHistSess({ messages: [] }));
+    return () => { a = false; };
+  }, [histDate]);
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [session, busy]);
 
   // ── the book the Scrum Master reads from ──
@@ -7452,7 +7604,7 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
   };
 
   const start = () => { const sess = persist({}); converse(sess, null); };
-  const send = () => { const t = input.trim(); if (!t || busy || !session) return; setInput(""); converse(session, t); };
+  const send = () => { const t = input.trim(); if (!t || busy || !session || histDate) return; setInput(""); converse(session, t); };
 
   const fileTranscript = (text) => {
     const clean = String(text || "").trim();
@@ -7508,9 +7660,29 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
           <p className="text-sm font-semibold text-slate-800 leading-tight">Scrum Master</p>
           <p className="text-[11px] text-slate-400 leading-tight truncate">Talk it through — steps and tasks land on the right.</p>
         </div>
+        <input type="date" value={histDate} onChange={(e) => setHistDate(e.target.value)} max={todayStr()}
+          className="text-[10px] border border-slate-200 rounded px-1 py-0.5 text-slate-500 bg-white flex-none" title="Read a previous day's check-in" />
         {session && session.scrumNoteId && <Chip color="green">scrum proven</Chip>}
         {session && session.teamScrum === "no" && <Chip color="red">no team scrum</Chip>}
       </div>
+      {histDate && (
+        <div className="px-4 py-1.5 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+          <span className="text-[11px] text-amber-800 mr-auto">Check-in from {fmtDate(histDate)}</span>
+          <button onClick={() => setHistDate("")} className="text-[11px] text-blue-600 hover:underline">back to today →</button>
+        </div>
+      )}
+      {histDate ? (
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+          {histSess === null && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> opening…</p>}
+          {histSess && !(histSess.messages || []).length && <p className="text-sm text-slate-400">No check-in on {fmtDate(histDate)}.</p>}
+          {histSess && (histSess.messages || []).map((m, i) => (
+            <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cls("max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed",
+                m.role === "user" ? "bg-blue-600/80 text-white rounded-br-md" : "bg-slate-100 text-slate-700 rounded-bl-md")}>{m.content}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
         <div ref={bodyRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
           {session === undefined && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading…</p>}
           {session === null && (
@@ -7531,6 +7703,7 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
           ))}
           {busy && <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> thinking…</p>}
         </div>
+      )}
 
         {trOpen && session && (
           <div className="border-t border-slate-100 p-3 space-y-2 bg-slate-50">
