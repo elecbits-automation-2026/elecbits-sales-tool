@@ -928,6 +928,13 @@ export async function loadClientLog(orgId: string): Promise<any[]> {
   return (data || []).map((r: any) => ({ personId: r.person_id, date: r.on_date, messages: r.messages || [] }));
 }
 
+// The same log across EVERY client — for the sidebar Work Chat Logs view.
+export async function loadAllClientLogs(): Promise<any[]> {
+  const { data } = await tbl(supabase, "chats").select("person_id,on_date,org_id,messages")
+    .not("org_id", "is", null).order("on_date", { ascending: false }).limit(80);
+  return (data || []).map((r: any) => ({ personId: r.person_id, date: r.on_date, orgId: r.org_id, messages: r.messages || [] }));
+}
+
 export async function saveChat(personId: string, date: string, messages: any[], orgId?: string | null): Promise<boolean> {
   const { data } = await chatScope(tbl(supabase, "chats").select("id"), personId, date, orgId).maybeSingle();
   if (data?.id) {
