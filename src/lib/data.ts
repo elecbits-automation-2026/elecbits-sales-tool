@@ -113,6 +113,13 @@ export async function loadWorkspace() {
   rosterIds = users.map((u: any) => u.id);
   const rosterSet = new Set(rosterIds);
 
+  // Everyone who actually exists in core.people — the UI offers the ones
+  // not yet on the sales roster for one-click adoption.
+  const corePeople = people.map((p: any) => ({
+    id: p.id, name: p.name || "", email: (p.email || "").toLowerCase(),
+    onRoster: rosterSet.has(p.id),
+  }));
+
   // companies — orgs that carry a sales.org_detail row are "sales companies";
   // orgs the PMS knows but sales has not touched stay out of the list.
   const actByOrg = new Map<string, any[]>();
@@ -303,7 +310,7 @@ export async function loadWorkspace() {
     worklogs: worklogsOut, knowledge: knowledgeOut, expenses: expensesOut,
     scrums: scrumsOut, memory: memoryOut, gates: gatesOut,
     tasks: tasksOut, llds: lldsOut, questionSets: qsetsOut, requests: requestsOut,
-    rfq: rfqOut,
+    rfq: rfqOut, corePeople,
   };
 }
 

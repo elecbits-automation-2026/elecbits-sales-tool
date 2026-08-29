@@ -607,6 +607,7 @@ export default function App() {
   const [questionSets, setQuestionSets] = useState({});
   const [requests, setRequests] = useState([]);
   const [rfq, setRfq] = useState([]);
+  const [corePeople, setCorePeople] = useState([]);
 
   // Theme: default light; persisted per browser and applied to <html>.
   const [theme, setTheme] = useState(() => {
@@ -663,6 +664,7 @@ export default function App() {
         setTasks(ws.tasks || []); setLlds(ws.llds || []);
         setQuestionSets(ws.questionSets || {}); setRequests(ws.requests || []);
         setRfq(ws.rfq || []);
+        setCorePeople(ws.corePeople || []);
         setMemoryText(memoryTextFrom(ws.memory || []));
       } catch (e) { console.error("loadWorkspace failed", e); }
       if (alive) setLoading(false);
@@ -692,7 +694,7 @@ export default function App() {
   };
 
   const me = (authEmail && users.find((u) => (u.email || "").toLowerCase() === authEmail && u.active !== false)) || null;
-  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests, rfq, setRfq };
+  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests, rfq, setRfq, corePeople };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
@@ -6896,13 +6898,15 @@ function ScrumMasterView({ me, data, saveScrums, saveTasks, saveDeals }) {
 }
 
 function ResourcesView({ me, data, saveUsers, openCompany }) {
-  const { users, companies, deals, tasks } = data;
+  const { users, companies, deals, tasks, corePeople } = data;
   const isAdmin = me.role === "admin" || me.role === "dept_head";
   const [q, setQ] = useState("");
   const [roleF, setRoleF] = useState("all");
   const [editing, setEditing] = useState(null); // "new" | user object
   const [f, setF] = useState({ name: "", email: "", role: "agent", active: true });
   const [err, setErr] = useState("");
+  const [adopted, setAdopted] = useState({});   // core ids just added, hidden from the offer list
+  const setCorePeopleAdopted = (id) => setAdopted((a) => ({ ...a, [id]: true }));
 
   const roleChip = (r) => r === "admin" ? "purple" : r === "dept_head" ? "blue" : r === "finance" ? "amber" : "green";
 
@@ -6963,7 +6967,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
         </div>
         <Sel className="w-40" value={roleF} onChange={(e) => setRoleF(e.target.value)}>
           <option value="all">All roles</option>
-          {ROLES.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+          {ROLES.filter(({ key }) => key !== "finance").map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
         </Sel>
         <span className="text-xs text-slate-400 font-mono ml-auto">{roster.length} resource{roster.length === 1 ? "" : "s"}</span>
         {isAdmin && <Btn kind="primary" onClick={openNew}><Plus size={14} /> Add resource</Btn>}
@@ -7025,6 +7029,27 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
           </table>
         </div>
       </div>
+      {/* people who exist in core but are not on the sales roster yet */}
+      {isAdmin && (corePeople || []).some((p) => !p.onRoster && !adopted[p.id] && !users.some((u) => u.id === p.id)) && (
+        <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
+          <SectionTitle right={<span className="text-xs text-slate-400 font-mono">core.people</span>}>Exists in core, not on the sales roster</SectionTitle>
+          <div className="space-y-1.5">
+            {(corePeople || []).filter((p) => !p.onRoster && !adopted[p.id] && !users.some((u) => u.id === p.id)).map((p) => (
+              <div key={p.id} className="flex items-center gap-2.5 border border-slate-200 rounded-md px-3 py-2 text-sm">
+                <Avatar name={p.name || "?"} size="sm" />
+                <span className="font-medium text-slate-800">{p.name || "(unnamed)"}</span>
+                <span className="font-mono text-xs text-slate-400 mr-auto">{p.email || "no email"}</span>
+                <Btn size="sm" kind="primary" onClick={() => {
+                  saveUsers([...users, { id: p.id, name: p.name || p.email.split("@")[0], email: p.email, role: "agent", dept: "Sales", active: true }]);
+                  setCorePeopleAdopted(p.id);
+                }}><Plus size={12} /> Add to sales</Btn>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">Adding links the SAME person — no duplicate is created; they keep their identity across every Elecbits tool.</p>
+        </div>
+      )}
+
       <p className="text-[11px] text-slate-400 mt-2">Removing takes a person off the SALES roster only — their shared core record and everything they did stays. Login provisioning and revocation live in Admin → Users.</p>
 
       {editing && (
@@ -7039,7 +7064,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
             <Field label="Email (their sign-in)" req><Input value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="name@elecbits.in" /></Field>
             <Field label="Role" req>
               <Sel value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
-                {ROLES.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+                {ROLES.filter(({ key }) => key !== "finance").map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
               </Sel>
             </Field>
             {editing !== "new" && (
