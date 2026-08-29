@@ -1831,6 +1831,17 @@ function ResearchCard({ me, company: c, data, saveCompanies }) {
 }
 
 /* ── DEALS TAB — what exactly is happening with this client, deal by deal ── */
+/* ONE rule for EVERY task generator — copilot, Scrum Master, stage kickoff,
+   step button, assistant: never file a near-duplicate of a task already open
+   on the same company. Generation behaves the same everywhere. */
+const normTitle = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+function openTaskDupe(tasks, companyId, title) {
+  const want = normTitle(title);
+  if (!want) return true;
+  return (tasks || []).some((t) => t.status !== "done" && (t.companyId || "") === (companyId || "")
+    && (normTitle(t.title) === want || normTitle(t.title).includes(want) || want.includes(normTitle(t.title))));
+}
+
 /* Every AI conversation about a client lands in ONE work chat log — per
    person, per client, per date (sales.chats). Entries append; nothing is
    clobbered. Attachments log by name, the words stay verbatim. */
@@ -2061,7 +2072,8 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
             saveDeals(moved.map((x) => (x.id === d.id
               ? { ...x, nextStep: String(v.next_step.what), nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" } : x)));
           }
-          const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title).slice(0, 4);
+          const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title)
+            .filter((t) => !openTaskDupe(data.tasks, d.companyId, t.title)).slice(0, 4);
           if (list.length) saveTasks([...list.map((t) => ({
             id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
             title: String(t.title), details: "Raised when the deal reached " + move.to + ".", due: t.due || "",
@@ -2235,10 +2247,14 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
           if (hit) done.push("✓ task done: " + hit);
         }
         if (a.type === "task" && a.title) {
-          nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
-            title: a.title, details: "From the Deal Room", due: a.due || todayStr(), status: "open", source: "chat",
-            createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
-          done.push("✓ task: " + a.title);
+          if (openTaskDupe(nextTasks, d.companyId, a.title)) {
+            done.push("· already open, not duplicated: " + a.title);
+          } else {
+            nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
+              title: a.title, details: "From the Deal Room", due: a.due || todayStr(), status: "open", source: "chat",
+              createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
+            done.push("✓ task: " + a.title);
+          }
         }
         if (a.type === "fact" && comp && saveCompanies && a.value != null && String(a.value).trim()) {
           const FIELDS = { contactPerson: "contact person", designation: "designation", phone: "phone", email: "email" };
@@ -2602,7 +2618,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     ? tasks.find((t) => t.dealId === d.id && t.source === "step" && t.title === d.nextStep)
     : null;
   const genStepTask = () => {
-    if (!d.nextStep || stepTask) return;
+    if (!d.nextStep || stepTask || openTaskDupe(tasks, d.companyId, d.nextStep)) return;
     saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id,
       assignee: d.nextStepOwner || d.ownerId || me.id, author: me.id, title: d.nextStep,
       details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
@@ -4823,7 +4839,8 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
             if (a.type === "task" && a.title) {
               const comp = byName(a.company, nextCompanies) || matchCompany(a.title, nextCompanies);
               const who = byName(a.assignee, users) || me;
-              nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: "", assignee: who.id, author: me.id, title: a.title, details: "Via Assistant", due: a.due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
+              if (!openTaskDupe(nextTasks, comp ? comp.id : "", a.title))
+                nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: "", assignee: who.id, author: me.id, title: a.title, details: "Via Assistant", due: a.due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
               results.push("✓ task: " + a.title + (who ? " → " + who.name : ""));
             } else if (a.type === "company" && a.name && !byName(a.name, nextCompanies)) {
               nextCompanies = [{ id: uid(), cid: nextSeq(nextCompanies, "cid", "EB-C-"), name: a.name, contactPerson: a.contact || "", designation: "", phone: "", email: "", city: a.city || "", industry: a.industry || "", whatTheyDo: "", source: "Assistant", potential: 0, website: "", address: "", accountOwner: me.id, createdBy: me.id, createdAt: nowTS(), custom: [], activity: [{ at: nowTS(), by: me.id, text: "Company created via Assistant." }] }, ...nextCompanies];
@@ -5240,6 +5257,7 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
     saveCompanies(next);
   };
   const addTask = (title, due) => {
+    if (openTaskDupe(tasks, c.id, title)) return;
     saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title, details: "", due: due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
   };
 
@@ -7575,7 +7593,7 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
             return x;
           });
         }
-        if (a.type === "task" && a.title) {
+        if (a.type === "task" && a.title && !openTaskDupe(nextTasks, comp ? comp.id : "", a.title)) {
           nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: deal ? deal.id : "", assignee: me.id, author: me.id,
             title: a.title, details: "From the Scrum Master check-in", due: a.due || today, status: "open", source: "scrum",
             createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "", scrumNoteId: sess.scrumNoteId || "" }, ...nextTasks];
