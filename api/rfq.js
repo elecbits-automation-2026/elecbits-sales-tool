@@ -72,6 +72,14 @@ export default async function handler(req, res) {
       if (link.status === "closed") return res.status(409).json({ error: "This link was closed." });
       // Bound the payload; the client's browser is untrusted input.
       const clean = JSON.parse(JSON.stringify(response).slice(0, 40000));
+      if (b.partial) {
+        // Mid-form progress: saved as they type, so the salesperson sees how
+        // much is filled. Never downgrades a submitted link.
+        if (link.status !== "submitted") {
+          await pg("rfq_links?id=eq." + id, { method: "PATCH", body: JSON.stringify({ response: clean }) });
+        }
+        return res.status(200).json({ ok: true });
+      }
       await pg("rfq_links?id=eq." + id, {
         method: "PATCH",
         body: JSON.stringify({ response: clean, status: "submitted", submitted_at: new Date().toISOString() }),
