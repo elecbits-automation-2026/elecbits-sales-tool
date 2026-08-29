@@ -1682,44 +1682,6 @@ function rfqBadgeFor(d, rfq) {
     : l.status === "created" ? { label: "RFQ link sent", color: "purple", link: l } : null;
 }
 
-/* Moving a deal between phases is a human call, and it is recorded with the
-   client behaviour that justifies it — the same ledger the AI writes to. */
-/* Manually move a deal's temperature, with a written reason.
-
-   CURRENTLY UNREFERENCED. It was the drag-and-drop handler for the four-phase
-   board (cold → warm → rfq → hot); that board was reverted to the ten stages,
-   so nothing opens this any more.
-
-   Kept, not deleted, because temperature itself is still live — the AI judge
-   sets it from the conversation, and sending an RFQ link sets it to `rfq`. If
-   someone wants a human override again, this is the modal: give it a trigger
-   and pass {deal, to}. */
-function TempMoveModal({ me, move, deals, saveDeals, onClose }) {
-  const [why, setWhy] = useState("");
-  const d = move.deal;
-  const apply = () => {
-    setTemperature(d.id, { from: d.temperature || "cold", to: move.to, why: why.trim(), decided: "human", by: me.id });
-    saveDeals(deals.map((x) => (x.id === d.id
-      ? { ...x, temperature: move.to, temperatureAt: nowTS(), temperatureWhy: why.trim(), updatedAt: nowTS(),
-          tempHistory: [...(x.tempHistory || []), { from: d.temperature || "cold", to: move.to, why: why.trim(), decided: "human", at: nowTS() }] }
-      : x)));
-    onClose();
-  };
-  return (
-    <Modal title={"Move to " + move.to.toUpperCase()} onClose={onClose}
-      footer={<>
-        <Btn onClick={onClose}>Cancel</Btn>
-        <Btn kind="primary" disabled={why.trim().length < 8} onClick={apply}><Check size={14} /> Move it</Btn>
-      </>}>
-      <p className="text-sm text-slate-700 mb-2">{move.deal.did} → <Chip color={tempColor(move.to)}>{move.to}</Chip></p>
-      <Field label="What did the client say or do that makes this " req hint="The phase is judged from client behaviour, not our effort — this line goes on the deal's record.">
-        <TA value={why} onChange={(e) => setWhy(e.target.value)} className="min-h-16"
-          placeholder={move.to === "hot" ? "e.g. They asked for final pricing and delivery schedule on the call today" : move.to === "rfq" ? "e.g. RFQ link sent to Rahul after the plant visit" : "what happened"} />
-      </Field>
-    </Modal>
-  );
-}
-
 /* Closed Won: the PO is the proof — capture its reference and the deal
    settles into the won column, stamped on the record. */
 function WonModal({ me, deal: d, deals, saveDeals, companies, saveCompanies, onClose }) {
@@ -1883,15 +1845,22 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
   const { companies } = data;
   const d = move.deal;
   const comp = companies.find((x) => x.id === d.companyId) || { name: "?" };
+  const target = PHASES.find(([k]) => k === move.to) || [move.to, move.to, ""];
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [ready, setReady] = useState(null);   // PHASE_JSON when the gate is satisfied
+  const [skip, setSkip] = useState(false);
   const [manual, setManual] = useState("");
   const bodyRef = useRef(null);
   const kicked = useRef(false);
 
-  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy, ready]);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   useEffect(() => {
     if (kicked.current) return;
     kicked.current = true;
@@ -1901,7 +1870,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
         const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to),
           [{ role: "user", content: "I want to move this deal to " + move.to + ". Start the gate." }]);
         setMsgs([{ role: "assistant", content: stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim() + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") }]);
-      } catch (e) { setMsgs([{ role: "assistant", content: "Couldn't reach the AI — use the manual line below and move it." }]); }
+      } catch (e) { setMsgs([{ role: "assistant", content: "Couldn't reach the AI — use “skip the chat” below and move it with a line." }]); }
       setBusy(false);
     })();
   }, []);
@@ -1920,7 +1889,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
       const shown = stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim();
       setMsgs([...next, { role: "assistant", content: (shown || "Good — that clears it.") + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") }]);
       if (v && v.summary) setReady(v);
-    } catch (e) { setMsgs([...next, { role: "assistant", content: "Lost the AI mid-chat — answer below or use the manual line." }]); }
+    } catch (e) { setMsgs([...next, { role: "assistant", content: "Lost the AI mid-chat — try again, or skip the chat below." }]); }
     setBusy(false);
   };
 
@@ -1934,38 +1903,79 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
   };
 
   return (
-    <Modal title={comp.name + " → " + move.to.toUpperCase()} onClose={onClose} wide
-      footer={<>
-        <div className="flex items-center gap-2 mr-auto">
-          <Input className="w-64 text-xs" value={manual} onChange={(e) => setManual(e.target.value)} placeholder="or type the reason and skip the chat" />
-          <Btn size="sm" disabled={manual.trim().length < 8} onClick={() => apply(manual.trim(), "")}>Move it</Btn>
-        </div>
-        <Btn onClick={onClose}>Cancel</Btn>
-        <Btn kind="primary" disabled={!ready} onClick={() => apply(ready.summary, ready.share)}>
-          <Check size={14} /> {ready ? "Confirm the move" : "Answer the gate first"}
-        </Btn>
-      </>}>
-      <div ref={bodyRef} className="max-h-[46vh] min-h-56 overflow-y-auto space-y-3 pr-1">
-        {msgs.map((m, i) => (
-          <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-            <div className={cls("max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed",
-              m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.content}</div>
+    <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-3 md:p-6" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden"
+        style={{ height: "min(85vh, 46rem)" }} onClick={(e) => e.stopPropagation()}>
+
+        {/* header: who, and which move */}
+        <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50/60">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <span className="font-bold text-slate-900">{comp.name}</span>
+            <span className="font-mono text-xs text-slate-400">{d.did}</span>
+            <span className="flex items-center gap-1.5 ml-1">
+              <Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip>
+              <ArrowRight size={13} className="text-slate-400" />
+              <Chip color={tempColor(move.to)}>{move.to.toUpperCase()}</Chip>
+            </span>
+            <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-700 p-1"><X size={17} /></button>
           </div>
-        ))}
-        {busy && <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> reading the collateral…</p>}
-        {ready && <p className="text-xs text-green-700 flex items-center gap-1.5"><CheckCircle2 size={13} /> Gate satisfied: {ready.summary}{ready.share ? " · send: " + ready.share : ""}</p>}
+          <p className="text-[11px] text-slate-500 mt-1">{target[2]} The gate checks the collateral in Drive and asks what earned this move.</p>
+        </div>
+
+        {/* the conversation */}
+        <div ref={bodyRef} className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3">
+          {msgs.map((m, i) => (
+            <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cls("max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed",
+                m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.content}</div>
+            </div>
+          ))}
+          {busy && <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> reading the collateral…</p>}
+        </div>
+
+        {/* gate verdict */}
+        {ready && (
+          <div className="mx-5 mb-2 border border-green-300 bg-green-50 rounded-lg px-3.5 py-2.5">
+            <p className="text-xs font-semibold text-green-800 flex items-center gap-1.5"><CheckCircle2 size={13} /> Gate satisfied</p>
+            <p className="text-xs text-green-900 mt-0.5">{ready.summary}</p>
+            {ready.share && <p className="text-[11px] text-green-700 mt-0.5">send next: {ready.share}</p>}
+          </div>
+        )}
+
+        {/* answer */}
+        <div className="px-5 pb-3">
+          <div className="flex items-center gap-2">
+            <Input value={input} onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+              placeholder="Answer the gate…" />
+            <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={14} /></Btn>
+          </div>
+        </div>
+
+        {/* decide */}
+        <div className="px-5 py-3 border-t border-slate-200 bg-slate-50/60 flex items-center gap-2">
+          {skip ? (
+            <div className="flex items-center gap-2 mr-auto">
+              <Input className="w-72 text-xs" autoFocus value={manual} onChange={(e) => setManual(e.target.value)}
+                placeholder="the reason, in one line (min 8 chars)" />
+              <Btn size="sm" disabled={manual.trim().length < 8} onClick={() => apply(manual.trim(), "")}>Move it</Btn>
+            </div>
+          ) : (
+            <button onClick={() => setSkip(true)} className="text-xs text-slate-400 hover:text-slate-600 mr-auto">skip the chat →</button>
+          )}
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" disabled={!ready} onClick={() => apply(ready.summary, ready.share)}>
+            <Check size={14} /> Confirm the move
+          </Btn>
+        </div>
       </div>
-      <div className="flex items-center gap-2 mt-3 border-t border-slate-100 pt-3">
-        <Input value={input} onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-          placeholder="Answer the gate…" />
-        <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={14} /></Btn>
-      </div>
-    </Modal>
+    </div>
   );
 }
 
-/* ── THE DEAL ROOM — "what is going on with this deal, nothing else" ────── */
+/* ── THE DEAL ROOM — a full-screen sheet, not a cramped modal. One header,
+   three answer cards (phase / commitment / RFQ), the three-stage route with
+   its activities, and the trail. Everything contained, nothing bleeding. ── */
 function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openCompany }) {
   const { users, companies, deals, tasks } = data;
   const d = deals.find((x) => x.id === dealId);
@@ -1976,7 +1986,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const [busyTemp, setBusyTemp] = useState(false);
   const [busyPlan, setBusyPlan] = useState(false);
   const [err, setErr] = useState("");
-  // the commitment editor
   const [editStep, setEditStep] = useState(false);
   const [stepWhat, setStepWhat] = useState("");
   const [stepDue, setStepDue] = useState("");
@@ -1988,11 +1997,18 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
     loadCommitments(comp.id).then((x) => a && setCommits(x)).catch(() => {});
     return () => { a = false; };
   }, [comp && comp.id]);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
   const vel = tempVelocity(d);
   const ns = nextStepState(d);
+  const ph = d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
+  const rfqB = rfqBadgeFor(d, data.rfq);
 
   const reassess = async () => {
     setBusyTemp(true); setErr("");
@@ -2020,16 +2036,14 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
         dealEvidence(d, comp, tasks, touches, commits)),
         [{ role: "user", content: "Lay out the stage plan." }], { maxTokens: 1200 }), 25000);
       const v = extractMarkedJSON(reply, "PLAN_STAGES_JSON");
-      const list = v && Array.isArray(v.stages) ? v.stages.filter((s) => s.name) : null;
+      const list = v && Array.isArray(v.stages) ? v.stages.filter((x) => x.name) : null;
       if (!list || !list.length) throw new Error("no stages");
-      // Human-touched rows survive: done/active/blocked rows stay, the AI
-      // replaces only what is still pending.
-      const keep = (d.plan || []).filter((s) => s.status !== "pending");
-      const keepNames = new Set(keep.map((s) => s.name.toLowerCase()));
-      const fresh = list.filter((s) => !keepNames.has(String(s.name).toLowerCase()))
-        .map((s) => ({ name: String(s.name), status: ["done", "active"].includes(s.status) && !keep.length ? s.status : "pending",
-          start: "", end: s.end || "", ownerId: d.ownerId, note: "",
-          evidence: (Array.isArray(s.activities) ? s.activities : []).slice(0, 6).map((a) => ({ text: String(a), done: false })) }));
+      const keep = (d.plan || []).filter((x) => x.status !== "pending");
+      const keepNames = new Set(keep.map((x) => x.name.toLowerCase()));
+      const fresh = list.filter((x) => !keepNames.has(String(x.name).toLowerCase()))
+        .map((x) => ({ name: String(x.name), status: ["done", "active"].includes(x.status) && !keep.length ? x.status : "pending",
+          start: "", end: x.end || "", ownerId: d.ownerId, note: "",
+          evidence: (Array.isArray(x.activities) ? x.activities : []).slice(0, 6).map((a) => ({ text: String(a), done: false })) }));
       const plan = [...keep, ...fresh].slice(0, 3);
       const entry = { at: nowTS(), by: (me && me.name) || "", why: keep.length ? "Re-planned the pending stages" : "Built the stage plan", what: plan.length + " stages" };
       saveDealPlan(d.id, plan, { summary: v.summary || "", log: [entry, ...(d.planLog || [])] });
@@ -2040,17 +2054,14 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
 
   const cycleStage = (i) => {
     const order = ["pending", "active", "done", "blocked"];
-    const plan = (d.plan || []).map((s, j) => (j === i ? { ...s, status: order[(order.indexOf(s.status) + 1) % order.length] } : s));
-    saveDealPlan(d.id, plan);
-    patchDeal({ plan });
+    const plan = (d.plan || []).map((x, j) => (j === i ? { ...x, status: order[(order.indexOf(x.status) + 1) % order.length] } : x));
+    saveDealPlan(d.id, plan); patchDeal({ plan });
   };
   const toggleActivity = (i, j) => {
-    const plan = (d.plan || []).map((s, k) => (k === i
-      ? { ...s, evidence: (s.evidence || []).map((a, m) => (m === j ? { ...a, done: !a.done } : a)) } : s));
-    saveDealPlan(d.id, plan);
-    patchDeal({ plan });
+    const plan = (d.plan || []).map((x, k) => (k === i
+      ? { ...x, evidence: (x.evidence || []).map((a, m) => (m === j ? { ...a, done: !a.done } : a)) } : x));
+    saveDealPlan(d.id, plan); patchDeal({ plan });
   };
-
   const commitStep = () => {
     if (!stepWhat.trim()) return;
     saveNextStep(d.id, { what: stepWhat.trim(), due: stepDue || "", owner: d.ownerId });
@@ -2060,103 +2071,170 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const stepDone = () => {
     saveNextStep(d.id, { what: d.nextStep, due: d.nextStepDue, owner: d.nextStepOwner, doneAt: nowTS() });
     patchDeal({ nextStepDoneAt: nowTS() });
-    setEditStep(true); // a deal should never sit without a commitment
+    setEditStep(true);
   };
 
+  const doneN = (d.plan || []).filter((x) => x.status === "done").length;
+  const trail = [
+    ...(d.tempHistory || []).map((m) => ({ at: m.at, text: (m.from || "start") + " → " + m.to + (m.why ? " — " + m.why : ""), kind: m.decided === "ai" ? "ai" : "human" })),
+    ...(d.history || []).slice(-3).map((h) => ({ at: h.at, text: (h.summary || (stageName(h.to) + " reached")), kind: "stage" })),
+  ].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 6);
+
   return (
-    <Modal title={(comp ? comp.name : "Deal") + " · " + d.did} onClose={onClose} wide
-      footer={<Btn onClick={onClose}>Close</Btn>}>
-      <div className="flex items-center gap-2 flex-wrap -mt-1 mb-4 text-xs text-slate-500">
-        <Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip>
-        <span className="font-mono tabular-nums text-slate-800 text-sm">{fmtINRc(d.value)}</span>
-        {owner && <span className="flex items-center gap-1"><Avatar name={owner.name} size="sm" /> {owner.name}</span>}
-        {comp && <button onClick={() => { onClose(); openCompany(comp.id); }} className="text-blue-600 hover:underline ml-auto">open the company →</button>}
-      </div>
+    <div className="fixed inset-0 z-50 bg-slate-900/50 overflow-y-auto" onClick={onClose}>
+      <div className="max-w-5xl mx-auto my-4 md:my-8 bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
 
-      <div className="grid md:grid-cols-2 gap-4">
-        <div className="space-y-4">
-          {/* temperature */}
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
-            <div className="flex items-center gap-2">
-              <Lbl className="mr-auto">Temperature</Lbl>
-              <Btn size="sm" disabled={busyTemp} onClick={reassess}>{busyTemp ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Reassess</Btn>
+        {/* header */}
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center gap-3 flex-wrap bg-slate-50/60">
+          <div className="min-w-0 mr-auto">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h2 className="text-lg font-bold text-slate-900 truncate">{comp ? comp.name : "Deal"}</h2>
+              <span className="font-mono text-xs text-slate-400">{d.did}</span>
+              <Chip color={ph === "won" ? "green" : ph === "lost" ? "slate" : tempColor(d.temperature)}>
+                {ph === "won" ? "CLOSED WON" : ph === "lost" ? "CLOSED LOST" : ph.toUpperCase()}
+              </Chip>
             </div>
-            <div className="flex items-center gap-2 mt-2">
-              <Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip>
-              {d.temperatureAt && <span className="text-[11px] text-slate-400">read {fmtDate(d.temperatureAt)}</span>}
-            </div>
-            {d.temperatureWhy && <p className="text-xs text-slate-600 mt-1.5">{d.temperatureWhy}</p>}
-            <p className="text-[11px] text-slate-400 mt-2 font-mono tabular-nums">
-              cold {vel.cold}d → warm {vel.warm}d → rfq {vel.rfq}d → hot {vel.hot}d
+            <p className="text-xs text-slate-400 mt-0.5">
+              <span className="font-mono tabular-nums text-slate-600">{fmtINRc(d.value)}</span>
+              {owner ? " · " + owner.name : ""}{comp && comp.city ? " · " + comp.city : ""}
             </p>
-            <p className="text-[11px] text-slate-400 mt-1">Judged from the record — touches, promises, tasks. Log the conversation in Client Comms and the reading sharpens.</p>
           </div>
-
-          {/* the commitment */}
-          <div className={cls("border rounded-lg p-4",
-            ns.key === "overdue" ? "bg-red-50 border-red-300" : ns.key === "none" ? "bg-amber-50/60 border-amber-300" : "bg-slate-50 border-slate-200")}>
-            <div className="flex items-center gap-2">
-              <Lbl className="mr-auto">Committed next step</Lbl>
-              {ns.key === "committed" && <Btn size="sm" onClick={stepDone}><Check size={12} /> Done</Btn>}
-              <Btn size="sm" onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}>{d.nextStep && !d.nextStepDoneAt ? "Change" : "Commit one"}</Btn>
-            </div>
-            {ns.key === "overdue" && <p className="text-sm font-semibold text-red-700 mt-2 flex items-center gap-1.5"><AlertTriangle size={14} /> OVERDUE — you committed {fmtDate(d.nextStepDue)}{fmtTime(d.nextStepDue) ? " " + fmtTime(d.nextStepDue) : ""}</p>}
-            {ns.key === "none" && <p className="text-sm text-amber-800 mt-2">No committed next step on record — a deal nobody has promised to move is a deal going cold.</p>}
-            {d.nextStep && !d.nextStepDoneAt && (
-              <p className="text-sm text-slate-800 mt-1.5">{d.nextStep}
-                {d.nextStepDue && ns.key !== "overdue" && <span className="text-xs text-slate-500 font-mono ml-2">by {fmtDate(d.nextStepDue)}{fmtTime(d.nextStepDue) ? " " + fmtTime(d.nextStepDue) : ""}</span>}
-              </p>
-            )}
-            {editStep && (
-              <div className="mt-2.5 space-y-2">
-                <Input value={stepWhat} onChange={(e) => setStepWhat(e.target.value)} placeholder="What will happen next — in your own words" />
-                <div className="flex gap-2">
-                  <Input type="datetime-local" className="w-56" value={stepDue} onChange={(e) => setStepDue(e.target.value)} />
-                  <Btn kind="primary" size="sm" disabled={!stepWhat.trim()} onClick={commitStep}><Check size={12} /> Commit</Btn>
-                </div>
-                <p className="text-[11px] text-slate-400">Your date. The tool holds you to it — past due turns the deal red everywhere.</p>
-              </div>
-            )}
-          </div>
+          {comp && <button onClick={() => { onClose(); openCompany(comp.id); }} className="text-xs text-blue-600 hover:underline">open the company →</button>}
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1"><X size={18} /></button>
         </div>
 
-        {/* the deal's own stage plan */}
-        <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
-          <div className="flex items-center gap-2">
-            <Lbl className="mr-auto">This deal's stages</Lbl>
-            <Btn size="sm" disabled={busyPlan} onClick={buildPlan}>{busyPlan ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {(d.plan || []).length ? "Re-plan pending" : "Plan 3 stages"}</Btn>
-          </div>
-          {d.planSummary && <p className="text-xs text-slate-600 mt-1.5">{d.planSummary}</p>}
-          <div className="mt-2.5 space-y-2">
-            {(d.plan || []).map((s, i) => (
-              <div key={s._id || i} className="bg-white border border-slate-200 rounded-md px-2.5 py-2">
-                <div className="flex items-center gap-2">
-                  <button onClick={() => cycleStage(i)} title="Click to advance"
-                    className={cls("w-3 h-3 rounded-full flex-none border",
-                      s.status === "done" ? "bg-green-500 border-green-500" : s.status === "active" ? "bg-blue-500 border-blue-500"
-                      : s.status === "blocked" ? "bg-red-500 border-red-500" : "bg-white border-slate-300")} />
-                  <span className={cls("text-sm font-medium mr-auto", s.status === "done" ? "text-slate-400 line-through" : "text-slate-800")}>{i + 1}. {s.name}</span>
-                  {s.end && <span className="text-[11px] font-mono text-slate-400">{fmtDate(s.end)}</span>}
-                </div>
-                {(s.evidence || []).length > 0 && (
-                  <div className="mt-1.5 ml-5 space-y-0.5">
-                    {s.evidence.map((a, j) => (
-                      <label key={j} className="flex items-start gap-1.5 text-[12.5px] cursor-pointer">
-                        <input type="checkbox" checked={!!a.done} onChange={() => toggleActivity(i, j)} className="mt-0.5" />
-                        <span className={a.done ? "text-slate-400 line-through" : "text-slate-700"}>{a.text}</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
+        <div className="p-6 space-y-5">
+          {/* the three answers */}
+          <div className="grid md:grid-cols-3 gap-4">
+            {/* phase & velocity */}
+            <div className="border border-slate-200 rounded-xl p-4">
+              <div className="flex items-center justify-between">
+                <Lbl>Phase</Lbl>
+                <button onClick={reassess} disabled={busyTemp} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                  {busyTemp ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} reassess
+                </button>
               </div>
-            ))}
-            {!(d.plan || []).length && <p className="text-xs text-slate-400 py-2">No plan yet. Three clear stages to the PO, with the activities under each decided by the AI — and questioned by the Scrum Master.</p>}
+              <div className="mt-2"><Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip></div>
+              {d.temperatureWhy && <p className="text-xs text-slate-600 mt-2 leading-relaxed">{d.temperatureWhy}</p>}
+              <div className="flex gap-1 mt-3">
+                {[["cold", vel.cold], ["warm", vel.warm], ["rfq", vel.rfq], ["hot", vel.hot]].map(([k, days]) => (
+                  <div key={k} className="flex-1 text-center">
+                    <div className={cls("h-1.5 rounded-full", (d.temperature === k && ph !== "won" && ph !== "lost") ? "bg-blue-500" : days > 0 ? "bg-slate-300" : "bg-slate-100")} />
+                    <p className="text-[10px] font-mono text-slate-400 mt-1">{k} {days}d</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* the commitment */}
+            <div className={cls("border rounded-xl p-4",
+              ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
+              <div className="flex items-center justify-between">
+                <Lbl>Committed next step</Lbl>
+                <div className="flex items-center gap-2">
+                  {ns.key === "committed" && <button onClick={stepDone} className="text-xs text-green-700 hover:underline flex items-center gap-0.5"><Check size={11} /> done</button>}
+                  <button onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}
+                    className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "commit"}</button>
+                </div>
+              </div>
+              {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
+              {ns.key === "none" && !editStep && <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed. A deal nobody has promised to move is a deal going cold.</p>}
+              {d.nextStep && !d.nextStepDoneAt && (
+                <p className="text-sm text-slate-800 mt-1.5 leading-snug">{d.nextStep}
+                  {d.nextStepDue && ns.key !== "overdue" && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(d.nextStepDue)}</span>}
+                </p>
+              )}
+              {editStep && (
+                <div className="mt-2 space-y-1.5">
+                  <Input value={stepWhat} onChange={(e) => setStepWhat(e.target.value)} placeholder="what happens next — your words" />
+                  <div className="flex gap-1.5">
+                    <Input type="datetime-local" className="flex-1 text-xs" value={stepDue} onChange={(e) => setStepDue(e.target.value)} />
+                    <Btn kind="primary" size="sm" disabled={!stepWhat.trim()} onClick={commitStep}><Check size={12} /></Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* RFQ */}
+            <div className="border border-slate-200 rounded-xl p-4">
+              <Lbl>RFQ</Lbl>
+              {rfqB ? (<>
+                <div className="mt-2"><Chip color={rfqB.color}>{rfqB.label}</Chip></div>
+                {rfqB.link && rfqB.link.status === "submitted" && (rfqB.link.response || {}).need &&
+                  <p className="text-xs text-slate-600 mt-2 leading-relaxed line-clamp-3">{rfqB.link.response.need}</p>}
+                {rfqB.link && rfqB.link.status !== "submitted" && (
+                  <button onClick={() => navigator.clipboard?.writeText(rfqUrl(rfqB.link.id))} className="text-xs text-blue-600 hover:underline mt-2 flex items-center gap-1"><Copy size={11} /> copy the link again</button>
+                )}
+              </>) : (
+                <p className="text-xs text-slate-500 mt-2 leading-relaxed">No RFQ link yet — create one from the company page and the client fills the requirement themselves.</p>
+              )}
+            </div>
           </div>
-          {(d.plan || []).some((s) => s.status === "blocked") && <p className="text-[11px] text-red-600 mt-2">A blocked stage is a blocked deal — raise it in the scrum.</p>}
+
+          {/* the route: three stages, activities under each */}
+          <div>
+            <div className="flex items-center gap-3 mb-2.5">
+              <Lbl className="mr-auto">The route to the PO {(d.plan || []).length ? "· " + doneN + "/" + (d.plan || []).length + " stages done" : ""}</Lbl>
+              {d.planSummary && <span className="text-xs text-slate-500 hidden md:block">{d.planSummary}</span>}
+              <Btn size="sm" disabled={busyPlan} onClick={buildPlan}>
+                {busyPlan ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {(d.plan || []).length ? "Re-plan pending" : "Plan 3 stages"}
+              </Btn>
+            </div>
+            {(d.plan || []).length ? (
+              <div className="grid md:grid-cols-3 gap-3">
+                {(d.plan || []).map((st, i) => (
+                  <div key={st._id || i} className={cls("rounded-xl border-2 p-3.5",
+                    st.status === "done" ? "border-green-200 bg-green-50/40" : st.status === "active" ? "border-blue-300 bg-blue-50/40"
+                    : st.status === "blocked" ? "border-red-300 bg-red-50/40" : "border-slate-200 bg-slate-50/60")}>
+                    <div className="flex items-start gap-2">
+                      <button onClick={() => cycleStage(i)} title="Click to advance: pending → active → done → blocked"
+                        className={cls("w-4 h-4 mt-0.5 rounded-full flex-none border-2",
+                          st.status === "done" ? "bg-green-500 border-green-500" : st.status === "active" ? "bg-blue-500 border-blue-500"
+                          : st.status === "blocked" ? "bg-red-500 border-red-500" : "bg-white border-slate-300")} />
+                      <div className="min-w-0">
+                        <p className={cls("text-sm font-semibold leading-snug", st.status === "done" ? "text-slate-400 line-through" : "text-slate-900")}>{st.name}</p>
+                        <p className="text-[10px] font-mono uppercase tracking-wide mt-0.5 text-slate-400">{st.status}{st.end ? " · " + fmtDate(st.end) : ""}</p>
+                      </div>
+                    </div>
+                    {(st.evidence || []).length > 0 && (
+                      <div className="mt-2.5 space-y-1 border-t border-slate-200/60 pt-2">
+                        {st.evidence.map((a, j) => (
+                          <label key={j} className="flex items-start gap-2 cursor-pointer group">
+                            <input type="checkbox" checked={!!a.done} onChange={() => toggleActivity(i, j)} className="mt-0.5 flex-none" />
+                            <span className={cls("text-[12px] leading-snug", a.done ? "text-slate-400 line-through" : "text-slate-700 group-hover:text-slate-900")}>{a.text}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="border border-dashed border-slate-300 rounded-xl p-6 text-center">
+                <p className="text-sm text-slate-500">Every deal is different. The AI reads the requirement and the record, and lays out the three stages this one actually passes through — with the activities under each.</p>
+              </div>
+            )}
+            {(d.plan || []).some((x) => x.status === "blocked") && <p className="text-[11px] text-red-600 mt-2">A blocked stage is a blocked deal — raise it in the scrum.</p>}
+          </div>
+
+          {/* the trail */}
+          {trail.length > 0 && (
+            <div className="border-t border-slate-100 pt-3">
+              <Lbl>Trail</Lbl>
+              <div className="mt-1.5 space-y-1">
+                {trail.map((t, i) => (
+                  <p key={i} className="text-xs text-slate-500 flex items-baseline gap-2">
+                    <span className="font-mono text-slate-400 flex-none">{fmtDate(t.at)}</span>
+                    <span className="leading-snug">{t.text}{t.kind === "ai" ? " · AI" : ""}</span>
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+          {err && <p className="text-xs text-red-600">{err}</p>}
         </div>
       </div>
-      {err && <p className="text-xs text-red-600 mt-3">{err}</p>}
-    </Modal>
+    </div>
   );
 }
 
