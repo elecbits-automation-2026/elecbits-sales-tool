@@ -739,14 +739,13 @@ export default function App() {
         )}
         <main key={tab} className="flex-1 min-w-0 p-4 md:p-6 overflow-x-hidden fade">
           {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} saveTasks={saveTasks} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
-          {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
-          {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} saveScrums={saveScrums} saveDeals={saveDeals} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "rfqs" && <RfqsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "resources" && <ResourcesView me={me} data={data} saveUsers={saveUsers} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
           {tab === "scrum" && <DailyScrumView me={me} data={data} saveScrums={saveScrums} saveTasks={saveTasks} />}
-          {tab === "scrummaster" && <ScrumMasterView me={me} data={data} saveScrums={saveScrums} saveTasks={saveTasks} saveDeals={saveDeals} />}
           {tab === "assistant" && me.role === "admin" && <AssistantView me={me} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies} saveDeals={saveDeals} saveMemory={saveMemory} saveScrums={saveScrums} />}
           {tab === "memory" && me.role === "admin" && <SystemMemoryView me={me} data={data} saveMemory={saveMemory} />}
           {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} saveQuestionSet={saveQuestionSet} />}
@@ -859,18 +858,17 @@ function Login() {
 function navGroups(me) {
   const isAdmin = me.role === "admin";
   const groups = [
-    { label: "Workspace", items: [
+    { label: "Sell", items: [
       { key: "pipeline", label: "Pipeline", icon: Columns },
       { key: "companies", label: "Companies", icon: Building2 },
       { key: "rfqs", label: "RFQs", icon: FileText },
-      { key: "tasks", label: "My Tasks", icon: ListTodo },
     ] },
-    { label: "Personal", items: [
-      { key: "scrummaster", label: "Scrum Master", icon: Mic },
+    { label: "My day", items: [
+      { key: "tasks", label: "My Tasks", icon: ListTodo },
       { key: "scrum", label: "Daily Scrum", icon: CalendarCheck2 },
       { key: "performance", label: "Performance", icon: TrendingUp },
     ] },
-    { label: "Resources", items: [
+    { label: "Team", items: [
       { key: "resources", label: "Resources", icon: Users },
       { key: "expenses", label: "Expenses", icon: Receipt },
     ] },
@@ -1327,7 +1325,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
 
       {/* the workspace tabs — the PMS project-section, for a company */}
       <div className="bg-white border border-slate-200 rounded-xl px-4 mt-4 flex items-center gap-1 overflow-x-auto">
-        {[["overview", "Overview", TrendingUp], ["research", "Research", Search], ["deals", "Deals", Columns], ["plan", "Plan", ClipboardList], ["todos", "To-dos", ListTodo], ["comms", "Client Comms", Phone], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
+        {[["overview", "Overview", TrendingUp], ["research", "Research", Search], ["deals", "Deals", Columns], ["comms", "Client Comms", Phone], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
           <button key={k} onClick={() => setCtab(k)}
             className={cls("flex items-center gap-1.5 px-3.5 py-3 text-sm border-b-2 -mb-px whitespace-nowrap", ctab === k ? "border-blue-600 text-blue-700 font-semibold" : "border-transparent text-slate-500 font-medium hover:text-slate-700")}>
             <Ic size={15} /> {l}
@@ -1457,29 +1455,6 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
       )}
 
       </>)}
-
-      {ctab === "plan" && <PlanTab me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} />}
-
-      {ctab === "todos" && (
-        <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
-          <SectionTitle>Open tasks on this company</SectionTitle>
-          {myTasks.length === 0 ? <p className="text-sm text-slate-400">None. Create them from the chat, scrum, or My Tasks.</p> : (
-            <div className="space-y-1.5">
-              {myTasks.map((t) => {
-                const who = users.find((u) => u.id === t.assignee);
-                return (
-                  <div key={t.id} className="flex items-center gap-2 text-sm border border-slate-200 rounded-md px-3 py-2">
-                    <ListTodo size={13} className="text-slate-400 flex-none" />
-                    <span className="mr-auto text-slate-800">{t.title}</span>
-                    {t.due && <span className="text-xs text-slate-400">{fmtDate(t.due)}</span>}
-                    {who && <Avatar name={who.name} size="sm" />}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       {ctab === "comms" && <CommsTab me={me} company={c} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies} />}
 
@@ -2215,6 +2190,21 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
     setEditStep(true);
   };
 
+  // The deal's to-dos: tasks pinned to this deal, plus the company's loose
+  // ones. Completing or adding here is the same saveTasks the rest sees.
+  const dealTasks = tasks
+    .filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)))
+    .sort((a, b) => ((a.due || "9999") < (b.due || "9999") ? -1 : 1)).slice(0, 8);
+  const finishTask = (t) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, status: "done", doneAt: nowTS() } : x)));
+  const [quickTask, setQuickTask] = useState("");
+  const addQuickTask = () => {
+    const title = quickTask.trim();
+    if (!title) return;
+    saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: me.id, author: me.id, title, details: "",
+      due: "", status: "open", source: "manual", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+    setQuickTask("");
+  };
+
   const doneN = (d.plan || []).filter((x) => x.status === "done").length;
   const trail = [
     ...(d.tempHistory || []).map((m) => ({ at: m.at, text: (m.from || "start") + " → " + m.to + (m.why ? " — " + m.why : ""), kind: m.decided === "ai" ? "ai" : "human" })),
@@ -2359,6 +2349,33 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
             {(d.plan || []).some((x) => x.status === "blocked") && <p className="text-[11px] text-red-600 mt-2">A blocked stage is a blocked deal — raise it in the scrum.</p>}
           </div>
 
+          {/* to-dos live with the deal — the same tasks My Tasks and the
+             Scrum Master see, click-to-complete right here */}
+          <div className="border-t border-slate-100 pt-3">
+            <Lbl>Open tasks on this deal{dealTasks.length ? " · " + dealTasks.length : ""}</Lbl>
+            <div className="mt-1.5 space-y-1">
+              {dealTasks.map((t) => {
+                const who = users.find((u) => u.id === t.assignee);
+                const late = t.due && t.due < todayStr();
+                return (
+                  <div key={t.id} className="flex items-center gap-2 group">
+                    <button title="Mark done" onClick={() => finishTask(t)}
+                      className="w-3.5 h-3.5 rounded-full border-2 border-slate-300 hover:border-green-500 hover:bg-green-50 flex-none" />
+                    <span className="text-[12.5px] text-slate-700 leading-snug mr-auto">{t.title}</span>
+                    {who && who.id !== me.id && <span className="text-[10px] text-slate-400 flex-none">{who.name}</span>}
+                    {t.due && <span className={cls("text-[10px] font-mono flex-none", late ? "text-red-600 font-semibold" : "text-slate-400")}>{late ? "overdue " : ""}{fmtDate(t.due)}</span>}
+                  </div>
+                );
+              })}
+              {!dealTasks.length && <p className="text-xs text-slate-400">Nothing open. Ask the copilot on the right — or add one:</p>}
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <Input value={quickTask} onChange={(e) => setQuickTask(e.target.value)} placeholder="Add a task on this deal…" className="text-xs"
+                  onKeyDown={(e) => { if (e.key === "Enter") addQuickTask(); }} />
+                <Btn size="sm" disabled={!quickTask.trim()} onClick={addQuickTask}><Plus size={12} /></Btn>
+              </div>
+            </div>
+          </div>
+
           {/* the trail */}
           {trail.length > 0 && (
             <div className="border-t border-slate-100 pt-3">
@@ -2384,7 +2401,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   );
 }
 
-function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
+function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompany }) {
   const { users, companies, deals, gates, rfq } = data;
   const rfqBadge = (d) => { const b = rfqBadgeFor(d, rfq); return b ? <Chip color={b.color}>{b.label}</Chip> : null; };
   const [scope, setScope] = useState(me.role === "agent" ? "mine" : "team");
@@ -2534,7 +2551,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
       {gate && gate.mode === "back" && (
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
       )}
-      {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={() => {}} openCompany={openCompany} />}
+      {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={saveTasks} openCompany={openCompany} />}
       {tempMove && <PhaseMoveChat me={me} move={tempMove} data={data} deals={deals} saveDeals={saveDeals} onClose={() => setTempMove(null)} />}
       {winning && <WonModal me={me} deal={winning} deals={deals} saveDeals={saveDeals} companies={companies} saveCompanies={saveCompanies} onClose={() => setWinning(null)} />}
       {gate && (gate.mode === "advance" || gate.mode === "lost") && (
@@ -6474,7 +6491,11 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
   );
 }
 
-function MyTasksView({ me, data, saveTasks, openCompany }) {
+/* My Tasks = one room for the whole working day: the Scrum Master chat on
+   the left (free-flowing — it files next steps, marks activities, raises
+   tasks), and the live task list on the right, where anything can also be
+   finished by plain clicking. Same data, two doors. */
+function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, openCompany }) {
   const { users, companies, tasks } = data;
   const [scope, setScope] = useState("mine");
   const [showDone, setShowDone] = useState(false);
@@ -6586,7 +6607,15 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-7xl mx-auto grid gap-4 items-start xl:grid-cols-[minmax(0,25rem),minmax(0,1fr)]">
+      {/* left: the daily conversation. Sticky and full-height on wide screens,
+          a bounded card above the list on narrow ones. */}
+      <div className="min-h-0 xl:sticky xl:top-4 h-[26rem] xl:h-[calc(100vh-6.5rem)]">
+        <ScrumMasterPanel me={me} data={data} saveScrums={saveScrums} saveTasks={saveTasks} saveDeals={saveDeals} />
+      </div>
+
+      {/* right: the aligned tasks */}
+      <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <h1 className="text-lg font-semibold mr-auto">My Tasks</h1>
         {canTeam && (
@@ -6663,6 +6692,7 @@ function MyTasksView({ me, data, saveTasks, openCompany }) {
           </div>
         </Modal>
       )}
+      </div>
     </div>
   );
 }
@@ -6706,7 +6736,7 @@ const smChatSystem = (me, ctx) => [
   "Dates: 'tomorrow' = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date they did not say — ask for it instead. Never show the SM_ACT_JSON line's contents in prose.",
 ].join("\n");
 
-function ScrumMasterView({ me, data, saveScrums, saveTasks, saveDeals }) {
+function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
   const { users, companies, deals, tasks, scrums } = data;
   const [session, setSession] = useState(undefined);  // undefined = loading, null = none yet
   const [input, setInput] = useState("");
@@ -6833,15 +6863,16 @@ function ScrumMasterView({ me, data, saveScrums, saveTasks, saveDeals }) {
   };
 
   return (
-    <div className="max-w-3xl mx-auto flex flex-col" style={{ height: "calc(100vh - 7rem)" }}>
-      <div className="flex items-center gap-2 mb-1">
-        <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Mic size={18} className="text-blue-600" /> Scrum Master</h1>
+    <div className="bg-white border border-slate-200 rounded-xl h-full min-h-0 flex flex-col">
+      <div className="px-4 pt-3 pb-2.5 border-b border-slate-100 flex items-center gap-2">
+        <span className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-none"><Mic size={14} /></span>
+        <div className="mr-auto min-w-0">
+          <p className="text-sm font-semibold text-slate-800 leading-tight">Scrum Master</p>
+          <p className="text-[11px] text-slate-400 leading-tight truncate">Talk it through — steps and tasks land on the right.</p>
+        </div>
         {session && session.scrumNoteId && <Chip color="green">scrum proven</Chip>}
         {session && session.teamScrum === "no" && <Chip color="red">no team scrum</Chip>}
       </div>
-      <p className="text-xs text-slate-500 mb-3">Your daily check-in. It knows your companies, their stage activities and your commitments — talk to it like a person.</p>
-
-      <div className="bg-white border border-slate-200 rounded-xl flex-1 min-h-0 flex flex-col">
         <div ref={bodyRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
           {session === undefined && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading…</p>}
           {session === null && (
@@ -6893,7 +6924,6 @@ function ScrumMasterView({ me, data, saveScrums, saveTasks, saveDeals }) {
           {err && <p className="text-xs text-red-600 mt-1.5">{err}</p>}
         </div>
       </div>
-    </div>
   );
 }
 
@@ -6935,7 +6965,17 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
     if (!f.email.includes("@")) { setErr("A real email is required — it is how they sign in."); return; }
     if (editing === "new") {
       if (users.some((u) => (u.email || "").toLowerCase() === f.email.trim().toLowerCase())) { setErr("That email is already on the roster."); return; }
-      saveUsers([...users, { id: uid(), name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, dept: "Sales", active: true }]);
+      // Explicit, awaited, and loud: the fire-and-forget path swallowed RPC
+      // failures and people silently never reached core.people.
+      supabase.rpc("upsert_person", {
+        p_id: null, p_name: f.name.trim(), p_email: f.email.trim().toLowerCase(),
+        p_role: f.role, p_dept: "Sales", p_active: true,
+      }).then(({ data: newId, error }) => {
+        if (error) { setErr("Not saved: " + error.message); return; }
+        saveUsers([...users, { id: newId || uid(), name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, dept: "Sales", active: true }]);
+        setEditing(null);
+      });
+      return;
     } else {
       saveUsers(users.map((u) => (u.id === editing.id ? { ...u, name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, active: f.active } : u)));
     }
