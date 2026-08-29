@@ -6203,27 +6203,49 @@ function RfqsView({ me, data, openCompany }) {
             const c = compOf(l);
             const by = users.find((u) => u.id === l.createdBy);
             const r = l.response || {};
+            // The same live status the company RFQ tab shows: journey + fill %.
+            const total = Number(r._total) || 9;
+            const answered = l.status === "submitted" ? total : Math.min(Number(r._answered) || 0, total);
+            const pct = Math.round((answered / total) * 100);
+            const stageN = l.status === "submitted" ? 3 : answered > 0 ? 2 : l.status === "opened" ? 1 : 0;
             return (
               <div key={l.id} className="bg-white border border-slate-200 rounded-xl px-4 py-3">
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  <Chip color={l.status === "submitted" ? "green" : l.status === "opened" ? "purple" : "slate"}>
-                    {l.status === "submitted" ? "input received" : l.status === "opened" ? "opened" : "sent"}
+                  <Chip color={l.status === "submitted" ? "green" : stageN === 2 ? "amber" : l.status === "opened" ? "purple" : "blue"}>
+                    {l.status === "submitted" ? "SUBMITTED" : stageN === 2 ? "FILLING · " + pct + "%" : l.status === "opened" ? "OPENED" : "SENT"}
                   </Chip>
                   <button onClick={() => c && openCompany(c.id)} className="font-medium text-sm text-slate-900 hover:text-blue-700">{c ? c.name : "?"}</button>
                   {l.contactName && <span className="text-xs text-slate-500">→ {l.contactName}</span>}
                   <span className="mr-auto" />
                   {by && <span className="text-xs text-slate-400 flex items-center gap-1"><Avatar name={by.name} size="sm" /> {by.name}</span>}
                   <span className="text-[11px] font-mono text-slate-400">{fmtDate(l.createdAt)}</span>
-                  <button onClick={() => { navigator.clipboard?.writeText(rfqUrl(l.id)); setCopied(l.id); setTimeout(() => setCopied(""), 1500); }}
-                    className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> {copied === l.id ? "copied!" : "copy link"}</button>
-                  {l.status === "submitted" && (
-                    <Btn size="sm" onClick={() => setOpen(open === l.id ? "" : l.id)}>{open === l.id ? "hide form" : "view form"}</Btn>
+                  {l.status !== "submitted" && (
+                    <button onClick={() => { navigator.clipboard?.writeText(rfqUrl(l.id)); setCopied(l.id); setTimeout(() => setCopied(""), 1500); }}
+                      className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> {copied === l.id ? "copied!" : "copy link"}</button>
                   )}
+                  {answered > 0 && (
+                    <Btn size="sm" onClick={() => setOpen(open === l.id ? "" : l.id)}>{open === l.id ? "hide answers" : "view answers"}</Btn>
+                  )}
+                </div>
+                {/* journey strip: sent → opened → filling → submitted */}
+                <div className="flex items-center gap-1.5 mt-2.5">
+                  {["Sent", "Opened", "Filling", "Submitted"].map((s, i) => (
+                    <React.Fragment key={s}>
+                      <span className={cls("text-[10px] font-semibold uppercase tracking-wide", i <= stageN ? "text-blue-700" : "text-slate-300")}>{s}</span>
+                      {i < 3 && <span className={cls("h-px flex-1", i < stageN ? "bg-blue-400" : "bg-slate-200")} />}
+                    </React.Fragment>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2.5 mt-2">
+                  <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                    <div className={cls("h-full", l.status === "submitted" ? "bg-green-500" : "bg-blue-500")} style={{ width: pct + "%" }} />
+                  </div>
+                  <span className="text-[10.5px] font-mono text-slate-500 tabular-nums">{answered}/{total} answered</span>
                 </div>
                 {l.status === "submitted" && (
                   <p className="text-xs text-slate-500 mt-1.5 line-clamp-1">{r.need || ""}</p>
                 )}
-                {open === l.id && l.status === "submitted" && (
+                {open === l.id && answered > 0 && (
                   <div className="mt-3 border-t border-slate-100 pt-3 grid sm:grid-cols-2 gap-x-6 gap-y-1.5">
                     <div className="sm:col-span-2"><F label="Requirement" v={r.need} /></div>
                     <F label="Services" v={(r.services || []).join(", ")} />
