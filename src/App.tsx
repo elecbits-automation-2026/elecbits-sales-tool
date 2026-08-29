@@ -2185,7 +2185,7 @@ const dealChatSystem = (d, comp, ev) => [
   "NEVER take 'done' on faith. When they claim a step or task is DONE, get evidence first — what exactly happened, with whom, when, where the artefact lives (a document name, a mail thread, a pasted screenshot — they can paste images right into this chat). Only emit task_done once the evidence is stated.",
   "When something concrete lands in the conversation, end your reply with ONE line:",
   "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"} | {\"type\":\"task_due\",\"task\":\"the open task's title, close to verbatim\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"fact\",\"field\":\"contactPerson|designation|phone|email\",\"value\":\"...\"}]}",
-  "task_due moves an existing task's date — use it when they ask to reschedule a task, instead of committing a new step.",
+  "task_due moves an existing task's date — use it when they ask to reschedule a task, instead of committing a new step. To rewrite a task's wording, use {\"type\":\"task_edit\",\"task\":\"old title, close to verbatim\",\"title\":\"the corrected title\"}.",
   "When they name a stakeholder or contact detail, SAVE it with a fact action — it lands on the company record, editable later on the Overview.",
   "OPEN TASKS ON THIS DEAL:\n" + ((d._openTasks || []).join("\n") || "(none)"),
   "Dates: tomorrow = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date the person did not say — ask for it. Never show the DEAL_ACT_JSON contents in prose.",
@@ -2273,6 +2273,17 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
             return x;
           });
           if (hit) done.push("✓ moved: " + hit + " → " + fmtDate(a.due));
+        }
+        if (a.type === "task_edit" && a.task && a.title) {
+          const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const want = norm(a.task);
+          let hit = "";
+          nextTasks = nextTasks.map((x) => {
+            if (hit || x.status === "done" || !(x.dealId === d.id || (!x.dealId && x.companyId === d.companyId))) return x;
+            if (norm(x.title).includes(want) || want.includes(norm(x.title))) { hit = x.title; return { ...x, title: String(a.title) }; }
+            return x;
+          });
+          if (hit) done.push("✓ rewrote the task: " + a.title);
         }
         if (a.type === "task" && a.title) {
           if (openTaskDupe(nextTasks, d.companyId, a.title)) {
@@ -2539,6 +2550,21 @@ function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose })
   );
 }
 
+/* GENERATE TASKS — click as often as you like. It reads the step, every open
+   task and the record, then realigns the whole set: merges duplicates, drops
+   the obsolete, fixes titles and dates, adds what is missing. */
+const realignSystem = (d, comp, step, taskLines, ev) => [
+  "You are the TASK REALIGNER for one deal on the Elecbits Sales OS. Today: " + todayStr() + ".",
+  "DEAL: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0),
+  "COMMITTED NEXT STEP: " + (step || "(none committed)"),
+  "OPEN TASKS ON THE DEAL:\n" + (taskLines || "(none)"),
+  "THE RECORD (newest first):\n" + (ev || "(thin)"),
+  "Rebuild the list into the SHARPEST minimal set that carries the step and this phase:",
+  "• merge duplicates and near-duplicates (drop the extras) • drop obsolete or irrelevant ones • fix vague titles to action-first and specific • fix dues into a realistic order • add what is missing (max 3). Never drop a task marked [in progress].",
+  'Reply with ONE short line of reasoning, then exactly: REALIGN_JSON {"summary":"what changed, one line","ops":[{"op":"drop","task":"title, close to verbatim"} | {"op":"retitle","task":"old title","title":"new title"} | {"op":"due","task":"title","due":"YYYY-MM-DD"} | {"op":"add","title":"...","due":"YYYY-MM-DD"}]}',
+  "Emit ops ONLY for changes — untouched tasks need no op. An already-clean list gets an empty ops array.",
+].join("\n");
+
 function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveCompanies, openCompany }) {
   const { users, companies, deals, tasks } = data;
   const d = deals.find((x) => x.id === dealId);
@@ -2551,6 +2577,8 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const [editStep, setEditStep] = useState(false);
   const [stepWhat, setStepWhat] = useState("");
   const [stepDue, setStepDue] = useState("");
+  const [realigning, setRealigning] = useState(false);
+  const [realignNote, setRealignNote] = useState("");
 
   useEffect(() => {
     if (!comp) return;
@@ -2700,13 +2728,56 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
         && (normTitle(t.title) === normTitle(d.nextStep)
           || normTitle(t.title).includes(normTitle(d.nextStep)) || normTitle(d.nextStep).includes(normTitle(t.title)))))
     : null;
-  const genStepTask = () => {
-    if (!d.nextStep || stepTask || openTaskDupe(tasks, d.companyId, d.nextStep)) return;
-    saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id,
-      assignee: d.nextStepOwner || d.ownerId || me.id, author: me.id, title: d.nextStep,
-      details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-      due: d.nextStepDue ? String(d.nextStepDue).slice(0, 10) : "", status: "open", source: "step",
-      createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+  // GENERATE TASKS — repeatable: audits every open task against the step and
+  // the record, applies the realignment, and reports what changed.
+  const realignTasks = async () => {
+    if (realigning) return;
+    setRealigning(true); setRealignNote("");
+    try {
+      const open = tasks.filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)));
+      const lines = open.map((t) => "• " + t.title + (t.due ? " (due " + fmtDate(t.due) + ")" : " (no date)") + (t.status === "doing" ? " [in progress]" : "")).join("\n");
+      const stepLine = d.nextStep && !d.nextStepDoneAt ? d.nextStep + (d.nextStepDue ? " (by " + fmtDate(d.nextStepDue) + ")" : "") : "";
+      const reply = await withTimeout(askClaude(realignSystem(d, comp, stepLine, lines, dealEvidence(d, comp, tasks, touches, commits)),
+        [{ role: "user", content: "Realign the tasks." }], { maxTokens: 800 }), 30000);
+      const v = extractMarkedJSON(reply, "REALIGN_JSON");
+      if (!v || !Array.isArray(v.ops)) throw new Error("no ops");
+      let next = [...tasks];
+      const matchIn = (list, title) => { const w = normTitle(title); return list.find((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)) && (normTitle(t.title) === w || normTitle(t.title).includes(w) || w.includes(normTitle(t.title)))); };
+      let dropped = 0, edited = 0, added = 0;
+      for (const op of v.ops.slice(0, 12)) {
+        try {
+          if (op.op === "drop" && op.task) {
+            const t0 = matchIn(next, op.task);
+            if (t0 && t0.status !== "doing") { deleteTask(t0.id); next = next.filter((x) => x.id !== t0.id); dropped++; }
+          }
+          if (op.op === "retitle" && op.task && op.title) {
+            const t0 = matchIn(next, op.task);
+            if (t0) { next = next.map((x) => (x.id === t0.id ? { ...x, title: String(op.title) } : x)); edited++; }
+          }
+          if (op.op === "due" && op.task && op.due) {
+            const t0 = matchIn(next, op.task);
+            if (t0) { next = next.map((x) => (x.id === t0.id ? { ...x, due: String(op.due) } : x)); edited++; }
+          }
+          if (op.op === "add" && op.title && !openTaskDupe(next, d.companyId, op.title)) {
+            next = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
+              title: String(op.title), details: "From Generate tasks — aligned to the step and the record.", due: op.due || "",
+              status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...next];
+            added++;
+          }
+        } catch (e) { /* one bad op never sinks the pass */ }
+      }
+      // the committed step must exist as a task, always
+      if (d.nextStep && !d.nextStepDoneAt && !matchIn(next, d.nextStep)) {
+        next = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.nextStepOwner || d.ownerId || me.id, author: me.id,
+          title: d.nextStep, details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
+          due: d.nextStepDue ? String(d.nextStepDue).slice(0, 10) : "", status: "open", source: "step",
+          createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...next];
+        added++;
+      }
+      if (dropped + edited + added > 0) saveTasks(next);
+      setRealignNote((v.summary ? v.summary + " — " : "") + (dropped + edited + added === 0 ? "already aligned, nothing to change." : "dropped " + dropped + " · edited " + edited + " · added " + added));
+    } catch (e) { setRealignNote("Couldn't realign — try again."); }
+    setRealigning(false);
   };
 
   // The deal's NEXT TASKS: raised by scrums or when the deal reached this
@@ -2802,9 +2873,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 )}
               </span>
               <div className="flex items-center gap-3">
-                {d.nextStep && !d.nextStepDoneAt && !stepTask && (
-                  <button onClick={genStepTask} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Plus size={11} /> generate the task</button>
-                )}
                 <button onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}
                   className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "write my own"}</button>
               </div>
@@ -2830,7 +2898,15 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             {/* the step's tasks live UNDER the step — one unit. Raised by
                scrums or by reaching this stage; completed only in My Tasks. */}
             <div className="mt-3 pt-2.5 border-t border-slate-200/70">
-            <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400">Tasks under this step{dealTasks.length ? " · " + dealTasks.length : ""}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mr-auto">Tasks under this step{dealTasks.length ? " · " + dealTasks.length : ""}</p>
+              {/* repeatable: every click audits the whole set and realigns it */}
+              <button onClick={realignTasks} disabled={realigning}
+                className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                {realigning ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} Generate tasks
+              </button>
+            </div>
+            {realignNote && <p className="text-[10.5px] text-slate-500 mt-1">{realignNote}</p>}
             <div className="mt-1.5 space-y-1">
               {dealTasks.map((t) => {
                 const who = users.find((u) => u.id === t.assignee);
