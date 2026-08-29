@@ -16,7 +16,7 @@ import {
   loadTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
-  saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity,
+  saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog,
 } from "./lib/data";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
@@ -1552,7 +1552,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
         );
       })()}
 
-      {ctab === "ask" && <div className="mt-4"><CompanyAssistant me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} /></div>}
+      {ctab === "ask" && <div className="mt-4"><CompanyAssistant me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} /><WorkLogCard company={c} users={users} /></div>}
 
       {editing && <CompanyModal me={me} data={data} company={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={upsert} />}
       {newDeal && <NewDealModal me={me} data={data} fixedCompany={c} onClose={() => setNewDeal(false)} onCreate={createDeal} />}
@@ -2568,6 +2568,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
                 </Sel>
               )}
               {comp && comp.city ? <span>· {comp.city}</span> : null}
+              {d.createdAt ? <span>· started {fmtDate(d.createdAt)}</span> : null}
             </p>
           </div>
           {comp && <button onClick={() => { onClose(); openCompany(comp.id); }} className="text-xs text-blue-600 hover:underline">open the company →</button>}
@@ -2798,7 +2799,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                 <th className="py-2.5 px-4">Deal</th><th className="py-2.5 px-4">Company</th>
                 <th className="py-2.5 px-4">Phase</th><th className="py-2.5 px-4">Value</th>
                 <th className="py-2.5 px-4">Owner</th><th className="py-2.5 px-4">Next step</th>
-                <th className="py-2.5 px-4">RFQ</th><th className="py-2.5 px-4">Age</th>
+                <th className="py-2.5 px-4">RFQ</th><th className="py-2.5 px-4">Started</th><th className="py-2.5 px-4">Age</th>
               </tr></thead>
               <tbody>
                 {[...visible].sort((a, b) => {
@@ -2825,11 +2826,12 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                           : <span className="text-xs text-slate-600 truncate block">{d.nextStep}{d.nextStepDue ? " · " + fmtDate(d.nextStepDue) : ""}</span>}
                       </td>
                       <td className="py-2.5 px-4">{rfqBadge(d) || <span className="text-slate-300 text-xs">—</span>}</td>
+                      <td className="py-2.5 px-4 font-mono text-xs text-slate-500 tabular-nums">{d.createdAt ? fmtDate(d.createdAt) : "—"}</td>
                       <td className="py-2.5 px-4 font-mono text-xs text-slate-400 tabular-nums">{dealStaleDays(d)}d</td>
                     </tr>
                   );
                 })}
-                {visible.length === 0 && <tr><td colSpan={8} className="py-10 text-center text-sm text-slate-400">No deals match these filters.</td></tr>}
+                {visible.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No deals match these filters.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -3425,7 +3427,9 @@ function WorklogTab({ me, viewUser, data, saveWorklogs }) {
   const [doc, setDoc] = useState(() => (existing ? existing.progress || "" : ""));
   const [saved, setSaved] = useState(false);
   const [viewLog, setViewLog] = useState(null);
-  const isSelf = viewUser.id === me.id && (me.role === "agent" || me.role === "dept_head");
+  // EVERY person writes the day — admins included. Viewing someone else's
+  // page hides the editor, nothing else does.
+  const isSelf = viewUser.id === me.id;
   const team = teamOf(me, users);
 
   const [scoring, setScoring] = useState(false);
@@ -4978,6 +4982,49 @@ function DriveCard({ company }) {
 /* ============================================================
    COMPANY ASSISTANT — trainable questions + chat → notes & tasks
    ============================================================ */
+
+/* THE WORK CHAT LOG — every AI conversation about this client, date-wise:
+   deal copilot, stage gates, Ask-the-AI. Read-only history; latest day open. */
+function WorkLogCard({ company: c, users }) {
+  const [log, setLog] = useState(null);
+  const [open, setOpen] = useState({});
+  useEffect(() => { let a = true; loadClientLog(c.id).then((x) => a && setLog(x)); return () => { a = false; }; }, [c.id]);
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
+      <SectionTitle right={<span className="text-xs text-slate-400">every AI conversation about {c.name}, date-wise</span>}>Work chat log</SectionTitle>
+      {log === null && <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> loading…</p>}
+      {log && !log.length && <p className="text-xs text-slate-400">Nothing logged yet — deal chats, stage gates and Ask-the-AI conversations all land here as they happen.</p>}
+      <div className="space-y-2">
+        {(log || []).map((day, i) => {
+          const who = users.find((u) => u.id === day.personId);
+          const key = day.date + "|" + day.personId;
+          const isOpen = open[key] !== undefined ? open[key] : i === 0;
+          return (
+            <div key={key} className="border border-slate-200 rounded-lg">
+              <button onClick={() => setOpen({ ...open, [key]: !isOpen })} className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-slate-50/60">
+                <span className="font-mono text-xs text-slate-500 flex-none">{fmtDate(day.date)}</span>
+                {who && <span className="text-xs font-medium text-slate-700 flex items-center gap-1.5"><Avatar name={who.name} size="sm" /> {who.name}</span>}
+                <span className="text-[11px] text-slate-400 mr-auto">{day.messages.length} entr{day.messages.length === 1 ? "y" : "ies"}</span>
+                <ChevronRight size={13} className={cls("text-slate-400 transition-transform", isOpen && "rotate-90")} />
+              </button>
+              {isOpen && (
+                <div className="px-3 pb-2.5 pt-2 space-y-1.5 border-t border-slate-100 max-h-96 overflow-y-auto">
+                  {day.messages.map((m, j) => (
+                    <p key={j} className="text-[12px] leading-snug">
+                      {m.kind && <span className="text-[9px] font-bold uppercase tracking-wide text-purple-500 mr-1.5">{m.kind}</span>}
+                      <span className={cls("text-[9.5px] font-bold uppercase mr-1.5", m.role === "user" ? "text-blue-600" : "text-slate-400")}>{m.role === "user" ? "you" : "ai"}</span>
+                      <span className="text-slate-700 whitespace-pre-wrap">{typeof m.content === "string" ? m.content : (m.display || "📎 attachment")}</span>
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
   const { users, companies, tasks, questionSets } = data;
@@ -6800,12 +6847,40 @@ function TaskChat({ task: t, comp, data, saveTasks }) {
   );
 }
 
+/* Where the deal exactly is — no questionnaires, just the position: the
+   phase strip, why it sits there, and the committed step. */
+function DealPosition({ data, companyId }) {
+  const deal = (data.deals || []).filter((x) => x.companyId === companyId && !x.lost && x.stage !== "po")
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
+  if (!deal) return null;
+  const phase = deal.temperature || "cold";
+  const idx = ["cold", "warm", "rfq", "hot"].indexOf(phase);
+  const vel = tempVelocity(deal);
+  const ns = nextStepState(deal);
+  return (
+    <div className="mt-3 pt-3 border-t border-dashed border-slate-200">
+      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">Where the deal is · <span className="font-mono">{deal.did}</span></p>
+      <div className="flex gap-1">
+        {["cold", "warm", "rfq", "hot"].map((k, i) => (
+          <div key={k} className="flex-1 text-center">
+            <div className={cls("h-1.5 rounded-full", i < idx ? "bg-slate-300" : i === idx ? "bg-blue-500" : "bg-slate-100")} />
+            <p className={cls("text-[10px] font-mono mt-1", i === idx ? "text-blue-700 font-bold" : "text-slate-400")}>{k}{i === idx ? " · " + vel[k] + "d" : ""}</p>
+          </div>
+        ))}
+      </div>
+      {deal.temperatureWhy && <p className="text-[11.5px] text-slate-600 mt-2 leading-snug">{deal.temperatureWhy}</p>}
+      {ns.key === "overdue" ? <p className="text-[11.5px] font-semibold text-red-600 mt-1.5">Committed step OVERDUE since {fmtDate(deal.nextStepDue)}: {deal.nextStep}</p>
+        : ns.key === "committed" ? <p className="text-[11.5px] text-slate-600 mt-1.5">next: {deal.nextStep}{deal.nextStepDue ? " · by " + fmtDate(deal.nextStepDue) : ""}</p>
+        : <p className="text-[11.5px] text-amber-700 mt-1.5">no committed next step</p>}
+    </div>
+  );
+}
+
 function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
   const { users, companies, tasks } = data;
   const comp = companies.find((c) => c.id === t.companyId);
   const who = users.find((u) => u.id === t.assignee);
   const [brief, setBrief] = useState(briefOk((t.ai || {}).brief) ? (t.ai || {}).brief : null);
-  const [ans, setAns] = useState((t.work || {}).prepAnswers || {});
 
   useEffect(() => {
     let alive = true;
@@ -6817,47 +6892,24 @@ function WorkWindow({ task: t, data, saveTasks, onClose, onComplete }) {
     return () => { alive = false; };
   }, [t.id]);
 
-  const save = () => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, work: { ...(x.work || {}), prepAnswers: ans } } : x)));
-  const setStage = (key) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, stage: key } : x)));
-
   return (
     <Modal title={t.title} onClose={onClose} wide
       footer={<>
-        <Btn onClick={() => { save(); onClose(); }}>Save progress</Btn>
-        <Btn kind="primary" onClick={() => { save(); onComplete(); }}><CheckCircle2 size={14} /> Complete Now</Btn>
+        <Btn onClick={onClose}>Save progress</Btn>
+        <Btn kind="primary" onClick={onComplete}><CheckCircle2 size={14} /> Complete Now</Btn>
       </>}>
       <p className="text-xs text-slate-400 -mt-2 mb-4">
         {[comp && comp.name, who && who.name, (t.windowStart || t.windowEnd) ? (t.windowStart || "…") + "–" + (t.windowEnd || "…") : null]
-          .filter(Boolean).join(" · ")} · full scope on the left, your prep on the right
+          .filter(Boolean).join(" · ")} · scope and the deal's position on the left, the AI on the right
       </p>
       <div className="grid md:grid-cols-2 gap-4">
         <div>
           <TaskScopeCard task={t} comp={comp} brief={brief} companies={companies}
             onLink={(id) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, companyId: id } : x)))} />
-          {/* Link the task to a stage once, and the stage tells it what it has
-              to answer for and what it should leave behind. */}
-          {t.stage
-            ? <StageGuidance task={t} comp={comp} onPick={setStage} />
-            : <StagePicker task={t} onPick={setStage} />}
+          {/* No questionnaires — just where the deal exactly is. */}
+          <DealPosition data={data} companyId={t.companyId} />
         </div>
         <div className="space-y-3">
-          {!brief ? (
-            <p className="text-sm text-slate-400 flex items-center gap-2 py-4"><Loader2 size={14} className="animate-spin" /> Working out what this task needs…</p>
-          ) : (<>
-            <div className="flex items-center gap-2">
-              <Lbl className="mr-auto">Before you start</Lbl>
-              {brief.source === "fallback" && <span className="text-[10.5px] text-slate-400">offline brief</span>}
-            </div>
-            {brief.prep.map((q, i) => (
-              <div key={i}>
-                <p className="text-[12.5px] text-slate-700 mb-1.5">{q}</p>
-                <Input value={ans[i] || ""} onChange={(e) => setAns({ ...ans, [i]: e.target.value })} onBlur={save} />
-              </div>
-            ))}
-            <p className="text-[11px] text-slate-400 pt-1">
-              Optional — answering now makes closing this a ten-second job.
-            </p>
-          </>)}
           <TaskChat task={t} comp={comp} data={data} saveTasks={saveTasks} />
         </div>
       </div>
