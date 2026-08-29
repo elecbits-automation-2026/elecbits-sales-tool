@@ -1829,6 +1829,20 @@ function ResearchCard({ me, company: c, data, saveCompanies }) {
 }
 
 /* ── DEALS TAB — what exactly is happening with this client, deal by deal ── */
+/* Every AI conversation about a client lands in ONE work chat log — per
+   person, per client, per date (sales.chats). Entries append; nothing is
+   clobbered. Attachments log by name, the words stay verbatim. */
+function logClientChat(meId, orgId, kind, entries) {
+  if (!orgId || !entries || !entries.length) return;
+  const date = todayStr();
+  loadChat(meId, date, orgId).then((existing) => {
+    const add = entries
+      .map((m) => ({ role: m.role, kind, at: nowTS(), content: typeof m.content === "string" ? m.content : (m.display || "(attachment)") }))
+      .filter((m) => m.content);
+    return saveChat(meId, date, [...(existing || []), ...add], orgId);
+  }).catch(() => { /* the log is best-effort; the conversation itself is not */ });
+}
+
 function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
   const { deals } = data;
   const [room, setRoom] = useState(null);
@@ -1859,27 +1873,26 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
                 ? <p className="text-xs text-amber-700 mt-1.5">no committed next step</p>
                 : <p className="text-xs text-slate-600 mt-1.5">next: {d.nextStep}{d.nextStepDue ? " · by " + fmtDate(d.nextStepDue) : ""}</p>
             )}
-            {/* every stage of the deal, visible right here */}
-            {(d.plan || []).length > 0 && (
-              <div className="grid sm:grid-cols-3 gap-2.5 mt-3">
-                {(d.plan || []).map((st, i) => (
-                  <div key={st._id || i} className={cls("border rounded-lg p-2.5",
-                    st.status === "done" ? "border-green-200 bg-green-50/50" : st.status === "active" ? "border-blue-200 bg-blue-50/50"
-                    : st.status === "blocked" ? "border-red-200 bg-red-50/50" : "border-slate-200 bg-slate-50")}>
-                    <p className="text-[12.5px] font-semibold text-slate-800">{i + 1}. {st.name}</p>
-                    <div className="mt-1 space-y-0.5">
-                      {(st.evidence || []).map((a, j) => (
-                        <p key={j} className={cls("text-[11.5px] flex items-start gap-1", a.done ? "text-slate-400 line-through" : "text-slate-600")}>
-                          <span className="mt-0.5">{a.done ? "✓" : "○"}</span> {a.text}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {(d.plan || []).length === 0 && !d.lost && d.stage !== "po" &&
-              <p className="text-[11px] text-slate-400 mt-2">No stage plan yet — open the Deal Room and let the AI plan the 3 stages.</p>}
+            {/* the deal's next tasks — raised by scrums or stage changes,
+               completed only from My Tasks */}
+            {(() => {
+              const open = (data.tasks || []).filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === c.id))).slice(0, 5);
+              if (!open.length) return null;
+              return (
+                <div className="mt-2.5 space-y-1">
+                  {open.map((t) => {
+                    const late = t.due && t.due < todayStr();
+                    return (
+                      <p key={t.id} className="text-[12px] text-slate-600 flex items-center gap-1.5">
+                        <span className={cls("w-1.5 h-1.5 rounded-full flex-none", late ? "bg-red-500" : "bg-slate-300")} />
+                        {t.title}
+                        {t.due && <span className={cls("font-mono text-[10px]", late ? "text-red-600 font-semibold" : "text-slate-400")}>{late ? "overdue " : ""}{fmtDate(t.due)}</span>}
+                      </p>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         );
       })}
@@ -1892,11 +1905,11 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
    sales collateral folder in Drive and asks the right questions for this
    type of client before the card moves. ─────────────────────────────────── */
 const phaseMoveSystem = (d, comp, to, ev) => [
-  "You are the STAGE-CHANGE GATE on the Elecbits Sales OS pipeline. A salesperson wants to move a deal to " + to.toUpperCase() + ". Your job, in a short chat:",
-  "1. Look in the sales COLLATERAL in Drive — search for 'collateral' and browse the sales folders — and find what fits THIS type of client (industry, size, what they do). Case studies, decks, datasheets.",
-  "2. Ask the RIGHT questions for this client type and this move, one or two at a time, grounded in what the phase means:",
-  "   cold→warm: what did the client actually respond to? · warm→rfq: is the requirement being gathered — RFQ link sent, input coming? · →hot: what commercial signal did the client give (pricing ask, timeline, negotiation)?",
-  "3. Recommend which collateral to send next, by file name, when you found something relevant.",
+  "You are the STAGE-CHANGE GATE on the Elecbits Sales OS pipeline. A salesperson wants to move a deal to " + to.toUpperCase() + ". Run it like a mature sales manager, not a suggestion machine:",
+  "1. OPEN BY ASKING, never by recommending. One or two sharp questions at a time, grounded in what the move means and what the record already shows:",
+  "   cold→warm: what did the client actually respond to? · warm→rfq: is the requirement being gathered — RFQ link sent, input coming? · →hot: what commercial signal did the client give (pricing ask, timeline, negotiation)? · →won (CLOSED WON): the PO — its reference, value, and what was agreed; that line becomes the deal's closing record, so pin all three down.",
+  "2. While they answer, quietly use the sales COLLATERAL in Drive — search 'collateral', browse the sales folders — to understand what Elecbits has for THIS type of client (industry, size, what they do). Do NOT list or dump files unprompted.",
+  "3. Only AFTER their answers give you the real picture: recommend, in a line or two, what to do next and which collateral fits — by file name. The recommendation follows the evidence, never precedes it.",
   "CLIENT: " + comp.name + (comp.industry ? " · " + comp.industry : "") + (comp.orgSize ? " · size " + comp.orgSize : "") + (comp.whatTheyDo ? " — " + comp.whatTheyDo : ""),
   "DEAL: " + d.did + " · currently " + (d.temperature || "cold") + " · ₹" + (d.value || 0) + (d.nextStep ? " · committed step: " + d.nextStep : ""),
   ev ? "WHAT IS ALREADY ON THE RECORD (newest first) — use it, never ask for what is written here:\n" + ev : "",
@@ -1904,7 +1917,18 @@ const phaseMoveSystem = (d, comp, to, ev) => [
   "PHASE_JSON {\"summary\":\"one line: what the client did that justifies " + to + "\",\"share\":\"collateral to send next, by name — or empty\"}",
 ].join("\n");
 
-function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
+/* When a deal REACHES a phase, the AI writes what happens next — the next
+   step and the phase's first tasks — with no confirmation step. They land in
+   the deal, the Scrum Master's book, and My Tasks, where they get completed. */
+const stageKickoffSystem = (d, comp, to, ev) => [
+  "The deal with " + (comp ? comp.name : "a client") + " (₹" + (d.value || 0) + ") just reached " + to.toUpperCase() + " on the Elecbits Sales OS. Today: " + todayStr() + ".",
+  "THE RECORD (newest first):\n" + (ev || "(thin)"),
+  "Write what happens next in this phase. Reply with ONLY one line:",
+  'KICKOFF_JSON {"next_step":{"what":"first person, concrete","due":"YYYY-MM-DD"},"tasks":[{"title":"action-first, specific","due":"YYYY-MM-DD"}]}',
+  "2 to 4 tasks for THIS phase only, realistic dues within 14 days.",
+].join("\n");
+
+function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompanies, onClose }) {
   const { companies } = data;
   const d = move.deal;
   const comp = companies.find((x) => x.id === d.companyId) || { name: "?" };
@@ -1915,9 +1939,16 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
   const [ready, setReady] = useState(null);   // PHASE_JSON when the gate is satisfied
   const [skip, setSkip] = useState(false);
   const [manual, setManual] = useState("");
+  const [atts, setAtts] = useState([]);       // pasted/uploaded evidence for the gate
+  const fileRef = useRef(null);
   const bodyRef = useRef(null);
   const kicked = useRef(false);
   const evRef = useRef("");
+  const addFiles = (files) => { [...files].forEach((f) => fileToBlock(f).then((b) => b && setAtts((a) => [...a, b]))); };
+  const onPaste = (e) => {
+    const files = [...(e.clipboardData?.items || [])].map((it) => it.getAsFile && it.getAsFile()).filter(Boolean);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  };
 
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy, ready]);
   useEffect(() => {
@@ -1948,7 +1979,9 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
       try {
         const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to, evRef.current),
           [{ role: "user", content: "I want to move this deal to " + move.to + ". Start the gate." }]);
-        setMsgs([{ role: "assistant", content: stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim() + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") }]);
+        const opener = stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim() + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "");
+        setMsgs([{ role: "assistant", content: opener }]);
+        logClientChat(me.id, d.companyId, "stage gate → " + move.to, [{ role: "assistant", content: opener }]);
       } catch (e) { setMsgs([{ role: "assistant", content: "Couldn't reach the AI — use “skip the chat” below and move it with a line." }]); }
       setBusy(false);
     })();
@@ -1956,17 +1989,24 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
 
   const send = async () => {
     const t = input.trim();
-    if (!t || busy) return;
+    if ((!t && !atts.length) || busy) return;
     setInput("");
-    const next = [...msgs, { role: "user", content: t }];
+    const content = atts.length
+      ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: t || "See the attached." }]
+      : t;
+    const display = (t || "") + (atts.length ? (t ? "\n" : "") + atts.map((a) => "📎 " + a._name).join("  ") : "");
+    setAtts([]);
+    const next = [...msgs, { role: "user", content, display }];
     setMsgs(next); setBusy(true);
     try {
       const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to, evRef.current),
         [{ role: "user", content: "I want to move this deal to " + move.to + ". Start the gate." },
          ...next.map((m) => ({ role: m.role, content: m.content }))]);
       const v = extractMarkedJSON(reply, "PHASE_JSON");
-      const shown = stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim();
-      setMsgs([...next, { role: "assistant", content: (shown || "Good — that clears it.") + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") }]);
+      const shown = (stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim() || "Good — that clears it.")
+        + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "");
+      setMsgs([...next, { role: "assistant", content: shown }]);
+      logClientChat(me.id, d.companyId, "stage gate → " + move.to, [{ role: "user", content: display }, { role: "assistant", content: shown }]);
       if (v && v.summary) setReady(v);
     } catch (e) { setMsgs([...next, { role: "assistant", content: "Lost the AI mid-chat — try again, or skip the chat below." }]); }
     setBusy(false);
@@ -1974,11 +2014,48 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
 
   const apply = (summary, share) => {
     setTemperature(d.id, { from: d.temperature || "cold", to: move.to, why: summary, evidence: share || "", decided: "human", by: me.id });
-    saveDeals(deals.map((x) => (x.id === d.id
+    if (move.to === "won") {
+      // Closed Won through the same chat gate: the PO line is the record.
+      const moved = deals.map((x) => (x.id === d.id
+        ? { ...x, stage: "po", updatedAt: nowTS(),
+            history: [...(x.history || []), { from: x.stage, to: "po", at: nowTS(), by: me.id, summary: "CLOSED WON. " + summary }],
+            tempHistory: [...(x.tempHistory || []), { from: d.temperature || "cold", to: "won", why: summary, decided: "human", at: nowTS() }] }
+        : x));
+      saveDeals(moved);
+      const c0 = companies.find((x) => x.id === d.companyId);
+      if (c0 && saveCompanies) saveCompanies(data.companies.map((x) => (x.id === c0.id
+        ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text: "Deal " + d.did + " CLOSED WON. " + summary }] } : x)));
+      onClose();
+      return;
+    }
+    const moved = deals.map((x) => (x.id === d.id
       ? { ...x, temperature: move.to, temperatureAt: nowTS(), temperatureWhy: summary, updatedAt: nowTS(),
           tempHistory: [...(x.tempHistory || []), { from: d.temperature || "cold", to: move.to, why: summary, evidence: share || "", decided: "human", at: nowTS() }] }
-      : x)));
+      : x));
+    saveDeals(moved);
     onClose();
+    // Reaching a phase writes its opening moves — no confirmation, chat-bot
+    // style. The step and tasks land in the deal, the scrum book, My Tasks.
+    if (saveTasks && ["cold", "warm", "rfq", "hot"].includes(move.to)) {
+      askClaude(stageKickoffSystem(d, comp, move.to, evRef.current + "\nJust moved because: " + summary),
+        [{ role: "user", content: "Write the kickoff." }], { maxTokens: 500 })
+        .then((reply) => {
+          const v = extractMarkedJSON(reply, "KICKOFF_JSON");
+          if (!v) return;
+          if (v.next_step && v.next_step.what && !(d.nextStep && !d.nextStepDoneAt)) {
+            const due = v.next_step.due ? v.next_step.due + "T18:30" : "";
+            saveNextStep(d.id, { what: String(v.next_step.what), due, owner: d.ownerId });
+            saveDeals(moved.map((x) => (x.id === d.id
+              ? { ...x, nextStep: String(v.next_step.what), nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" } : x)));
+          }
+          const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title).slice(0, 4);
+          if (list.length) saveTasks([...list.map((t) => ({
+            id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
+            title: String(t.title), details: "Raised when the deal reached " + move.to + ".", due: t.due || "",
+            status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "",
+          })), ...(data.tasks || [])]);
+        }).catch(() => { /* the move itself already stands */ });
+    }
   };
 
   return (
@@ -1994,7 +2071,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
             <span className="flex items-center gap-1.5 ml-1">
               <Chip color={tempColor(d.temperature)}>{(d.temperature || "cold").toUpperCase()}</Chip>
               <ArrowRight size={13} className="text-slate-400" />
-              <Chip color={tempColor(move.to)}>{move.to.toUpperCase()}</Chip>
+              <Chip color={move.to === "won" ? "green" : tempColor(move.to)}>{move.to === "won" ? "CLOSED WON" : move.to.toUpperCase()}</Chip>
             </span>
             <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-700 p-1"><X size={17} /></button>
           </div>
@@ -2006,7 +2083,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
           {msgs.map((m, i) => (
             <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
               <div className={cls("max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed",
-                m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.content}</div>
+                m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.display || (typeof m.content === "string" ? m.content : "📎")}</div>
             </div>
           ))}
           {busy && <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> reading the collateral…</p>}
@@ -2021,13 +2098,22 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
           </div>
         )}
 
-        {/* answer */}
+        {/* answer — paste a screenshot or attach the mail/doc as evidence */}
         <div className="px-5 pb-3">
+          {atts.length > 0 && (
+            <p className="text-xs text-slate-500 mb-1.5">{atts.map((a, i) => (
+              <span key={i} className="inline-flex items-center gap-1 mr-3">📎 {a._name}
+                <button onClick={() => setAtts(atts.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500"><X size={11} /></button></span>
+            ))}</p>
+          )}
           <div className="flex items-center gap-2">
-            <Input value={input} onChange={(e) => setInput(e.target.value)}
+            <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files || []); e.target.value = ""; }} />
+            <button title="Attach a file or image" onClick={() => fileRef.current && fileRef.current.click()}
+              className="text-slate-400 hover:text-blue-600 p-1.5 flex-none"><Paperclip size={16} /></button>
+            <Input value={input} onChange={(e) => setInput(e.target.value)} onPaste={onPaste}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder="Answer the gate…" />
-            <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={14} /></Btn>
+              placeholder="Answer the gate… (paste an image straight in)" />
+            <Btn kind="primary" disabled={busy || (!input.trim() && !atts.length)} onClick={send}><Send size={14} /></Btn>
           </div>
         </div>
 
@@ -2043,8 +2129,8 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
             <button onClick={() => setSkip(true)} className="text-xs text-slate-400 hover:text-slate-600 mr-auto">skip the chat →</button>
           )}
           <Btn onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!ready} onClick={() => apply(ready.summary, ready.share)}>
-            <Check size={14} /> Confirm the move
+          <Btn kind={move.to === "won" ? "success" : "primary"} disabled={!ready} onClick={() => apply(ready.summary, ready.share)}>
+            <Check size={14} /> {move.to === "won" ? "It's won" : "Confirm the move"}
           </Btn>
         </div>
       </div>
@@ -2059,13 +2145,13 @@ const dealChatSystem = (d, comp, ev) => [
   "You are the DEAL COPILOT on the Elecbits Sales OS — the sharpest colleague on this one deal. Direct, specific, brief. Today: " + todayStr() + ".",
   "DEAL: " + d.did + " · " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
     + (d.nextStep && !d.nextStepDoneAt ? " · committed next step: '" + d.nextStep + "'" + (d.nextStepDue ? " by " + fmtDate(d.nextStepDue) : "") : " · NO committed next step"),
-  "THE STAGE PLAN:\n" + ((d.plan || []).map((st, i) => (i + 1) + ". " + st.name + " [" + st.status + "]"
-    + ((st.evidence || []).length ? " — " + st.evidence.map((a) => (a.done ? "✓" : "○") + " " + a.text).join("; ") : "")).join("\n") || "(no plan yet)"),
   "EVERYTHING ON THE RECORD (newest first):\n" + (ev || "(nothing yet)"),
-  "You can read the sales Drive for collateral and the client's folder.",
-  "Answer questions from the record, never invent facts. Push toward the ONE next move that advances the deal. When something concrete is agreed in the conversation, end your reply with ONE line:",
-  "NEVER take 'done' on faith. When they claim a step or activity is DONE, get evidence first — what exactly happened, with whom, when, and where the artefact lives (a document name, a mail thread). Tell them they can attach the file or pull the mail chain when closing the step in this room, or CC the shared sales mailbox so the AI can read it. Only emit activity_done once the evidence is stated.",
-  "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"activity_done\",\"activity\":\"the activity text, verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+  "You can read the sales Drive for collateral and the client's folder — use it quietly to inform yourself; never dump file listings unprompted.",
+  "BE MATURE: when the record is thin or something is unclear, ASK a sharp question first and recommend after the answer — recommendation follows evidence. Answer from the record, never invent facts. Push toward the ONE next move. You WRITE the next step yourself when the conversation shows it — no permission-asking, just commit it via the action line and say so in a word.",
+  "NEVER take 'done' on faith. When they claim a step or task is DONE, get evidence first — what exactly happened, with whom, when, where the artefact lives (a document name, a mail thread, a pasted screenshot — they can paste images right into this chat). Only emit task_done once the evidence is stated.",
+  "When something concrete lands in the conversation, end your reply with ONE line:",
+  "DEAL_ACT_JSON {\"actions\":[{\"type\":\"next_step\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+  "OPEN TASKS ON THIS DEAL:\n" + ((d._openTasks || []).join("\n") || "(none)"),
   "Dates: tomorrow = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date the person did not say — ask for it. Never show the DEAL_ACT_JSON contents in prose.",
 ].join("\n");
 
@@ -2074,8 +2160,18 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [atts, setAtts] = useState([]);
+  const fileRef = useRef(null);
   const bodyRef = useRef(null);
   const kicked = useRef(false);
+  const addFiles = (files) => { [...files].forEach((f) => fileToBlock(f).then((b) => b && setAtts((a) => [...a, b]))); };
+  const onPaste = (e) => {
+    const files = [...(e.clipboardData?.items || [])].map((it) => it.getAsFile && it.getAsFile()).filter(Boolean);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  };
+  const openTaskTitles = tasks
+    .filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)))
+    .map((t) => "• " + t.title + (t.due ? " (due " + fmtDate(t.due) + ")" : "")).slice(0, 10);
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
 
   const evidence = () => {
@@ -2098,14 +2194,16 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
           nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
           done.push("✓ committed: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
         }
-        if (a.type === "activity_done" && a.activity) {
+        if ((a.type === "task_done" || a.type === "activity_done") && (a.task || a.activity)) {
           const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-          const cur = nextDeals.find((x) => x.id === d.id) || d;
-          const plan = (cur.plan || []).map((st) => ({ ...st,
-            evidence: (st.evidence || []).map((ac) => (norm(ac.text).includes(norm(a.activity)) || norm(a.activity).includes(norm(ac.text)) ? { ...ac, done: true } : ac)) }));
-          saveDealPlan(d.id, plan);
-          nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, plan } : x));
-          done.push("✓ ticked: " + a.activity);
+          const want = norm(a.task || a.activity);
+          let hit = "";
+          nextTasks = nextTasks.map((x) => {
+            if (hit || x.status === "done" || !(x.dealId === d.id || (!x.dealId && x.companyId === d.companyId))) return x;
+            if (norm(x.title).includes(want) || want.includes(norm(x.title))) { hit = x.title; return { ...x, status: "done", doneAt: nowTS() }; }
+            return x;
+          });
+          if (hit) done.push("✓ task done: " + hit);
         }
         if (a.type === "task" && a.title) {
           nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
@@ -2127,17 +2225,23 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
         : [{ role: "user", content: "Open the conversation: in two or three sharp lines, where does this deal actually stand and what is the ONE next move?" }];
       // The Drive-searching loop can stall on a slow lookup — cap it, and fall
       // back to answering from the record alone rather than spinning forever.
+      const sys = dealChatSystem({ ...d, _openTasks: openTaskTitles }, comp, evidence());
       let reply, notes;
       try {
-        ({ reply, notes } = await withTimeout(askWithDrive(dealChatSystem(d, comp, evidence()), convo), 40000));
+        ({ reply, notes } = await withTimeout(askWithDrive(sys, convo), 40000));
       } catch (e1) {
-        reply = await withTimeout(askClaude(dealChatSystem(d, comp, evidence()), convo, { maxTokens: 700 }), 20000);
+        reply = await withTimeout(askClaude(sys, convo, { maxTokens: 700 }), 20000);
         notes = [];
       }
       const acts = extractMarkedJSON(reply, "DEAL_ACT_JSON");
       const done = runActions(acts && acts.actions);
-      const shown = stripToolLines(String(reply).replace(/DEAL_ACT_JSON[\s\S]*$/, "")).trim();
-      setMsgs([...history, { role: "assistant", content: shown + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") + (done.length ? "\n\n" + done.join("\n") : "") }]);
+      const shown = stripToolLines(String(reply).replace(/DEAL_ACT_JSON[\s\S]*$/, "")).trim()
+        + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") + (done.length ? "\n\n" + done.join("\n") : "");
+      setMsgs([...history, { role: "assistant", content: shown }]);
+      // The whole exchange lands in the client's date-wise work chat log.
+      const last = history[history.length - 1];
+      logClientChat(me.id, d.companyId, "deal " + d.did,
+        [...(last && last.role === "user" ? [{ role: "user", content: last.display || last.content }] : []), { role: "assistant", content: shown }]);
     } catch (e) {
       setMsgs([...history, { role: "assistant", content: "Couldn't reach the AI — send that again." }]);
     }
@@ -2152,9 +2256,14 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
 
   const send = () => {
     const t = input.trim();
-    if (!t || busy) return;
+    if ((!t && !atts.length) || busy) return;
     setInput("");
-    converse([...msgs, { role: "user", content: t }]);
+    const content = atts.length
+      ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: t || "See the attached." }]
+      : t;
+    const display = (t || "") + (atts.length ? (t ? "\n" : "") + atts.map((a) => "📎 " + a._name).join("  ") : "");
+    setAtts([]);
+    converse([...msgs, { role: "user", content, display }]);
   };
 
   return (
@@ -2168,16 +2277,27 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
         {msgs.map((m, i) => (
           <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
             <div className={cls("max-w-[90%] rounded-2xl px-3 py-1.5 text-[13px] whitespace-pre-wrap leading-relaxed",
-              m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.content}</div>
+              m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.display || (typeof m.content === "string" ? m.content : "📎")}</div>
           </div>
         ))}
         {busy && <p className="text-[11px] text-slate-400 flex items-center gap-1.5"><Loader2 size={11} className="animate-spin" /> reading the file…</p>}
       </div>
-      <div className="border-t border-slate-100 p-2.5 flex items-center gap-2">
-        <Input value={input} onChange={(e) => setInput(e.target.value)} className="text-[13px]"
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-          placeholder="Ask, or agree the next move — it executes…" />
-        <Btn kind="primary" size="sm" disabled={busy || !input.trim()} onClick={send}><Send size={13} /></Btn>
+      <div className="border-t border-slate-100 p-2.5">
+        {atts.length > 0 && (
+          <p className="text-[11px] text-slate-500 mb-1">{atts.map((a, i) => (
+            <span key={i} className="inline-flex items-center gap-1 mr-2.5">📎 {a._name}
+              <button onClick={() => setAtts(atts.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500"><X size={10} /></button></span>
+          ))}</p>
+        )}
+        <div className="flex items-center gap-1.5">
+          <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files || []); e.target.value = ""; }} />
+          <button title="Attach a file or image" onClick={() => fileRef.current && fileRef.current.click()}
+            className="text-slate-400 hover:text-blue-600 p-1 flex-none"><Paperclip size={15} /></button>
+          <Input value={input} onChange={(e) => setInput(e.target.value)} className="text-[13px]" onPaste={onPaste}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            placeholder="Ask, or agree the next move — it executes…" />
+          <Btn kind="primary" size="sm" disabled={busy || (!input.trim() && !atts.length)} onClick={send}><Send size={13} /></Btn>
+        </div>
       </div>
     </div>
   );
@@ -2309,17 +2429,6 @@ function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose })
   );
 }
 
-/* The AI writes the next step itself — the salesperson only approves it. */
-const stepSystem = (d, comp, ev) => [
-  "You write the ONE next step for a sales deal at Elecbits (electronics design & manufacturing services). Today is " + todayStr() + ".",
-  "Deal: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
-    + (d.nextStep && !d.nextStepDoneAt ? " · currently committed: '" + d.nextStep + "'" : ""),
-  "THE RECORD:\n" + (ev || "(nothing logged yet)"),
-  "Reply with one short line saying the step and the reason, then end with exactly:",
-  'STEP_JSON {"what":"the step, concrete, first person","due":"YYYY-MM-DD","why":"one line of reasoning"}',
-  "The due date must be realistic and within the next 7 days unless the record demands otherwise. Never leave due empty.",
-].join("\n");
-
 function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openCompany }) {
   const { users, companies, deals, tasks } = data;
   const d = deals.find((x) => x.id === dealId);
@@ -2328,15 +2437,11 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
   const [touches, setTouches] = useState([]);
   const [commits, setCommits] = useState([]);
   const [busyTemp, setBusyTemp] = useState(false);
-  const [busyPlan, setBusyPlan] = useState(false);
   const [err, setErr] = useState("");
   const [editStep, setEditStep] = useState(false);
   const [stepWhat, setStepWhat] = useState("");
   const [stepDue, setStepDue] = useState("");
-  const [proposal, setProposal] = useState(null); // {what, due, why} the AI wrote, awaiting approval
-  const [busyStep, setBusyStep] = useState(false);
   const [proving, setProving] = useState(false);  // the evidence gate for "done"
-  const [closingTask, setClosingTask] = useState(null);
   const [quickTask, setQuickTask] = useState("");
 
   useEffect(() => {
@@ -2391,25 +2496,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
     });
   })();
 
-  // AI drafts the step from the record; a person approves and it commits —
-  // the same rows the Scrum Master and My Tasks read.
-  const suggestStep = async () => {
-    setBusyStep(true); setErr("");
-    try {
-      const reply = await withTimeout(askClaude(stepSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits)),
-        [{ role: "user", content: "Write the next step." }], { maxTokens: 300 }), 20000);
-      const v = extractMarkedJSON(reply, "STEP_JSON");
-      if (!v || !v.what) throw new Error("no step");
-      setProposal({ what: String(v.what), due: v.due || "", why: v.why ? String(v.why) : "" });
-    } catch (e) { setErr("Couldn't draft a step — try again."); }
-    setBusyStep(false);
-  };
-  const commitProposal = () => {
-    if (!proposal) return;
-    saveNextStep(d.id, { what: proposal.what, due: proposal.due ? proposal.due + "T18:30" : "", owner: d.ownerId });
-    patchDeal({ nextStep: proposal.what, nextStepDue: proposal.due ? proposal.due + "T18:30" : "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
-    setProposal(null); setEditStep(false);
-  };
 
   const reassess = async () => {
     setBusyTemp(true); setErr("");
@@ -2429,40 +2515,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
     setBusyTemp(false);
   };
 
-  const buildPlan = async () => {
-    setBusyPlan(true); setErr("");
-    try {
-      const req = (data.requests || []).find((r) => r.companyId === d.companyId && r.requirement && r.requirement.what);
-      const reply = await withTimeout(askClaude(planSystem(d, comp, req ? JSON.stringify(req.requirement).slice(0, 3000) : "",
-        dealEvidence(d, comp, tasks, touches, commits)),
-        [{ role: "user", content: "Lay out the stage plan." }], { maxTokens: 1200 }), 25000);
-      const v = extractMarkedJSON(reply, "PLAN_STAGES_JSON");
-      const list = v && Array.isArray(v.stages) ? v.stages.filter((x) => x.name) : null;
-      if (!list || !list.length) throw new Error("no stages");
-      const keep = (d.plan || []).filter((x) => x.status !== "pending");
-      const keepNames = new Set(keep.map((x) => x.name.toLowerCase()));
-      const fresh = list.filter((x) => !keepNames.has(String(x.name).toLowerCase()))
-        .map((x) => ({ name: String(x.name), status: ["done", "active"].includes(x.status) && !keep.length ? x.status : "pending",
-          start: "", end: x.end || "", ownerId: d.ownerId, note: "",
-          evidence: (Array.isArray(x.activities) ? x.activities : []).slice(0, 6).map((a) => ({ text: String(a), done: false })) }));
-      const plan = [...keep, ...fresh].slice(0, 3);
-      const entry = { at: nowTS(), by: (me && me.name) || "", why: keep.length ? "Re-planned the pending stages" : "Built the stage plan", what: plan.length + " stages" };
-      saveDealPlan(d.id, plan, { summary: v.summary || "", log: [entry, ...(d.planLog || [])] });
-      patchDeal({ plan, planSummary: v.summary || "", planUpdatedAt: nowTS(), planLog: [entry, ...(d.planLog || [])].slice(0, 100) });
-    } catch (e) { setErr("Could not build the plan — try again."); }
-    setBusyPlan(false);
-  };
-
-  const cycleStage = (i) => {
-    const order = ["pending", "active", "done", "blocked"];
-    const plan = (d.plan || []).map((x, j) => (j === i ? { ...x, status: order[(order.indexOf(x.status) + 1) % order.length] } : x));
-    saveDealPlan(d.id, plan); patchDeal({ plan });
-  };
-  const toggleActivity = (i, j) => {
-    const plan = (d.plan || []).map((x, k) => (k === i
-      ? { ...x, evidence: (x.evidence || []).map((a, m) => (m === j ? { ...a, done: !a.done } : a)) } : x));
-    saveDealPlan(d.id, plan); patchDeal({ plan });
-  };
   const commitStep = () => {
     if (!stepWhat.trim()) return;
     saveNextStep(d.id, { what: stepWhat.trim(), due: stepDue || "", owner: d.ownerId });
@@ -2477,14 +2529,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
         summary: "Next step done — AI-verified " + v.score + "/10" + (v.why ? ": " + v.why : "") + (v.offline ? " (offline check)" : "") }] });
   };
 
-  // The deal's to-dos: tasks pinned to this deal, plus the company's loose
-  // ones. Completing or adding here is the same saveTasks the rest sees.
+  // The deal's NEXT TASKS: raised by scrums or when the deal reached this
+  // stage. They are completed in My Tasks (where the AI checks the evidence),
+  // never ticked off here.
   const dealTasks = tasks
     .filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)))
     .sort((a, b) => ((a.due || "9999") < (b.due || "9999") ? -1 : 1)).slice(0, 8);
-  // Completing goes through the same AI gate as My Tasks — done is proven,
-  // never just clicked.
-  const finishTask = (t) => setClosingTask(t);
   const addQuickTask = () => {
     const title = quickTask.trim();
     if (!title) return;
@@ -2492,8 +2542,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
       due: "", status: "open", source: "manual", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
     setQuickTask("");
   };
-
-  const doneN = (d.plan || []).filter((x) => x.status === "done").length;
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 overflow-y-auto" onClick={onClose}>
@@ -2528,10 +2576,10 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
 
         <div className="p-6 grid lg:grid-cols-[1fr,21rem] gap-5 items-start">
         <div className="space-y-5 min-w-0">
-          {/* 1 · what got collected before now — the story, phase by phase */}
+          {/* 1 · WHAT HAPPENED — and, on the last row, what is going on now */}
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <Lbl className="mr-auto">How it got here</Lbl>
+              <Lbl className="mr-auto">What happened</Lbl>
               {rfqB && rfqB.link && rfqB.link.status !== "submitted" && (
                 <button onClick={() => navigator.clipboard?.writeText(rfqUrl(rfqB.link.id))} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> copy the RFQ link</button>
               )}
@@ -2564,39 +2612,25 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
             </div>
           </div>
 
-          {/* 2 · the next step — the AI writes it, a person approves it */}
+          {/* 2 · WHAT IS NEXT — the committed step. The chat on the right
+             writes and commits steps itself; here it just shows, gets marked
+             done with evidence, or edited by hand. */}
           <div className={cls("border rounded-xl p-4",
             ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <Lbl>Next step</Lbl>
               <div className="flex items-center gap-3">
                 {(ns.key === "committed" || ns.key === "overdue") && <button onClick={() => setProving(true)} className="text-xs text-green-700 hover:underline flex items-center gap-0.5"><Check size={11} /> done — show the evidence</button>}
-                {!proposal && <button onClick={suggestStep} disabled={busyStep} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                  {busyStep ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} let the AI write it</button>}
                 <button onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}
                   className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "write my own"}</button>
               </div>
             </div>
             {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
-            {ns.key === "none" && !editStep && !proposal && <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed. A deal nobody has promised to move is a deal going cold.</p>}
+            {ns.key === "none" && !editStep && <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed — tell the chat on the right where this stands and it writes the step itself.</p>}
             {d.nextStep && !d.nextStepDoneAt && (
               <p className="text-sm text-slate-800 mt-1.5 leading-snug">{d.nextStep}
                 {d.nextStepDue && ns.key !== "overdue" && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(d.nextStepDue)}</span>}
               </p>
-            )}
-            {proposal && (
-              <div className="mt-2.5 border border-blue-200 bg-blue-50/60 rounded-lg p-3">
-                <p className="text-[11px] font-bold text-blue-700 uppercase tracking-wide mb-1 flex items-center gap-1"><Sparkles size={11} /> The AI proposes</p>
-                <p className="text-sm text-slate-800 leading-snug">{proposal.what}
-                  {proposal.due && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(proposal.due)}</span>}
-                </p>
-                {proposal.why && <p className="text-xs text-slate-500 mt-1 leading-snug">{proposal.why}</p>}
-                <div className="flex items-center gap-2.5 mt-2">
-                  <Btn size="sm" kind="primary" onClick={commitProposal}><Check size={12} /> Commit it</Btn>
-                  <button onClick={() => { setProposal(null); suggestStep(); }} className="text-xs text-blue-600 hover:underline">another</button>
-                  <button onClick={() => setProposal(null)} className="text-xs text-slate-500 hover:underline">discard</button>
-                </div>
-              </div>
             )}
             {editStep && (
               <div className="mt-2 space-y-1.5">
@@ -2610,76 +2644,34 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
             <p className="text-[10.5px] text-slate-400 mt-2.5">Committing here is the same record the Scrum Master questions and My Tasks shows — one step, three windows.</p>
           </div>
 
-          {/* the route: three stages, activities under each */}
-          <div>
-            <div className="flex items-center gap-3 mb-2.5">
-              <Lbl className="mr-auto">The route to the PO {(d.plan || []).length ? "· " + doneN + "/" + (d.plan || []).length + " stages done" : ""}</Lbl>
-              {d.planSummary && <span className="text-xs text-slate-500 hidden md:block">{d.planSummary}</span>}
-              <Btn size="sm" disabled={busyPlan} onClick={buildPlan}>
-                {busyPlan ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} {(d.plan || []).length ? "Re-plan pending" : "Plan 3 stages"}
-              </Btn>
-            </div>
-            {(d.plan || []).length ? (
-              <div className="grid md:grid-cols-3 gap-3">
-                {(d.plan || []).map((st, i) => (
-                  <div key={st._id || i} className={cls("rounded-xl border-2 p-3.5",
-                    st.status === "done" ? "border-green-200 bg-green-50/40" : st.status === "active" ? "border-blue-300 bg-blue-50/40"
-                    : st.status === "blocked" ? "border-red-300 bg-red-50/40" : "border-slate-200 bg-slate-50/60")}>
-                    <div className="flex items-start gap-2">
-                      <button onClick={() => cycleStage(i)} title="Click to advance: pending → active → done → blocked"
-                        className={cls("w-4 h-4 mt-0.5 rounded-full flex-none border-2",
-                          st.status === "done" ? "bg-green-500 border-green-500" : st.status === "active" ? "bg-blue-500 border-blue-500"
-                          : st.status === "blocked" ? "bg-red-500 border-red-500" : "bg-white border-slate-300")} />
-                      <div className="min-w-0">
-                        <p className={cls("text-sm font-semibold leading-snug", st.status === "done" ? "text-slate-400 line-through" : "text-slate-900")}>{st.name}</p>
-                        <p className="text-[10px] font-mono uppercase tracking-wide mt-0.5 text-slate-400">{st.status}{st.end ? " · " + fmtDate(st.end) : ""}</p>
-                      </div>
-                    </div>
-                    {(st.evidence || []).length > 0 && (
-                      <div className="mt-2.5 space-y-1 border-t border-slate-200/60 pt-2">
-                        {st.evidence.map((a, j) => (
-                          <label key={j} className="flex items-start gap-2 cursor-pointer group">
-                            <input type="checkbox" checked={!!a.done} onChange={() => toggleActivity(i, j)} className="mt-0.5 flex-none" />
-                            <span className={cls("text-[12px] leading-snug", a.done ? "text-slate-400 line-through" : "text-slate-700 group-hover:text-slate-900")}>{a.text}</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="border border-dashed border-slate-300 rounded-xl p-6 text-center">
-                <p className="text-sm text-slate-500">Every deal is different. The AI reads the requirement and the record, and lays out the three stages this one actually passes through — with the activities under each.</p>
-              </div>
-            )}
-            {(d.plan || []).some((x) => x.status === "blocked") && <p className="text-[11px] text-red-600 mt-2">A blocked stage is a blocked deal — raise it in the scrum.</p>}
-          </div>
-
-          {/* to-dos live with the deal — the same tasks My Tasks and the
-             Scrum Master see, click-to-complete right here */}
+          {/* 3 · NEXT TASKS — raised by scrums or when the deal reached this
+             stage. No checklist: they change only when completed in My Tasks,
+             where the AI checks the evidence. */}
           <div className="border-t border-slate-100 pt-3">
-            <Lbl>Open tasks on this deal{dealTasks.length ? " · " + dealTasks.length : ""}</Lbl>
+            <Lbl>Next tasks{dealTasks.length ? " · " + dealTasks.length : ""}</Lbl>
             <div className="mt-1.5 space-y-1">
               {dealTasks.map((t) => {
                 const who = users.find((u) => u.id === t.assignee);
                 const late = t.due && t.due < todayStr();
                 return (
-                  <div key={t.id} className="flex items-center gap-2 group">
-                    <button title="Mark done" onClick={() => finishTask(t)}
-                      className="w-3.5 h-3.5 rounded-full border-2 border-slate-300 hover:border-green-500 hover:bg-green-50 flex-none" />
-                    <span className="text-[12.5px] text-slate-700 leading-snug mr-auto">{t.title}</span>
+                  <div key={t.id} className="flex items-center gap-2">
+                    <span className={cls("w-1.5 h-1.5 rounded-full flex-none", late ? "bg-red-500" : t.status === "doing" ? "bg-blue-500" : "bg-slate-300")} />
+                    <span className="text-[12.5px] text-slate-700 leading-snug mr-auto">{t.title}
+                      {t.source === "stage" && <span className="ml-1.5 text-[9.5px] uppercase text-blue-500">stage</span>}
+                      {t.source === "scrum" && <span className="ml-1.5 text-[9.5px] uppercase text-purple-500">scrum</span>}
+                    </span>
                     {who && who.id !== me.id && <span className="text-[10px] text-slate-400 flex-none">{who.name}</span>}
                     {t.due && <span className={cls("text-[10px] font-mono flex-none", late ? "text-red-600 font-semibold" : "text-slate-400")}>{late ? "overdue " : ""}{fmtDate(t.due)}</span>}
                   </div>
                 );
               })}
-              {!dealTasks.length && <p className="text-xs text-slate-400">Nothing open. Ask the copilot on the right — or add one:</p>}
+              {!dealTasks.length && <p className="text-xs text-slate-400">Nothing open — the next scrum or the next stage change writes them.</p>}
               <div className="flex items-center gap-1.5 pt-0.5">
                 <Input value={quickTask} onChange={(e) => setQuickTask(e.target.value)} placeholder="Add a task on this deal…" className="text-xs"
                   onKeyDown={(e) => { if (e.key === "Enter") addQuickTask(); }} />
                 <Btn size="sm" disabled={!quickTask.trim()} onClick={addQuickTask}><Plus size={12} /></Btn>
               </div>
+              <p className="text-[10.5px] text-slate-400 pt-1">Completed only from My Tasks — the AI checks the evidence there, and this list updates itself.</p>
             </div>
           </div>
 
@@ -2693,8 +2685,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
         {proving && <StepProof me={me} d={d} comp={comp} data={data} touches={touches} commits={commits}
           onBelieved={applyStepDone}
           onClose={() => { setProving(false); if (d.nextStepDoneAt) setEditStep(true); }} />}
-        {closingTask && <TaskCloseFlow me={me} data={data} task={tasks.find((x) => x.id === closingTask.id) || closingTask}
-          onClose={() => setClosingTask(null)} saveTasks={saveTasks} />}
       </div>
     </div>
   );
@@ -2928,8 +2918,8 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
       )}
       {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={saveTasks} openCompany={openCompany} />}
-      {tempMove && <PhaseMoveChat me={me} move={tempMove} data={data} deals={deals} saveDeals={saveDeals} onClose={() => setTempMove(null)} />}
-      {winning && <WonModal me={me} deal={winning} deals={deals} saveDeals={saveDeals} companies={companies} saveCompanies={saveCompanies} onClose={() => setWinning(null)} />}
+      {tempMove && <PhaseMoveChat me={me} move={tempMove} data={data} deals={deals} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} onClose={() => setTempMove(null)} />}
+      {winning && <PhaseMoveChat me={me} move={{ deal: winning, to: "won" }} data={data} deals={deals} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} onClose={() => setWinning(null)} />}
       {gate && (gate.mode === "advance" || gate.mode === "lost") && (
         <StageGateModal me={me} data={data} gate={gate} onClose={() => setGate(null)} onComplete={(payload) => applyMove(gate.deal, gate.mode === "lost" ? "lost" : gate.to, payload)} />
       )}
@@ -7112,12 +7102,12 @@ const smChatSystem = (me, ctx) => [
   "You are the SCRUM MASTER on the Elecbits Sales OS — a sharp, warm daily interviewer for " + me.name + ". Today is " + todayStr() + ".",
   "YOUR JOB, in order:",
   "1. If the team-scrum question is still open (see STATE), start by asking: did the team have its scrum discussion today? If they say yes, ask them to attach the transcript with the buttons under the chat (paste / upload / Fireflies) — a yes without a transcript counts as no. If no, note it without lecturing and move on.",
-  "2. Walk their companies ONE AT A TIME, worst first (overdue commitments, then no committed step). For each: ask where things stand, question the PENDING ACTIVITIES on the deal's stage plan by name, and pin down the next step WITH A DATE in their words. One or two questions per message, never a wall of text.",
+  "2. Walk their companies ONE AT A TIME, worst first (overdue commitments, then no committed step). For each: ask where things stand, question the OPEN TASKS by name, and pin down the next step WITH A DATE in their words. One or two questions per message, never a wall of text.",
   "3. When they give you something concrete, confirm it in one short line and move to the next thing. Keep the whole check-in under ten minutes of chat.",
   "4. NEVER take 'done' on faith. Before emitting an activity_done action, get one line of evidence — what exactly happened, with whom, when, and where the artefact lives (document name, mail thread). If they finished a committed step, tell them to close it in the Deal Room, where the AI checks the evidence (they can attach the doc or pull the mail chain there). A bare 'yes, done' gets a follow-up question, not an action.",
   "THEIR BOOK TODAY:\n" + ctx,
   "ACTING ON WHAT THEY SAY — end your reply with ONE line when (and only when) something concrete was agreed:",
-  "SM_ACT_JSON {\"actions\":[{\"type\":\"team_scrum\",\"answer\":\"yes|no\"} | {\"type\":\"next_step\",\"company\":\"exact company name\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"activity_done\",\"company\":\"exact company name\",\"activity\":\"the activity text, verbatim\"} | {\"type\":\"task\",\"company\":\"exact company name\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+  "SM_ACT_JSON {\"actions\":[{\"type\":\"team_scrum\",\"answer\":\"yes|no\"} | {\"type\":\"next_step\",\"company\":\"exact company name\",\"what\":\"...\",\"due\":\"YYYY-MM-DD\"} | {\"type\":\"task_done\",\"company\":\"exact company name\",\"task\":\"the open task's title, close to verbatim\"} | {\"type\":\"task\",\"company\":\"exact company name\",\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
   "Dates: 'tomorrow' = " + localISO(new Date(Date.now() + 86400000)) + ". Never invent a date they did not say — ask for it instead. Never show the SM_ACT_JSON line's contents in prose.",
 ].join("\n");
 
@@ -7154,12 +7144,12 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
   const bookCtx = myBook.length ? myBook.map(({ c, d }) => {
     if (!d) return "• " + c.name + " — no open deal.";
     const ns = nextStepState(d);
-    const pend = (d.plan || []).flatMap((st) => (st.evidence || []).filter((a) => !a.done).map((a) => a.text)).slice(0, 6);
+    const pend = tasks.filter((t) => t.companyId === c.id && t.status !== "done").map((t) => t.title).slice(0, 6);
     return "• " + c.name + " — " + (d.temperature || "cold") + ", ₹" + (d.value || 0)
       + (ns.key === "overdue" ? "; COMMITTED STEP OVERDUE since " + fmtDate(d.nextStepDue) + " ('" + d.nextStep + "')"
         : ns.key === "none" ? "; no committed next step"
         : "; next: '" + d.nextStep + "'" + (d.nextStepDue ? " by " + fmtDate(d.nextStepDue) : ""))
-      + (pend.length ? "; pending activities: " + pend.join(" | ") : "; no stage plan yet");
+      + (pend.length ? "; open tasks: " + pend.join(" | ") : "; no open tasks");
   }).join("\n") : "(no companies assigned)";
 
   const persist = (patch) => {
@@ -7184,12 +7174,15 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
           saveNextStep(deal.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: me.id });
           nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
         }
-        if (a.type === "activity_done" && deal && a.activity) {
+        if ((a.type === "task_done" || a.type === "activity_done") && comp && (a.task || a.activity)) {
           const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-          const plan = (deal.plan || []).map((st) => ({ ...st,
-            evidence: (st.evidence || []).map((ac) => (norm(ac.text) === norm(a.activity) || norm(ac.text).includes(norm(a.activity)) ? { ...ac, done: true } : ac)) }));
-          saveDealPlan(deal.id, plan);
-          nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, plan } : x));
+          const want = norm(a.task || a.activity);
+          let hit = false;
+          nextTasks = nextTasks.map((x) => {
+            if (hit || x.status === "done" || x.companyId !== comp.id) return x;
+            if (norm(x.title).includes(want) || want.includes(norm(x.title))) { hit = true; return { ...x, status: "done", doneAt: nowTS() }; }
+            return x;
+          });
         }
         if (a.type === "task" && a.title) {
           nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: deal ? deal.id : "", assignee: me.id, author: me.id,
