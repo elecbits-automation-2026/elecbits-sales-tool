@@ -1837,8 +1837,18 @@ function logClientChat(meId, orgId, kind, entries) {
   const date = todayStr();
   loadChat(meId, date, orgId).then((existing) => {
     const add = entries
-      .map((m) => ({ role: m.role, kind, at: nowTS(), content: typeof m.content === "string" ? m.content : (m.display || "(attachment)") }))
-      .filter((m) => m.content);
+      .map((m) => {
+        // Pasted/uploaded images travel INTO the log as data URIs (bounded),
+        // so the work chat log shows the picture, not just a filename.
+        const images = (m.atts || [])
+          .filter((b) => b && b.type === "image" && b.source && b.source.data && String(b.source.data).length < 1200000)
+          .map((b) => "data:" + (b.source.media_type || "image/png") + ";base64," + b.source.data)
+          .slice(0, 4);
+        return { role: m.role, kind, at: nowTS(),
+          content: typeof m.content === "string" ? m.content : (m.display || "(attachment)"),
+          ...(images.length ? { images } : {}) };
+      })
+      .filter((m) => m.content || (m.images && m.images.length));
     return saveChat(meId, date, [...(existing || []), ...add], orgId);
   }).catch(() => { /* the log is best-effort; the conversation itself is not */ });
 }
@@ -1995,8 +2005,9 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
       ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: t || "See the attached." }]
       : t;
     const display = (t || "") + (atts.length ? (t ? "\n" : "") + atts.map((a) => "📎 " + a._name).join("  ") : "");
+    const sentAtts = atts.map(({ _name, ...b }) => b);
     setAtts([]);
-    const next = [...msgs, { role: "user", content, display }];
+    const next = [...msgs, { role: "user", content, display, atts: sentAtts }];
     setMsgs(next); setBusy(true);
     try {
       const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to, evRef.current),
@@ -2006,7 +2017,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
       const shown = (stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim() || "Good — that clears it.")
         + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "");
       setMsgs([...next, { role: "assistant", content: shown }]);
-      logClientChat(me.id, d.companyId, "stage gate → " + move.to, [{ role: "user", content: display }, { role: "assistant", content: shown }]);
+      logClientChat(me.id, d.companyId, "stage gate → " + move.to, [{ role: "user", content: display, atts: sentAtts }, { role: "assistant", content: shown }]);
       if (v && v.summary) setReady(v);
     } catch (e) { setMsgs([...next, { role: "assistant", content: "Lost the AI mid-chat — try again, or skip the chat below." }]); }
     setBusy(false);
@@ -2241,7 +2252,7 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
       // The whole exchange lands in the client's date-wise work chat log.
       const last = history[history.length - 1];
       logClientChat(me.id, d.companyId, "deal " + d.did,
-        [...(last && last.role === "user" ? [{ role: "user", content: last.display || last.content }] : []), { role: "assistant", content: shown }]);
+        [...(last && last.role === "user" ? [{ role: "user", content: last.display || last.content, atts: last.atts }] : []), { role: "assistant", content: shown }]);
     } catch (e) {
       setMsgs([...history, { role: "assistant", content: "Couldn't reach the AI — send that again." }]);
     }
@@ -2262,8 +2273,9 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks })
       ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: t || "See the attached." }]
       : t;
     const display = (t || "") + (atts.length ? (t ? "\n" : "") + atts.map((a) => "📎 " + a._name).join("  ") : "");
+    const sentAtts = atts.map(({ _name, ...b }) => b);
     setAtts([]);
-    converse([...msgs, { role: "user", content, display }]);
+    converse([...msgs, { role: "user", content, display, atts: sentAtts }]);
   };
 
   return (
@@ -2560,13 +2572,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
             </div>
             <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
               <span className="font-mono tabular-nums text-slate-600">{fmtINRc(d.value)}</span>
-              {owner ? <span>· {owner.name}</span> : (
-                <Sel className="w-40 text-xs py-0.5" value=""
-                  onChange={(e) => e.target.value && patchDeal({ ownerId: e.target.value })}>
-                  <option value="">— assign an owner —</option>
-                  {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </Sel>
-              )}
+              {/* the owner is always editable, right here */}
+              <Sel className="w-36 text-xs py-0.5" value={owner ? owner.id : ""}
+                onChange={(e) => e.target.value && patchDeal({ ownerId: e.target.value })}>
+                {!owner && <option value="">— assign an owner —</option>}
+                {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </Sel>
               {comp && comp.city ? <span>· {comp.city}</span> : null}
               {d.createdAt ? <span>· started {fmtDate(d.createdAt)}</span> : null}
             </p>
@@ -2642,14 +2653,10 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
                 </div>
               </div>
             )}
-            <p className="text-[10.5px] text-slate-400 mt-2.5">Committing here is the same record the Scrum Master questions and My Tasks shows — one step, three windows.</p>
-          </div>
-
-          {/* 3 · NEXT TASKS — raised by scrums or when the deal reached this
-             stage. No checklist: they change only when completed in My Tasks,
-             where the AI checks the evidence. */}
-          <div className="border-t border-slate-100 pt-3">
-            <Lbl>Next tasks{dealTasks.length ? " · " + dealTasks.length : ""}</Lbl>
+            {/* the step's tasks live UNDER the step — one unit. Raised by
+               scrums or by reaching this stage; completed only in My Tasks. */}
+            <div className="mt-3 pt-2.5 border-t border-slate-200/70">
+            <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400">Tasks under this step{dealTasks.length ? " · " + dealTasks.length : ""}</p>
             <div className="mt-1.5 space-y-1">
               {dealTasks.map((t) => {
                 const who = users.find((u) => u.id === t.assignee);
@@ -2673,6 +2680,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, openC
                 <Btn size="sm" disabled={!quickTask.trim()} onClick={addQuickTask}><Plus size={12} /></Btn>
               </div>
               <p className="text-[10.5px] text-slate-400 pt-1">Completed only from My Tasks — the AI checks the evidence there, and this list updates itself.</p>
+            </div>
             </div>
           </div>
 
@@ -5009,13 +5017,31 @@ function WorkLogCard({ company: c, users }) {
               </button>
               {isOpen && (
                 <div className="px-3 pb-2.5 pt-2 space-y-1.5 border-t border-slate-100 max-h-96 overflow-y-auto">
-                  {day.messages.map((m, j) => (
-                    <p key={j} className="text-[12px] leading-snug">
-                      {m.kind && <span className="text-[9px] font-bold uppercase tracking-wide text-purple-500 mr-1.5">{m.kind}</span>}
-                      <span className={cls("text-[9.5px] font-bold uppercase mr-1.5", m.role === "user" ? "text-blue-600" : "text-slate-400")}>{m.role === "user" ? "you" : "ai"}</span>
-                      <span className="text-slate-700 whitespace-pre-wrap">{typeof m.content === "string" ? m.content : (m.display || "📎 attachment")}</span>
-                    </p>
-                  ))}
+                  {day.messages.map((m, j) => {
+                    // Older Ask-the-AI rows store raw content blocks — pull the
+                    // pictures out of those too.
+                    const blockImgs = Array.isArray(m.content)
+                      ? m.content.filter((b) => b && b.type === "image" && b.source && b.source.data)
+                          .map((b) => "data:" + (b.source.media_type || "image/png") + ";base64," + b.source.data)
+                      : [];
+                    const imgs = [...(m.images || []), ...blockImgs].slice(0, 4);
+                    return (
+                      <div key={j} className="text-[12px] leading-snug">
+                        {m.kind && <span className="text-[9px] font-bold uppercase tracking-wide text-purple-500 mr-1.5">{m.kind}</span>}
+                        <span className={cls("text-[9.5px] font-bold uppercase mr-1.5", m.role === "user" ? "text-blue-600" : "text-slate-400")}>{m.role === "user" ? "you" : "ai"}</span>
+                        <span className="text-slate-700 whitespace-pre-wrap">{typeof m.content === "string" ? m.content : (m.display || (imgs.length ? "" : "📎 attachment"))}</span>
+                        {imgs.length > 0 && (
+                          <span className="flex gap-1.5 mt-1 flex-wrap">
+                            {imgs.map((src, k) => (
+                              <a key={k} href={src} target="_blank" rel="noreferrer">
+                                <img src={src} alt="attachment" className="h-20 rounded-md border border-slate-200 object-cover hover:opacity-90" />
+                              </a>
+                            ))}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -6805,7 +6831,10 @@ function TaskChat({ task: t, comp, data, saveTasks }) {
     try {
       const convo = next.slice(-12).map((m) => ({ role: m.role, content: m.content }));
       const { reply, notes } = await askWithDrive(system, convo);
-      persist([...next, { role: "assistant", content: stripToolLines(reply), at: nowTS() }]);
+      const shown = stripToolLines(reply);
+      persist([...next, { role: "assistant", content: shown, at: nowTS() }]);
+      if (t.companyId) logClientChat(t.assignee, t.companyId, "task: " + String(t.title).slice(0, 40),
+        [{ role: "user", content: q }, { role: "assistant", content: shown }]);
       if (notes.length) setNote(notes.join(" · "));
     } catch (e) {
       persist([...next, { role: "assistant", content: "Could not reach the assistant. Your message is kept — try again.", at: nowTS() }]);
