@@ -562,6 +562,13 @@ export async function saveRfqLink(l: any): Promise<boolean> {
   return ok(error, "saveRfqLink");
 }
 
+// Off the sales roster (the shared core row survives). Admin-gated by the
+// SECURITY DEFINER RPC itself.
+export async function removeFromRoster(personId: string): Promise<boolean> {
+  const { error } = await supabase.rpc("remove_person", { p_id: personId });
+  return ok(error, "removeFromRoster");
+}
+
 // ULM's overtake call on a request — full or semi. Written from our side
 // too (admins), until the ULM tool writes it itself.
 export async function setRequestOvertake(id: string, overtake: string): Promise<boolean> {

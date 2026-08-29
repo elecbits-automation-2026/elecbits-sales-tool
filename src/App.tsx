@@ -16,7 +16,7 @@ import {
   loadTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
-  saveRfqLink, setRequestOvertake, deleteCompany,
+  saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster,
 } from "./lib/data";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
@@ -6865,78 +6865,141 @@ function ScrumMasterView({ me, data, saveScrums, saveTasks, saveDeals }) {
 function ResourcesView({ me, data, saveUsers, openCompany }) {
   const { users, companies, deals, tasks } = data;
   const isAdmin = me.role === "admin" || me.role === "dept_head";
-  const [adding, setAdding] = useState(false);
-  const [f, setF] = useState({ name: "", email: "", role: "agent" });
+  const [q, setQ] = useState("");
+  const [roleF, setRoleF] = useState("all");
+  const [editing, setEditing] = useState(null); // "new" | user object
+  const [f, setF] = useState({ name: "", email: "", role: "agent", active: true });
   const [err, setErr] = useState("");
 
-  // The roster IS core.people — everyone here has a sales.people_detail row
-  // (dept Sales), written through the upsert_person RPC on save.
-  const roster = users.slice().sort((a, b) => a.name.localeCompare(b.name));
-  const loadOf = (u) => ({
-    companies: companies.filter((c) => c.accountOwner === u.id).length,
-    deals: deals.filter((d) => d.ownerId === u.id && !d.lost && d.stage !== "po").length,
-    tasks: tasks.filter((t) => t.assignee === u.id && t.status !== "done").length,
-  });
+  const roleChip = (r) => r === "admin" ? "purple" : r === "dept_head" ? "blue" : r === "finance" ? "amber" : "green";
 
-  const add = () => {
+  const loadOf = (u) => {
+    const comps = companies.filter((c) => c.accountOwner === u.id);
+    const openDeals = deals.filter((d) => d.ownerId === u.id && !d.lost && d.stage !== "po");
+    const openTasks = tasks.filter((t) => t.assignee === u.id && t.status !== "done");
+    const overdue = openDeals.filter((d) => nextStepState(d).key === "overdue").length
+      + openTasks.filter((t) => t.due && t.due < todayStr()).length;
+    return { comps, openDeals: openDeals.length, openTasks: openTasks.length, overdue };
+  };
+  const statusOf = (u, L) => u.active === false ? ["inactive", "slate"]
+    : L.overdue > 0 ? ["Overdue work", "red"]
+    : L.openDeals + L.openTasks > 0 ? ["Deployed", "amber"]
+    : ["Available", "green"];
+
+  const roster = users
+    .filter((u) => roleF === "all" || u.role === roleF)
+    .filter((u) => !q.trim() || (u.name + " " + (u.email || "")).toLowerCase().includes(q.trim().toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const openEdit = (u) => { setEditing(u); setF({ name: u.name, email: u.email || "", role: u.role, active: u.active !== false }); setErr(""); };
+  const openNew = () => { setEditing("new"); setF({ name: "", email: "", role: "agent", active: true }); setErr(""); };
+  const save = () => {
     if (!f.name.trim()) { setErr("Name is required."); return; }
     if (!f.email.includes("@")) { setErr("A real email is required — it is how they sign in."); return; }
-    if (users.some((u) => (u.email || "").toLowerCase() === f.email.trim().toLowerCase())) { setErr("That email is already on the roster."); return; }
-    saveUsers([...users, { id: uid(), name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, dept: "Sales", active: true }]);
-    setAdding(false); setF({ name: "", email: "", role: "agent" }); setErr("");
+    if (editing === "new") {
+      if (users.some((u) => (u.email || "").toLowerCase() === f.email.trim().toLowerCase())) { setErr("That email is already on the roster."); return; }
+      saveUsers([...users, { id: uid(), name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, dept: "Sales", active: true }]);
+    } else {
+      saveUsers(users.map((u) => (u.id === editing.id ? { ...u, name: f.name.trim(), email: f.email.trim().toLowerCase(), role: f.role, active: f.active } : u)));
+    }
+    setEditing(null);
   };
-  const toggleActive = (u) => saveUsers(users.map((x) => (x.id === u.id ? { ...x, active: x.active === false ? true : false } : x)));
+  const remove = async (u) => {
+    const L = loadOf(u);
+    const warn = L.comps.length || L.openDeals || L.openTasks
+      ? "\nThey still own " + L.comps.length + " compan" + (L.comps.length === 1 ? "y" : "ies") + ", " + L.openDeals + " open deal(s) and " + L.openTasks + " open task(s) — reassign those first if they matter."
+      : "";
+    if (!window.confirm("Remove " + u.name + " from the sales roster? Their shared core record and history stay." + warn)) return;
+    const okd = await removeFromRoster(u.id);
+    if (!okd) { window.alert("Could not remove — only a sales admin can manage the roster."); return; }
+    saveUsers(users.filter((x) => x.id !== u.id));
+  };
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 mb-1">
-        <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><Users size={18} className="text-blue-600" /> Resources</h1>
-        {isAdmin && <Btn kind="primary" onClick={() => setAdding(true)}><Plus size={14} /> Add resource</Btn>}
+    <div className="max-w-5xl mx-auto">
+      <div className="mb-4">
+        <h1 className="text-lg font-semibold flex items-center gap-2"><Users size={18} className="text-blue-600" /> Resources</h1>
+        <p className="text-xs text-slate-500 mt-0.5">Team roster, availability &amp; load — the Sales department, from <span className="font-mono">core.people</span>.</p>
       </div>
-      <p className="text-xs text-slate-500 mb-4">The sales roster, straight from <span className="font-mono">core.people</span> — everyone in the Sales department. Adding a resource writes through the shared roster RPC; they sign in with the email you enter.</p>
+
+      {/* toolbar — the ODM pattern: filters left, count + action right */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Input className="w-56 pl-8" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people…" />
+        </div>
+        <Sel className="w-40" value={roleF} onChange={(e) => setRoleF(e.target.value)}>
+          <option value="all">All roles</option>
+          {ROLES.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+        </Sel>
+        <span className="text-xs text-slate-400 font-mono ml-auto">{roster.length} resource{roster.length === 1 ? "" : "s"}</span>
+        {isAdmin && <Btn kind="primary" onClick={openNew}><Plus size={14} /> Add resource</Btn>}
+      </div>
 
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="text-left text-[10.5px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-200">
-              <th className="py-2.5 px-4">Person</th><th className="py-2.5 px-4">Role</th><th className="py-2.5 px-4">Email</th>
-              <th className="py-2.5 px-4">Companies</th><th className="py-2.5 px-4">Open deals</th><th className="py-2.5 px-4">Open tasks</th>
-              {isAdmin && <th className="py-2.5 px-4"></th>}
+            <thead><tr className="text-left text-[10.5px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200 bg-slate-50/60">
+              <th className="py-2.5 px-4">Name</th><th className="py-2.5 px-4">Role</th>
+              <th className="py-2.5 px-4">Companies</th><th className="py-2.5 px-4">Open deals</th>
+              <th className="py-2.5 px-4">Open tasks</th><th className="py-2.5 px-4">Status</th>
+              {isAdmin && <th className="py-2.5 px-4 text-right">Actions</th>}
             </tr></thead>
             <tbody>
               {roster.map((u) => {
                 const L = loadOf(u);
+                const [st, sc] = statusOf(u, L);
                 return (
-                  <tr key={u.id} className={cls("border-b border-slate-100 last:border-0", u.active === false && "opacity-50")}>
-                    <td className="py-2.5 px-4"><span className="flex items-center gap-2"><Avatar name={u.name} size="sm" /> <span className="font-medium text-slate-900">{u.name}</span>
-                      {u.active === false && <Chip color="slate">inactive</Chip>}
-                      {!u.authId && <span title="Rostered but never signed in" className="text-[10px] text-amber-600 uppercase">no login yet</span>}</span></td>
-                    <td className="py-2.5 px-4 text-slate-600">{roleLabel(u.role)}</td>
-                    <td className="py-2.5 px-4 font-mono text-xs text-slate-500">{u.email || "—"}</td>
-                    <td className="py-2.5 px-4 font-mono tabular-nums">{L.companies}</td>
-                    <td className="py-2.5 px-4 font-mono tabular-nums">{L.deals}</td>
-                    <td className="py-2.5 px-4 font-mono tabular-nums">{L.tasks}</td>
+                  <tr key={u.id} className={cls("border-b border-slate-100 last:border-0 hover:bg-slate-50/50", u.active === false && "opacity-50")}>
+                    <td className="py-3 px-4">
+                      <span className="flex items-center gap-2.5">
+                        <Avatar name={u.name} />
+                        <span>
+                          <span className="font-medium text-slate-900 block leading-tight">{u.name}</span>
+                          <span className="font-mono text-[11px] text-slate-400">{u.email || "—"}{!u.authId && " · no login yet"}</span>
+                        </span>
+                      </span>
+                    </td>
+                    <td className="py-3 px-4"><Chip color={roleChip(u.role)}>{roleLabel(u.role)}</Chip></td>
+                    <td className="py-3 px-4">
+                      {L.comps.length ? (
+                        <div className="space-y-0.5">
+                          {L.comps.slice(0, 3).map((c) => (
+                            <button key={c.id} onClick={() => openCompany(c.id)} className="block text-xs text-blue-700 hover:underline text-left leading-tight">{c.name}</button>
+                          ))}
+                          {L.comps.length > 3 && <span className="text-[11px] text-slate-400">+{L.comps.length - 3} more</span>}
+                        </div>
+                      ) : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="py-3 px-4 font-mono tabular-nums">{L.openDeals || <span className="text-slate-300">0</span>}</td>
+                    <td className="py-3 px-4 font-mono tabular-nums">{L.openTasks || <span className="text-slate-300">0</span>}</td>
+                    <td className="py-3 px-4"><Chip color={sc}>{st}</Chip></td>
                     {isAdmin && (
-                      <td className="py-2.5 px-4 text-right">
-                        {u.id !== me.id && <button onClick={() => toggleActive(u)} className="text-xs text-slate-400 hover:text-slate-700">{u.active === false ? "reactivate" : "deactivate"}</button>}
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-1.5 justify-end">
+                          <button title="Edit" onClick={() => openEdit(u)} className="text-slate-400 hover:text-blue-600 p-1"><Pencil size={14} /></button>
+                          {u.id !== me.id && (
+                            <button title="Remove from the roster" onClick={() => remove(u)} className="text-slate-300 hover:text-red-600 p-1"><Trash2 size={14} /></button>
+                          )}
+                        </div>
                       </td>
                     )}
                   </tr>
                 );
               })}
-              {roster.length === 0 && <tr><td colSpan={7} className="py-8 text-center text-sm text-slate-400">Nobody on the roster yet.</td></tr>}
+              {roster.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400">Nobody matches.</td></tr>}
             </tbody>
           </table>
         </div>
       </div>
-      <p className="text-[11px] text-slate-400 mt-2">Deactivating hides a person from the tool; actually revoking their login is Admin → Users. Logins are provisioned there too.</p>
+      <p className="text-[11px] text-slate-400 mt-2">Removing takes a person off the SALES roster only — their shared core record and everything they did stays. Login provisioning and revocation live in Admin → Users.</p>
 
-      {adding && (
-        <Modal title="Add a resource" onClose={() => setAdding(false)}
+      {editing && (
+        <Modal title={editing === "new" ? "Add a resource" : "Edit " + editing.name} onClose={() => setEditing(null)}
           footer={<>
             <span className="mr-auto text-xs text-red-600">{err}</span>
-            <Btn onClick={() => setAdding(false)}>Cancel</Btn>
-            <Btn kind="primary" onClick={add}><Check size={14} /> Add to the roster</Btn>
+            <Btn onClick={() => setEditing(null)}>Cancel</Btn>
+            <Btn kind="primary" onClick={save}><Check size={14} /> {editing === "new" ? "Add to the roster" : "Save"}</Btn>
           </>}>
           <div className="space-y-3">
             <Field label="Full name" req><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
@@ -6946,6 +7009,11 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                 {ROLES.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
               </Sel>
             </Field>
+            {editing !== "new" && (
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" checked={f.active} onChange={(e) => setF({ ...f, active: e.target.checked })} /> Active
+              </label>
+            )}
             <p className="text-xs text-slate-500">If this email already belongs to someone in core.people (a PMS engineer, say), the roster adopts that person instead of duplicating them.</p>
           </div>
         </Modal>
