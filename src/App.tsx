@@ -1034,15 +1034,19 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
     // Onboarding in one go: mint the official client ID (when a size was
     // picked and the industry maps), and put the first deal on the board.
     (async () => {
-      let acts = [];
+      let latest = { ...clean };
+      const note = (text) => { latest = { ...latest, activity: [...(latest.activity || []), { at: nowTS(), by: me.id, text }] }; };
       const ind = industryCodeOf(clean.industry);
       if (clean.orgSize && ind) {
         const cid = await mintClientId(clean.id, Number(ind), clean.orgSize);
-        if (cid) {
-          acts.push({ at: nowTS(), by: me.id, text: "Official client ID minted: " + cid });
-          saveCompanies((cur => cur)(next.map((x) => (x.id === clean.id ? { ...x, cid, official: true, activity: [...(x.activity || []), acts[acts.length - 1]] } : x))));
-        }
+        if (cid) { latest = { ...latest, cid, official: true }; note("Official client ID minted: " + cid); }
       }
+      // The company's Drive folder, created up front so filing never waits.
+      try {
+        const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(latest))).then((x) => x.json());
+        if (r && r.id) note("Drive folder created: " + driveFolderName(latest));
+      } catch (e) { /* Drive not configured — the folder can come later */ }
+      saveCompanies(next.map((x) => (x.id === clean.id ? latest : x)));
       const val = Number(_dealValue || clean.potential || 0);
       const d = {
         id: uid(), did: nextSeq(deals, "did", "EB-D-"), companyId: clean.id, ownerId: clean.accountOwner || me.id,
@@ -1321,7 +1325,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
 
       {/* the workspace tabs — the PMS project-section, for a company */}
       <div className="bg-white border border-slate-200 rounded-xl px-4 mt-4 flex items-center gap-1 overflow-x-auto">
-        {[["overview", "Overview", TrendingUp], ["plan", "Plan", ClipboardList], ["todos", "To-dos", ListTodo], ["comms", "Client Comms", Phone], ["files", "Files & Drive", FolderOpen], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
+        {[["overview", "Overview", TrendingUp], ["research", "Research", Search], ["deals", "Deals", Columns], ["plan", "Plan", ClipboardList], ["todos", "To-dos", ListTodo], ["comms", "Client Comms", Phone], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
           <button key={k} onClick={() => setCtab(k)}
             className={cls("flex items-center gap-1.5 px-3.5 py-3 text-sm border-b-2 -mb-px whitespace-nowrap", ctab === k ? "border-blue-600 text-blue-700 font-semibold" : "border-transparent text-slate-500 font-medium hover:text-slate-700")}>
             <Ic size={15} /> {l}
@@ -1475,14 +1479,19 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
         </div>
       )}
 
-      {ctab === "comms" && <CommsTab me={me} company={c} data={data} saveTasks={saveTasks} />}
+      {ctab === "comms" && <CommsTab me={me} company={c} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies} />}
 
-      {ctab === "files" && (
-        <div className="grid lg:grid-cols-2 gap-4 mt-4 items-start">
-          <DriveCard company={c} />
-          <DriveIntel me={me} company={c} data={data} saveCompanies={saveCompanies} />
+      {ctab === "research" && (
+        <div className="mt-4 space-y-4">
+          <ResearchCard me={me} company={c} data={data} saveCompanies={saveCompanies} />
+          <div className="grid lg:grid-cols-2 gap-4 items-start">
+            <DriveIntel me={me} company={c} data={data} saveCompanies={saveCompanies} />
+            <DriveCard company={c} />
+          </div>
         </div>
       )}
+
+      {ctab === "deals" && <CompanyDealsTab me={me} company={c} data={data} saveDeals={saveDeals} saveTasks={saveTasks} />}
 
       {ctab === "ask" && <div className="mt-4"><CompanyAssistant me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} /></div>}
 
@@ -1735,6 +1744,223 @@ function WonModal({ me, deal: d, deals, saveDeals, companies, saveCompanies, onC
       <Field label="The PO — reference, value, what was agreed" req hint="This line is the deal's closing record.">
         <TA value={note} onChange={(e) => setNote(e.target.value)} className="min-h-16" placeholder="e.g. PO #4471 received, ₹18.5L, 500 units, delivery from Oct" />
       </Field>
+    </Modal>
+  );
+}
+
+/* ── RESEARCH — what we know about this client, written once, kept ─────── */
+const researchSystem = (c) => [
+  "You write the RESEARCH DOSSIER on a client of Elecbits (Indian electronics ODM/EMS). Work from the record, the conversation history, anything you find in Drive, and general knowledge of the industry — and say plainly what is assumption versus fact.",
+  "CLIENT: " + c.name + (c.industry ? " · " + c.industry : "") + (c.city ? " · " + c.city : "") + (c.whatTheyDo ? " — " + c.whatTheyDo : "") + (c.website ? " · " + c.website : ""),
+  "Reply with ONLY: RESEARCH_JSON {\"about\":\"3-4 sentences on who they are and how they make money\",\"products\":[\"what they make or sell\"],\"signals\":[\"buying signals and needs visible in the record\"],\"competitors\":[\"who else likely serves them, or empty\"],\"opportunities\":[\"what Elecbits can realistically sell them, sharpest first\"],\"questions\":[\"what we still need to find out\"]}",
+].join("\n");
+
+function ResearchCard({ me, company: c, data, saveCompanies }) {
+  const { companies } = data;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const r = (c.plan && c.plan.research) || null;
+  const generate = async () => {
+    setBusy(true); setErr("");
+    try {
+      let touches = [];
+      try { touches = await loadTouches(c.id); } catch (e) {}
+      const convo = [{ role: "user", content: "THE RECORD:\n" + JSON.stringify({ contact: c.contactPerson, designation: c.designation, source: c.source, potential: c.potential, custom: c.custom }).slice(0, 2000)
+        + "\n\nRECENT CONVERSATIONS:\n" + touches.slice(0, 8).map((t) => fmtDate(t.at) + " " + t.kind + ": " + (t.subject || "") + " — " + ((t.ai || {}).summary || t.body || "").slice(0, 200)).join("\n")
+        + "\n\nWrite the dossier. Check the company's Drive folder if useful." }];
+      const { reply } = await askWithDrive(researchSystem(c), convo);
+      const v = extractMarkedJSON(reply, "RESEARCH_JSON");
+      if (!v || !v.about) throw new Error("unparseable");
+      const research = { ...v, at: nowTS(), by: me.id };
+      saveCompanies(companies.map((x) => (x.id === c.id ? { ...x, plan: { ...(x.plan || {}), research } } : x)));
+    } catch (e) { setErr("Research failed — try again."); }
+    setBusy(false);
+  };
+  const Sec = ({ label, items }) => (items || []).length ? (
+    <div><Lbl>{label}</Lbl>{items.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x}</p>)}</div>
+  ) : null;
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <SectionTitle right={<Btn size="sm" kind={r ? "default" : "primary"} disabled={busy} onClick={generate}>
+        {busy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} {r ? "Refresh" : "Research this client"}</Btn>}>
+        Research
+      </SectionTitle>
+      {!r && !busy && <p className="text-sm text-slate-400">Nothing yet. The AI reads the record, the conversations and the Drive folder, and writes the dossier — who they are, what to sell them, what to find out.</p>}
+      {r && (
+        <div className="space-y-3">
+          <p className="text-sm text-slate-800">{r.about}</p>
+          <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3">
+            <Sec label="What they make" items={r.products} />
+            <Sec label="Buying signals" items={r.signals} />
+            <Sec label="Competition" items={r.competitors} />
+            <Sec label="What Elecbits can sell them" items={r.opportunities} />
+          </div>
+          <Sec label="Still to find out" items={r.questions} />
+          <p className="text-[11px] text-slate-400">researched {fmtDate(r.at)} · treat unverified lines as assumptions</p>
+        </div>
+      )}
+      {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
+    </div>
+  );
+}
+
+/* ── DEALS TAB — what exactly is happening with this client, deal by deal ── */
+function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
+  const { deals } = data;
+  const [room, setRoom] = useState(null);
+  const mine = deals.filter((d) => d.companyId === c.id)
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  const phaseOf = (d) => d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
+  return (
+    <div className="mt-4 space-y-3">
+      {mine.length === 0 && <Empty icon={Columns} title="No deals yet" sub="Create one from the Overview — it lands on the pipeline in Cold." />}
+      {mine.map((d) => {
+        const ph = phaseOf(d);
+        const ns = nextStepState(d);
+        return (
+          <div key={d.id} className="bg-white border border-slate-200 rounded-xl p-5">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <span className="font-mono text-sm text-slate-500">{d.did}</span>
+              <Chip color={ph === "won" ? "green" : ph === "lost" ? "slate" : tempColor(d.temperature)}>{ph === "won" ? "CLOSED WON" : ph === "lost" ? "CLOSED LOST" : ph.toUpperCase()}</Chip>
+              <span className="font-mono text-sm tabular-nums text-slate-800">{fmtINRc(d.value)}</span>
+              {rfqBadgeFor(d, data.rfq) && <Chip color={rfqBadgeFor(d, data.rfq).color}>{rfqBadgeFor(d, data.rfq).label}</Chip>}
+              <span className="mr-auto" />
+              <Btn size="sm" onClick={() => setRoom(d.id)}>Deal Room</Btn>
+            </div>
+            {d.temperatureWhy && <p className="text-xs text-slate-500 mt-1.5">{d.temperatureWhy}</p>}
+            {!d.lost && d.stage !== "po" && (
+              ns.key === "overdue"
+                ? <p className="text-xs font-semibold text-red-600 mt-1.5 flex items-center gap-1"><AlertTriangle size={12} /> committed step overdue since {fmtDate(d.nextStepDue)}: {d.nextStep}</p>
+                : ns.key === "none"
+                ? <p className="text-xs text-amber-700 mt-1.5">no committed next step</p>
+                : <p className="text-xs text-slate-600 mt-1.5">next: {d.nextStep}{d.nextStepDue ? " · by " + fmtDate(d.nextStepDue) : ""}</p>
+            )}
+            {/* every stage of the deal, visible right here */}
+            {(d.plan || []).length > 0 && (
+              <div className="grid sm:grid-cols-3 gap-2.5 mt-3">
+                {(d.plan || []).map((st, i) => (
+                  <div key={st._id || i} className={cls("border rounded-lg p-2.5",
+                    st.status === "done" ? "border-green-200 bg-green-50/50" : st.status === "active" ? "border-blue-200 bg-blue-50/50"
+                    : st.status === "blocked" ? "border-red-200 bg-red-50/50" : "border-slate-200 bg-slate-50")}>
+                    <p className="text-[12.5px] font-semibold text-slate-800">{i + 1}. {st.name}</p>
+                    <div className="mt-1 space-y-0.5">
+                      {(st.evidence || []).map((a, j) => (
+                        <p key={j} className={cls("text-[11.5px] flex items-start gap-1", a.done ? "text-slate-400 line-through" : "text-slate-600")}>
+                          <span className="mt-0.5">{a.done ? "✓" : "○"}</span> {a.text}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {(d.plan || []).length === 0 && !d.lost && d.stage !== "po" &&
+              <p className="text-[11px] text-slate-400 mt-2">No stage plan yet — open the Deal Room and let the AI plan the 3 stages.</p>}
+          </div>
+        );
+      })}
+      {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={saveTasks} openCompany={() => {}} />}
+    </div>
+  );
+}
+
+/* ── PHASE MOVE CHAT — the big box on every stage change. It digs into the
+   sales collateral folder in Drive and asks the right questions for this
+   type of client before the card moves. ─────────────────────────────────── */
+const phaseMoveSystem = (d, comp, to) => [
+  "You are the STAGE-CHANGE GATE on the Elecbits Sales OS pipeline. A salesperson wants to move a deal to " + to.toUpperCase() + ". Your job, in a short chat:",
+  "1. Look in the sales COLLATERAL in Drive — search for 'collateral' and browse the sales folders — and find what fits THIS type of client (industry, size, what they do). Case studies, decks, datasheets.",
+  "2. Ask the RIGHT questions for this client type and this move, one or two at a time, grounded in what the phase means:",
+  "   cold→warm: what did the client actually respond to? · warm→rfq: is the requirement being gathered — RFQ link sent, input coming? · →hot: what commercial signal did the client give (pricing ask, timeline, negotiation)?",
+  "3. Recommend which collateral to send next, by file name, when you found something relevant.",
+  "CLIENT: " + comp.name + (comp.industry ? " · " + comp.industry : "") + (comp.orgSize ? " · size " + comp.orgSize : "") + (comp.whatTheyDo ? " — " + comp.whatTheyDo : ""),
+  "DEAL: " + d.did + " · currently " + (d.temperature || "cold") + " · ₹" + (d.value || 0) + (d.nextStep ? " · committed step: " + d.nextStep : ""),
+  "Keep it tight — 2 to 4 questions total, then close. When you have what you need, end your reply with:",
+  "PHASE_JSON {\"summary\":\"one line: what the client did that justifies " + to + "\",\"share\":\"collateral to send next, by name — or empty\"}",
+].join("\n");
+
+function PhaseMoveChat({ me, move, data, deals, saveDeals, onClose }) {
+  const { companies } = data;
+  const d = move.deal;
+  const comp = companies.find((x) => x.id === d.companyId) || { name: "?" };
+  const [msgs, setMsgs] = useState([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(null);   // PHASE_JSON when the gate is satisfied
+  const [manual, setManual] = useState("");
+  const bodyRef = useRef(null);
+  const kicked = useRef(false);
+
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
+  useEffect(() => {
+    if (kicked.current) return;
+    kicked.current = true;
+    (async () => {
+      setBusy(true);
+      try {
+        const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to),
+          [{ role: "user", content: "I want to move this deal to " + move.to + ". Start the gate." }]);
+        setMsgs([{ role: "assistant", content: stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim() + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") }]);
+      } catch (e) { setMsgs([{ role: "assistant", content: "Couldn't reach the AI — use the manual line below and move it." }]); }
+      setBusy(false);
+    })();
+  }, []);
+
+  const send = async () => {
+    const t = input.trim();
+    if (!t || busy) return;
+    setInput("");
+    const next = [...msgs, { role: "user", content: t }];
+    setMsgs(next); setBusy(true);
+    try {
+      const { reply, notes } = await askWithDrive(phaseMoveSystem(d, comp, move.to),
+        [{ role: "user", content: "I want to move this deal to " + move.to + ". Start the gate." },
+         ...next.map((m) => ({ role: m.role, content: m.content }))]);
+      const v = extractMarkedJSON(reply, "PHASE_JSON");
+      const shown = stripToolLines(String(reply).replace(/PHASE_JSON[\s\S]*$/, "")).trim();
+      setMsgs([...next, { role: "assistant", content: (shown || "Good — that clears it.") + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : "") }]);
+      if (v && v.summary) setReady(v);
+    } catch (e) { setMsgs([...next, { role: "assistant", content: "Lost the AI mid-chat — answer below or use the manual line." }]); }
+    setBusy(false);
+  };
+
+  const apply = (summary, share) => {
+    setTemperature(d.id, { from: d.temperature || "cold", to: move.to, why: summary, evidence: share || "", decided: "human", by: me.id });
+    saveDeals(deals.map((x) => (x.id === d.id
+      ? { ...x, temperature: move.to, temperatureAt: nowTS(), temperatureWhy: summary, updatedAt: nowTS(),
+          tempHistory: [...(x.tempHistory || []), { from: d.temperature || "cold", to: move.to, why: summary, evidence: share || "", decided: "human", at: nowTS() }] }
+      : x)));
+    onClose();
+  };
+
+  return (
+    <Modal title={comp.name + " → " + move.to.toUpperCase()} onClose={onClose} wide
+      footer={<>
+        <div className="flex items-center gap-2 mr-auto">
+          <Input className="w-64 text-xs" value={manual} onChange={(e) => setManual(e.target.value)} placeholder="or type the reason and skip the chat" />
+          <Btn size="sm" disabled={manual.trim().length < 8} onClick={() => apply(manual.trim(), "")}>Move it</Btn>
+        </div>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" disabled={!ready} onClick={() => apply(ready.summary, ready.share)}>
+          <Check size={14} /> {ready ? "Confirm the move" : "Answer the gate first"}
+        </Btn>
+      </>}>
+      <div ref={bodyRef} className="max-h-[46vh] min-h-56 overflow-y-auto space-y-3 pr-1">
+        {msgs.map((m, i) => (
+          <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+            <div className={cls("max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap leading-relaxed",
+              m.role === "user" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>{m.content}</div>
+          </div>
+        ))}
+        {busy && <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> reading the collateral…</p>}
+        {ready && <p className="text-xs text-green-700 flex items-center gap-1.5"><CheckCircle2 size={13} /> Gate satisfied: {ready.summary}{ready.share ? " · send: " + ready.share : ""}</p>}
+      </div>
+      <div className="flex items-center gap-2 mt-3 border-t border-slate-100 pt-3">
+        <Input value={input} onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder="Answer the gate…" />
+        <Btn kind="primary" disabled={busy || !input.trim()} onClick={send}><Send size={14} /></Btn>
+      </div>
     </Modal>
   );
 }
@@ -2085,7 +2311,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, openCompany }) {
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
       )}
       {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={() => {}} openCompany={openCompany} />}
-      {tempMove && <TempMoveModal me={me} move={tempMove} deals={deals} saveDeals={saveDeals} onClose={() => setTempMove(null)} />}
+      {tempMove && <PhaseMoveChat me={me} move={tempMove} data={data} deals={deals} saveDeals={saveDeals} onClose={() => setTempMove(null)} />}
       {winning && <WonModal me={me} deal={winning} deals={deals} saveDeals={saveDeals} companies={companies} saveCompanies={saveCompanies} onClose={() => setWinning(null)} />}
       {gate && (gate.mode === "advance" || gate.mode === "lost") && (
         <StageGateModal me={me} data={data} gate={gate} onClose={() => setGate(null)} onComplete={(payload) => applyMove(gate.deal, gate.mode === "lost" ? "lost" : gate.to, payload)} />
@@ -4352,7 +4578,7 @@ const draftSystem = (c, me, touch, writeup) => [
   "Reply with ONLY: DRAFT_JSON {\"subject\":\"...\",\"email\":\"...\",\"whatsapp\":\"...\",\"skip\":\"reason to not send, or empty\"}",
 ].join("\n");
 
-function CommsTab({ me, company: c, data, saveTasks }) {
+function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
   const { users, tasks } = data;
   const [touches, setTouches] = useState(null);
   const [commits, setCommits] = useState([]);
@@ -4378,6 +4604,51 @@ function CommsTab({ me, company: c, data, saveTasks }) {
     loadCommitments(c.id).then(setCommits).catch(() => {});
   };
   useEffect(() => { reload(); }, [c.id]);
+
+  // ── client email intake: the manager records the addresses, the tool
+  //    fetches the mail and turns it into touches and to-dos. ──
+  const isManager = me.role === "admin" || me.role === "dept_head";
+  const commsEmails = (c.plan && c.plan.commsEmails) || [];
+  const [emailInput, setEmailInput] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchMsg, setFetchMsg] = useState("");
+  const saveEmails = (list) => saveCompanies(data.companies.map((x) => (x.id === c.id ? { ...x, plan: { ...(x.plan || {}), commsEmails: list } } : x)));
+
+  const fetchMail = async () => {
+    if (!commsEmails.length || fetching) return;
+    setFetching(true); setFetchMsg("");
+    try {
+      const r = await fetch("/api/inbox?action=fetch&emails=" + encodeURIComponent(commsEmails.join(","))).then((x) => x.json());
+      if (r.error) { setFetchMsg(r.error); setFetching(false); return; }
+      const seen = new Set((touches || []).map((t) => (t.ai || {}).gmailId).filter(Boolean));
+      const fresh = (r.messages || []).filter((m) => !seen.has(m.id));
+      if (!fresh.length) { setFetchMsg("Nothing new — " + (r.count || 0) + " message(s) checked, all already on the record."); setFetching(false); return; }
+      const sys = [
+        "You turn a batch of client emails into the CRM record for " + c.name + " on the Elecbits Sales OS. Today: " + todayStr() + ".",
+        "Our mailbox: " + (r.mailbox || "") + " — mail FROM the client is direction 'in', mail we sent is 'out'.",
+        "For each email worth keeping (skip pure noise), one touch: when it happened (from its Date), a clean subject and a one-line summary of what it means for the deal.",
+        "todos: ONLY actions the mail actually demands of us — a reply owed, a document promised, a meeting to set. Concrete titles, real dates when the mail names one.",
+        "Reply with ONLY: INBOX_JSON {\"touches\":[{\"gmailId\":\"the id given\",\"direction\":\"in|out\",\"at\":\"ISO datetime\",\"subject\":\"...\",\"summary\":\"one line\"}],\"todos\":[{\"title\":\"...\",\"due\":\"YYYY-MM-DD or empty\"}]}",
+      ].join("\n");
+      const reply = await withTimeout(askClaude(sys,
+        [{ role: "user", content: JSON.stringify(fresh).slice(0, 60000) }], { maxTokens: 2500 }), 45000);
+      const v = extractMarkedJSON(reply, "INBOX_JSON");
+      if (!v) throw new Error("unparseable");
+      for (const t of (v.touches || [])) {
+        await saveTouch({ id: uid(), companyId: c.id, kind: "email", direction: t.direction === "in" ? "in" : "out",
+          at: t.at || nowTS(), subject: t.subject || "", body: t.summary || "", contactName: c.contactPerson || "",
+          author: me.id, link: "", driveFile: "", source: "inbox", ai: { summary: t.summary || "", gmailId: t.gmailId || "" } });
+      }
+      if ((v.todos || []).length) {
+        saveTasks([...(v.todos || []).map((td) => ({ id: uid(), companyId: c.id, dealId: "", assignee: c.accountOwner || me.id, author: me.id,
+          title: td.title, details: "From the client's email", due: td.due || todayStr(), status: "open", source: "comms",
+          createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" })), ...tasks]);
+      }
+      setFetchMsg("Filed " + (v.touches || []).length + " email(s) on the record" + ((v.todos || []).length ? " and raised " + v.todos.length + " to-do(s)." : "."));
+      reload();
+    } catch (e) { setFetchMsg("Fetch failed — try again."); }
+    setFetching(false);
+  };
 
   const openCommits = commits.filter((x) => x.status === "open");
   const overdue = openCommits.filter((x) => x.due && x.due < todayStr());
@@ -4495,6 +4766,32 @@ function CommsTab({ me, company: c, data, saveTasks }) {
 
   return (
     <div className="mt-4 space-y-4">
+      {/* ── client email intake ── */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <SectionTitle right={<Btn size="sm" kind="primary" disabled={!commsEmails.length || fetching} onClick={fetchMail}>
+          {fetching ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} Fetch their mail</Btn>}>
+          Client email
+        </SectionTitle>
+        <p className="text-xs text-slate-500 mb-2">The addresses this client writes from{isManager ? " — add them once" : " (set by the sales manager)"}. Fetch reads the shared mailbox, files each mail as a touch, and raises to-dos for anything the mail demands.</p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {commsEmails.map((em) => (
+            <span key={em} className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-700 rounded-full px-2.5 py-1 font-mono">
+              {em}
+              {isManager && <button onClick={() => saveEmails(commsEmails.filter((x) => x !== em))} className="text-slate-400 hover:text-red-500"><X size={11} /></button>}
+            </span>
+          ))}
+          {isManager && (
+            <span className="inline-flex items-center gap-1">
+              <Input className="w-56 text-xs" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="rahul@client.com"
+                onKeyDown={(e) => { if (e.key === "Enter" && emailInput.includes("@")) { saveEmails([...commsEmails, emailInput.trim().toLowerCase()]); setEmailInput(""); } }} />
+              <Btn size="sm" disabled={!emailInput.includes("@")} onClick={() => { saveEmails([...commsEmails, emailInput.trim().toLowerCase()]); setEmailInput(""); }}><Plus size={12} /></Btn>
+            </span>
+          )}
+          {!commsEmails.length && !isManager && <span className="text-xs text-slate-400">none yet</span>}
+        </div>
+        {fetchMsg && <p className="text-xs text-slate-600 mt-2">{fetchMsg}</p>}
+      </div>
+
       {/* ── log a touch ── */}
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <SectionTitle right={<Chip color="blue"><Phone size={11} /> said · promised · decided</Chip>}>Log a touch with {c.name}</SectionTitle>
