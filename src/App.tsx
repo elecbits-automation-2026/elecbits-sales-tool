@@ -1300,7 +1300,6 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
               className="text-slate-300 hover:text-red-600 p-1.5"><Trash2 size={15} /></button>
           )}
           <Btn onClick={() => setRfqing(true)}><Send size={14} /> RFQ link</Btn>
-          <Btn onClick={() => setApplying(true)}><Rocket size={14} /> Apply for Project ID</Btn>
           <Btn onClick={onEdit}><Pencil size={14} /> Edit</Btn>
         </div>
         {myRequests.length > 0 && (
@@ -1326,7 +1325,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
 
       {/* the workspace tabs — the PMS project-section, for a company */}
       <div className="bg-white border border-slate-200 rounded-xl px-4 mt-4 flex items-center gap-1 overflow-x-auto">
-        {[["overview", "Overview", TrendingUp], ["research", "Research", Search], ["deals", "Deals", Columns], ["comms", "Client Comms", Phone], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
+        {[["overview", "Overview", TrendingUp], ["research", "Research", Search], ["deals", "Deals", Columns], ["rfq", "RFQ", Send], ["comms", "Client Comms", Phone], ["ask", "Ask the AI", Bot]].map(([k, l, Ic]) => (
           <button key={k} onClick={() => setCtab(k)}
             className={cls("flex items-center gap-1.5 px-3.5 py-3 text-sm border-b-2 -mb-px whitespace-nowrap", ctab === k ? "border-blue-600 text-blue-700 font-semibold" : "border-transparent text-slate-500 font-medium hover:text-slate-700")}>
             <Ic size={15} /> {l}
@@ -1480,6 +1479,78 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
       )}
 
       {ctab === "deals" && <CompanyDealsTab me={me} company={c} data={data} saveDeals={saveDeals} saveTasks={saveTasks} />}
+
+      {/* RFQ — shared or not; opened or not; filled how much; the answers */}
+      {ctab === "rfq" && (() => {
+        const links = (data.rfq || []).filter((l) => l.companyId === c.id)
+          .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        return (
+          <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
+            <SectionTitle right={<Btn size="sm" kind="primary" onClick={() => setRfqing(true)}><Send size={12} /> New RFQ link</Btn>}>
+              RFQ forms shared with {c.name}
+            </SectionTitle>
+            {links.length === 0 && (
+              <Empty icon={Send} title="No RFQ form shared yet" sub="Create the link and send it — the client fills a two-minute chat form, and every answer shows up here as they type." action={<Btn kind="primary" onClick={() => setRfqing(true)}><Send size={14} /> Create the link</Btn>} />
+            )}
+            <div className="space-y-3">
+              {links.map((l) => {
+                const p = l.response || {};
+                const total = Number(p._total) || 9;
+                const answered = l.status === "submitted" ? total : Math.min(Number(p._answered) || 0, total);
+                const pct = Math.round((answered / total) * 100);
+                const stageN = l.status === "submitted" ? 3 : answered > 0 ? 2 : l.status === "opened" ? 1 : 0;
+                const who = data.users.find((u) => u.id === l.createdBy);
+                return (
+                  <div key={l.id} className="border border-slate-200 rounded-xl p-4">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <p className="font-medium text-sm text-slate-900 mr-auto">
+                        {l.contactName ? "Sent to " + l.contactName : (l.title || "RFQ form")}
+                        <span className="font-mono text-[11px] text-slate-400 ml-2">{fmtDate(l.createdAt)}{who ? " · by " + who.name : ""}</span>
+                      </p>
+                      <Chip color={l.status === "submitted" ? "green" : stageN === 2 ? "amber" : l.status === "opened" ? "purple" : "blue"}>
+                        {l.status === "submitted" ? "SUBMITTED" : stageN === 2 ? "FILLING · " + pct + "%" : l.status === "opened" ? "OPENED" : "SENT"}
+                      </Chip>
+                      {l.status !== "submitted" && (
+                        <button onClick={() => navigator.clipboard?.writeText(rfqUrl(l.id))} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> copy link</button>
+                      )}
+                    </div>
+                    {/* the journey: sent → opened → filling → submitted */}
+                    <div className="flex items-center gap-1.5 mt-3">
+                      {["Sent", "Opened", "Filling", "Submitted"].map((s, i) => (
+                        <React.Fragment key={s}>
+                          <span className={cls("text-[10.5px] font-semibold uppercase tracking-wide", i <= stageN ? "text-blue-700" : "text-slate-300")}>{s}</span>
+                          {i < 3 && <span className={cls("h-px flex-1", i < stageN ? "bg-blue-400" : "bg-slate-200")} />}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2.5 mt-2.5">
+                      <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                        <div className={cls("h-full", l.status === "submitted" ? "bg-green-500" : "bg-blue-500")} style={{ width: pct + "%" }} />
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-500 tabular-nums">{answered}/{total} answered</span>
+                    </div>
+                    {answered > 0 && (
+                      <div className="mt-3 border-t border-slate-100 pt-2.5 grid sm:grid-cols-2 gap-x-6 gap-y-1.5">
+                        {[["name", "Name"], ["need", "Requirement"], ["services", "Services"], ["qty", "Quantity"], ["timeline", "Timeline"], ["budget", "Budget"], ["docs", "Can share"], ["email", "Email"], ["phone", "Phone"], ["notes", "Notes"]].map(([k, label]) => {
+                          const v = Array.isArray(p[k]) ? p[k].join(", ") : p[k];
+                          if (!v) return null;
+                          return (
+                            <div key={k} className={k === "need" || k === "notes" ? "sm:col-span-2" : ""}>
+                              <p className="text-[10.5px] text-slate-400 uppercase tracking-wide">{label}</p>
+                              <p className="text-[13px] text-slate-800 leading-snug">{String(v)}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-3">Only two ways in: this tab needs a sales sign-in, and the client's unique link is their key — the form works for nobody else, and the anon database key has no access to it at all.</p>
+          </div>
+        );
+      })()}
 
       {ctab === "ask" && <div className="mt-4"><CompanyAssistant me={me} company={c} data={data} saveCompanies={saveCompanies} saveTasks={saveTasks} /></div>}
 
@@ -1665,7 +1736,10 @@ function rfqBadgeFor(d, rfq) {
   const l = (rfq || []).filter((x) => x.dealId === d.id || (!x.dealId && x.companyId === d.companyId))
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0];
   if (!l) return null;
+  const answered = Number((l.response || {})._answered) || 0;
+  const total = Number((l.response || {})._total) || 9;
   return l.status === "submitted" ? { label: "RFQ input received", color: "green", link: l }
+    : answered > 0 ? { label: "RFQ filling · " + Math.round((answered / total) * 100) + "%", color: "amber", link: l }
     : l.status === "opened" ? { label: "RFQ opened, awaiting input", color: "purple", link: l }
     : l.status === "created" ? { label: "RFQ link sent", color: "purple", link: l } : null;
 }
@@ -5805,6 +5879,14 @@ function RfqPublicPage({ token }) {
     const cur = STEPS[step];
     setMsgs((m) => [...m, { who: "me", text: echo }]);
     const next = step + 1;
+    // Every answer is saved as it lands — the salesperson's RFQ tab shows
+    // live how much of the form is filled, not just sent/submitted.
+    try {
+      fetch("/api/rfq?id=" + encodeURIComponent(token), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ partial: true, response: { ...f.current, _answered: next, _total: STEPS.length } }),
+      }).catch(() => {});
+    } catch (e) { /* progress is best-effort */ }
     if (next < STEPS.length) {
       setStep(next);
       const q = STEPS[next].ask;
