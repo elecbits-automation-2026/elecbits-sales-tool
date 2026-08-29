@@ -2550,6 +2550,67 @@ function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose })
   );
 }
 
+/* NEXT PROSPECT STEPS — "change" opens this modal: the AI reads the record
+   and lays out the distinct moves that take the deal forward; pick one and it
+   commits (step + its task), or write your own at the bottom. */
+const stepOptionsSystem = (d, comp, ev) => [
+  "You lay out the POSSIBLE NEXT STEPS for a sales deal at Elecbits (electronics design & manufacturing services). Today: " + todayStr() + ".",
+  "DEAL: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
+    + (d.nextStep && !d.nextStepDoneAt ? " · currently committed: '" + d.nextStep + "'" : ""),
+  "THE RECORD (newest first):\n" + (ev || "(thin)"),
+  "Write 3 DISTINCT candidate next steps that would actually take this deal forward — different angles (clear the blocker, widen the contact, force the commercial question), ordered by leverage. First person, concrete, each with a realistic due date within 10 days.",
+  'Reply ONLY: STEP_OPTIONS_JSON {"options":[{"what":"...","due":"YYYY-MM-DD","why":"one factual line on why this is the move"}]}',
+].join("\n");
+
+function NextStepModal({ me, d, comp, data, touches, commits, onCommit, onClose }) {
+  const { tasks } = data;
+  const [opts, setOpts] = useState(null);
+  const [err, setErr] = useState("");
+  const [what, setWhat] = useState(d.nextStep && !d.nextStepDoneAt ? d.nextStep : "");
+  const [due, setDue] = useState(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : "");
+  useEffect(() => {
+    let a = true;
+    withTimeout(askClaude(stepOptionsSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits)),
+      [{ role: "user", content: "Lay out the possible next steps." }], { maxTokens: 800 }), 30000)
+      .then((reply) => {
+        if (!a) return;
+        const v = extractMarkedJSON(reply, "STEP_OPTIONS_JSON");
+        setOpts(v && Array.isArray(v.options) ? v.options.filter((o) => o && o.what).slice(0, 4) : []);
+      })
+      .catch(() => { if (a) { setOpts([]); setErr("Couldn't draft the options — write your own below, or ask the copilot."); } });
+    return () => { a = false; };
+  }, []);
+  return (
+    <Modal title="Next prospect steps" onClose={onClose}
+      footer={<><span className="mr-auto text-[11px] text-slate-400">Committing writes the step AND its task — one unit.</span><Btn onClick={onClose}>Cancel</Btn></>}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500 -mt-1">The AI reads the record and lays out the moves that take {comp ? comp.name : "this deal"} forward — pick one, or write your own.</p>
+        {opts === null && <p className="text-sm text-slate-400 flex items-center gap-2 py-3"><Loader2 size={14} className="animate-spin" /> reading the record…</p>}
+        {err && <p className="text-xs text-red-600">{err}</p>}
+        {(opts || []).map((o, i) => (
+          <button key={i} onClick={() => onCommit(o.what, o.due ? o.due + "T18:30" : "")}
+            className="w-full text-left border border-slate-200 hover:border-blue-400 hover:bg-blue-50/40 rounded-xl p-3.5 group transition-colors">
+            <p className="text-sm text-slate-800 leading-snug group-hover:text-slate-900">{o.what}</p>
+            {o.due && <p className="text-[11px] font-mono text-slate-400 mt-1">by {fmtDate(o.due)}</p>}
+            {o.why && <p className="text-xs text-slate-500 mt-1 leading-snug">{o.why}</p>}
+            <p className="text-[11px] text-blue-600 font-medium mt-1.5 opacity-0 group-hover:opacity-100">Commit this →</p>
+          </button>
+        ))}
+        <div className="border-t border-slate-100 pt-3">
+          <Lbl>Write my own</Lbl>
+          <div className="mt-1.5 space-y-1.5">
+            <Input value={what} onChange={(e) => setWhat(e.target.value)} placeholder="what happens next — your words" />
+            <div className="flex gap-1.5">
+              <Input type="datetime-local" className="flex-1 text-xs" value={due} onChange={(e) => setDue(e.target.value)} />
+              <Btn kind="primary" size="sm" disabled={!what.trim()} onClick={() => onCommit(what.trim(), due || "")}><Check size={12} /> Commit</Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /* GENERATE TASKS — click as often as you like. It reads the step, every open
    task and the record, then realigns the whole set: merges duplicates, drops
    the obsolete, fixes titles and dates, adds what is missing. */
@@ -2574,9 +2635,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const [commits, setCommits] = useState([]);
   const [busyTemp, setBusyTemp] = useState(false);
   const [err, setErr] = useState("");
-  const [editStep, setEditStep] = useState(false);
-  const [stepWhat, setStepWhat] = useState("");
-  const [stepDue, setStepDue] = useState("");
+  const [editStep, setEditStep] = useState(false); // the Next prospect steps modal
   const [realigning, setRealigning] = useState(false);
   const [realignNote, setRealignNote] = useState("");
 
@@ -2704,19 +2763,21 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     setBusyTemp(false);
   };
 
-  const commitStep = () => {
-    if (!stepWhat.trim()) return;
-    const what = stepWhat.trim();
-    saveNextStep(d.id, { what, due: stepDue || "", owner: d.ownerId });
-    patchDeal({ nextStep: what, nextStepDue: stepDue || "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
-    // Every step carries its task, from every path — no separate click.
+  // One committer for every door — the modal's picked option, the manual
+  // write-my-own — and the step's task comes with it.
+  const commitStepWith = (what0, due0) => {
+    const what = String(what0 || "").trim();
+    if (!what) return;
+    const due = due0 || "";
+    saveNextStep(d.id, { what, due, owner: d.ownerId });
+    patchDeal({ nextStep: what, nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
     if (!openTaskDupe(tasks, d.companyId, what)) {
       saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: what,
         details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-        due: stepDue ? String(stepDue).slice(0, 10) : "", status: "open", source: "step",
+        due: due ? String(due).slice(0, 10) : "", status: "open", source: "step",
         createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
     }
-    setEditStep(false); setStepWhat(""); setStepDue("");
+    setEditStep(false);
   };
   // The step becomes a TASK — the evidence check lives in the task's closure
   // (My Tasks), not here. The card shows the task's live status, and the step
@@ -2737,8 +2798,10 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
       const open = tasks.filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)));
       const lines = open.map((t) => "• " + t.title + (t.due ? " (due " + fmtDate(t.due) + ")" : " (no date)") + (t.status === "doing" ? " [in progress]" : "")).join("\n");
       const stepLine = d.nextStep && !d.nextStepDoneAt ? d.nextStep + (d.nextStepDue ? " (by " + fmtDate(d.nextStepDue) + ")" : "") : "";
+      // A long task list needs a long answer — a tight budget truncated the
+      // JSON mid-op and looked like "no brain". Budget scales, timeout too.
       const reply = await withTimeout(askClaude(realignSystem(d, comp, stepLine, lines, dealEvidence(d, comp, tasks, touches, commits)),
-        [{ role: "user", content: "Realign the tasks." }], { maxTokens: 800 }), 30000);
+        [{ role: "user", content: "Realign the tasks." }], { maxTokens: 2000 }), 45000);
       const v = extractMarkedJSON(reply, "REALIGN_JSON");
       if (!v || !Array.isArray(v.ops)) throw new Error("no ops");
       let next = [...tasks];
@@ -2873,27 +2936,18 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 )}
               </span>
               <div className="flex items-center gap-3">
-                <button onClick={() => { setEditStep(!editStep); setStepWhat(d.nextStep && !d.nextStepDoneAt ? d.nextStep : ""); setStepDue(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : ""); }}
-                  className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "write my own"}</button>
+                <button onClick={() => setEditStep(true)}
+                  className="text-xs text-blue-600 hover:underline">{d.nextStep && !d.nextStepDoneAt ? "change" : "next prospect steps"}</button>
               </div>
             </div>
             {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
-            {ns.key === "none" && !editStep && (drafting
+            {ns.key === "none" && (drafting
               ? <p className="text-xs text-blue-700 mt-2 leading-relaxed flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> The AI is reading the record and writing the next step — improvise it in the chat on the right.</p>
               : <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed — tell the chat on the right where this stands and it writes the step itself.</p>)}
             {d.nextStep && !d.nextStepDoneAt && (
               <p className="text-sm text-slate-800 mt-1.5 leading-snug">{d.nextStep}
                 {d.nextStepDue && ns.key !== "overdue" && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(d.nextStepDue)}</span>}
               </p>
-            )}
-            {editStep && (
-              <div className="mt-2 space-y-1.5">
-                <Input value={stepWhat} onChange={(e) => setStepWhat(e.target.value)} placeholder="what happens next — your words" />
-                <div className="flex gap-1.5">
-                  <Input type="datetime-local" className="flex-1 text-xs" value={stepDue} onChange={(e) => setStepDue(e.target.value)} />
-                  <Btn kind="primary" size="sm" disabled={!stepWhat.trim()} onClick={commitStep}><Check size={12} /></Btn>
-                </div>
-              </div>
             )}
             {/* the step's tasks live UNDER the step — one unit. Raised by
                scrums or by reaching this stage; completed only in My Tasks. */}
@@ -2940,6 +2994,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
         {/* the AI in the room */}
         <DealChat me={me} d={d} comp={comp} data={data} touches={touches} commits={commits} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} />
         </div>
+
+        {editStep && <NextStepModal me={me} d={d} comp={comp} data={data} touches={touches} commits={commits}
+          onCommit={(w, dd2) => commitStepWith(w, dd2)} onClose={() => setEditStep(false)} />}
 
       </div>
     </div>
