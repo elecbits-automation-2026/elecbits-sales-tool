@@ -2609,7 +2609,10 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   useEffect(() => {
     const dd = deals.find((x) => x.id === dealId);
     if (!dd || !dd.nextStep || dd.nextStepDoneAt) return;
-    const lt = tasks.find((t) => t.dealId === dd.id && t.source === "step" && t.title === dd.nextStep && t.status === "done");
+    const lt = tasks.find((t) => t.status === "done"
+      && (t.dealId === dd.id || (!t.dealId && t.companyId === dd.companyId))
+      && (normTitle(t.title) === normTitle(dd.nextStep)
+        || normTitle(t.title).includes(normTitle(dd.nextStep)) || normTitle(dd.nextStep).includes(normTitle(t.title))));
     if (!lt) return;
     saveNextStep(dd.id, { what: dd.nextStep, due: dd.nextStepDue, owner: dd.nextStepOwner, doneAt: lt.doneAt || nowTS() });
     saveDeals(deals.map((x) => (x.id === dd.id ? { ...x, nextStepDoneAt: lt.doneAt || nowTS(), updatedAt: nowTS() } : x)));
@@ -2688,10 +2691,14 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     setEditStep(false); setStepWhat(""); setStepDue("");
   };
   // The step becomes a TASK — the evidence check lives in the task's closure
-  // (My Tasks), not here. The card just shows the task's live status, and the
-  // step marks itself done when its task closes.
+  // (My Tasks), not here. The card shows the task's live status, and the step
+  // marks itself done when its task closes. ANY same-titled task on this deal
+  // counts as the step's task, whoever raised it — copilot, scrum, kickoff.
   const stepTask = d.nextStep && !d.nextStepDoneAt
-    ? tasks.find((t) => t.dealId === d.id && t.source === "step" && t.title === d.nextStep)
+    ? (tasks.find((t) => t.dealId === d.id && t.source === "step" && t.title === d.nextStep)
+      || tasks.find((t) => (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId))
+        && (normTitle(t.title) === normTitle(d.nextStep)
+          || normTitle(t.title).includes(normTitle(d.nextStep)) || normTitle(d.nextStep).includes(normTitle(t.title)))))
     : null;
   const genStepTask = () => {
     if (!d.nextStep || stepTask || openTaskDupe(tasks, d.companyId, d.nextStep)) return;
