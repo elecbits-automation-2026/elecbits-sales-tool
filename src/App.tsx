@@ -5016,58 +5016,68 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
         {fetchMsg && <p className="text-xs text-slate-600 mt-2">{fetchMsg}</p>}
       </div>
 
-      {/* ── log a touch ── */}
+      {/* ── log a touch: one hero line, quiet controls under it ── */}
       <div className="bg-white border border-slate-200 rounded-xl p-5">
-        <SectionTitle right={<Chip color="blue"><Phone size={11} /> said · promised · decided</Chip>}>Log a touch with {c.name}</SectionTitle>
-        <div className="flex flex-wrap gap-1.5 mb-3">
-          {TOUCH_KINDS.map(([k, label, I]) => (
-            <button key={k} onClick={() => setKind(k)}
-              className={cls("px-2.5 py-1 rounded-lg text-xs font-medium border inline-flex items-center gap-1.5",
-                kind === k ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>
-              <I size={12} /> {label}
-            </button>
-          ))}
-          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-xs ml-2">
-            {[["in", "They came to us"], ["out", "We reached out"]].map(([k, l]) => (
-              <button key={k} onClick={() => setDir(k)} className={cls("px-2.5 py-1 font-medium", dir === k ? "bg-slate-700 text-white" : "bg-white text-slate-600")}>{l}</button>
+        <div className="flex items-start gap-2">
+          <Input value={line} onChange={(e) => setLine(e.target.value)} className="text-[15px] py-2.5"
+            onKeyDown={(e) => { if (e.key === "Enter" && line.trim()) log(true); }}
+            placeholder={"What happened with " + c.name + "? — “Sent the revised quote, they pushed back on tooling cost”"} />
+          <Btn disabled={busy || (!line.trim() && !notes.trim())} onClick={() => log(false)} className="flex-none py-2.5">Log</Btn>
+          <Btn kind="primary" disabled={busy || (!line.trim() && !notes.trim())} onClick={() => log(true)} className="flex-none py-2.5">
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Log + AI
+          </Btn>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-3 text-xs">
+          <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden">
+            {TOUCH_KINDS.map(([k, label, I]) => (
+              <button key={k} onClick={() => setKind(k)} title={label}
+                className={cls("px-2 py-1.5 flex items-center gap-1", kind === k ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50")}>
+                <I size={13} />{kind === k && <span className="font-medium">{label}</span>}
+              </button>
             ))}
           </div>
+          <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden">
+            {[["out", "we reached out"], ["in", "they came to us"]].map(([k, l]) => (
+              <button key={k} onClick={() => setDir(k)} className={cls("px-2.5 py-1.5 font-medium", dir === k ? "bg-slate-700 text-white" : "bg-white text-slate-500 hover:bg-slate-50")}>{l}</button>
+            ))}
+          </div>
+          <span className="flex items-center gap-1.5 text-slate-400">with
+            <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="who?"
+              className="border-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent text-slate-700 font-medium w-28 py-0.5" />
+          </span>
+          <span className="flex items-center gap-1.5 text-slate-400">
+            <Clock size={12} />
+            <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
+              className="border-0 bg-transparent text-slate-600 focus:outline-none font-mono text-[11px] w-44" />
+          </span>
+          <button onClick={() => setMore(!more)} className="text-blue-600 hover:underline">{more ? "▾ less" : "▸ detail, link, minutes"}</button>
+          <span className="text-slate-300 ml-auto font-mono">{touches ? touches.length + " on record" : "…"}</span>
         </div>
-        <div className="flex flex-wrap gap-2 mb-2">
-          <div><p className="text-[11px] text-slate-400 mb-1">When</p><Input type="datetime-local" className="w-52" value={when} onChange={(e) => setWhen(e.target.value)} /></div>
-          <div className="flex-1 min-w-[200px]"><p className="text-[11px] text-slate-400 mb-1">Their side</p><Input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="who you spoke to" /></div>
-        </div>
-        <Input value={line} onChange={(e) => setLine(e.target.value)}
-          placeholder={"What happened, in one line — “Sent the revised quote, they pushed back on tooling cost”"} />
-        <button onClick={() => setMore(!more)} className="text-xs text-blue-600 hover:underline mt-2">{more ? "▾" : "▸"} Add detail, a link, or the minutes</button>
+
         {more && (
-          <div className="space-y-2 mt-2">
+          <div className="space-y-2 mt-3 border-t border-slate-100 pt-3">
             <TA value={notes} onChange={(e) => setNotes(e.target.value)} className="min-h-24"
               placeholder="Everything worth keeping. Paste a transcript here and the write-up will use all of it." />
-            <div><p className="text-[11px] text-slate-400 mb-1">Link</p><Input value={link} onChange={(e) => setLink(e.target.value)} placeholder="Fireflies / Meet recording / the mail thread" /></div>
-            <div>
-              <p className="text-[11px] text-slate-400 mb-1">Saved in Drive as</p>
-              <div className="flex gap-2">
-                <Input value={driveFile} onChange={(e) => setDriveFile(e.target.value)} placeholder="2026-08-14_MoM_pricing.docx" />
-                <Btn size="sm" disabled={!driveFile.trim()} onClick={async () => {
-                  setCheckMsg("checking…");
-                  try {
-                    const r = await drive.verify(driveFolderName(c), driveFile.trim());
-                    setCheckMsg(r.found ? "✓ found in " + (r.matches[0] || {}).where : "✗ not in the folder — did it save?");
-                  } catch (e) { setCheckMsg("could not check"); }
-                }}>Check</Btn>
+            <div className="grid sm:grid-cols-2 gap-2">
+              <div><p className="text-[11px] text-slate-400 mb-1">Link</p><Input value={link} onChange={(e) => setLink(e.target.value)} placeholder="Fireflies / Meet recording / the mail thread" /></div>
+              <div>
+                <p className="text-[11px] text-slate-400 mb-1">Saved in Drive as</p>
+                <div className="flex gap-2">
+                  <Input value={driveFile} onChange={(e) => setDriveFile(e.target.value)} placeholder="2026-08-14_MoM_pricing.docx" />
+                  <Btn size="sm" disabled={!driveFile.trim()} onClick={async () => {
+                    setCheckMsg("checking…");
+                    try {
+                      const r = await fetch("/api/drive?action=verify&name=" + encodeURIComponent(driveFolderName(c)) + "&file=" + encodeURIComponent(driveFile.trim())).then((x) => x.json());
+                      setCheckMsg(r.found ? "✓ found in " + (r.matches[0] || {}).where : "✗ not in the folder — did it save?");
+                    } catch (e) { setCheckMsg("could not check"); }
+                  }}>Check</Btn>
+                </div>
+                {checkMsg && <p className="text-[11px] text-slate-500 mt-1">{checkMsg}</p>}
               </div>
-              {checkMsg && <p className="text-[11px] text-slate-500 mt-1">{checkMsg}</p>}
             </div>
           </div>
         )}
-        <div className="flex items-center gap-2 mt-3">
-          <Btn disabled={busy || (!line.trim() && !notes.trim())} onClick={() => log(false)}>Log it</Btn>
-          <Btn kind="primary" disabled={busy || (!line.trim() && !notes.trim())} onClick={() => log(true)}>
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Log it and write it up with AI
-          </Btn>
-          <span className="text-xs text-slate-400 ml-auto">{touches ? touches.length + " on record" : "loading…"}</span>
-        </div>
         {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
       </div>
 
@@ -5111,45 +5121,68 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
         </div>
       )}
 
-      {/* ── the timeline ── */}
-      {(touches || []).map((t) => {
-        const w = t.ai || {};
-        const by = users.find((u) => u.id === t.author);
-        return (
-          <div key={t.id} className="bg-white border border-slate-200 rounded-xl p-4 border-l-4 border-l-blue-500">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-slate-400"><KindIcon k={t.kind} /></span>
-              <span className="text-[11px] text-slate-400">{t.direction === "in" ? "↙ inbound" : "↗ outbound"}</span>
-              <span className="font-mono text-xs text-slate-400">{fmtDate(t.at)} · {fmtTime(t.at)}</span>
-              {by && <span className="text-xs text-slate-400">{by.name}</span>}
-              {t.contactName && <span className="text-xs text-slate-500">→ {t.contactName}</span>}
-              {w.temperature && <Chip color={w.temperature === "hot" ? "green" : w.temperature === "cold" ? "red" : "amber"}>{w.temperature}</Chip>}
-              {t.link && <a href={t.link} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:underline ml-auto">source ↗</a>}
+      {/* ── the timeline: a feed with a rail, newest first ── */}
+      {(touches || []).length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <SectionTitle>Every touch, newest first</SectionTitle>
+          <div className="relative">
+            <div className="absolute left-[15px] top-2 bottom-2 w-px bg-slate-200" />
+            <div className="space-y-4">
+              {(touches || []).map((t) => {
+                const w = t.ai || {};
+                const by = users.find((u) => u.id === t.author);
+                const kd = TOUCH_KINDS.find((x) => x[0] === t.kind);
+                const KI = kd ? kd[2] : ClipboardList;
+                const inbound = t.direction === "in";
+                return (
+                  <div key={t.id} className="relative pl-11">
+                    <span className={cls("absolute left-0 top-0.5 w-8 h-8 rounded-full flex items-center justify-center border-2 bg-white",
+                      inbound ? "border-green-300 text-green-600" : "border-slate-200 text-slate-400")}>
+                      <KI size={14} />
+                    </span>
+                    <div className={cls("border rounded-xl px-4 py-3", inbound ? "border-green-200 bg-green-50/30" : "border-slate-200")}>
+                      <div className="flex items-baseline gap-2 flex-wrap">
+                        <span className="text-sm font-semibold text-slate-900 mr-auto">{t.subject || w.title || (kd ? kd[1] : "Touch")}</span>
+                        {w.temperature && <Chip color={w.temperature === "hot" ? "red" : w.temperature === "cold" ? "blue" : "amber"}>{w.temperature}</Chip>}
+                        <span className="text-[11px] font-mono text-slate-400 flex-none">{fmtDate(t.at)} · {fmtTime(t.at)}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {inbound ? "they came to us" : "we reached out"}
+                        {by ? " · " + by.name : ""}{t.contactName ? (inbound ? " ← " : " → ") + t.contactName : ""}
+                        {t.source === "inbox" ? " · from the mailbox" : ""}
+                        {t.link && <a href={t.link} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline ml-1.5">source ↗</a>}
+                      </p>
+                      {w.summary && <p className="text-[13px] text-slate-700 mt-1.5 leading-relaxed">{w.summary}</p>}
+                      {!w.summary && t.body && t.body !== t.subject && <p className="text-[13px] text-slate-600 mt-1.5 leading-relaxed line-clamp-2">{t.body}</p>}
+                      {(w.ourCommitments || w.challenges || w.clientSaid) && (
+                        <button onClick={() => setOpen(open === t.id ? null : t.id)} className="text-xs text-blue-600 hover:underline mt-1.5">
+                          {open === t.id ? "▾ hide the write-up" : "▸ full write-up"}
+                        </button>
+                      )}
+                      {open === t.id && (
+                        <div className="mt-2.5 space-y-2.5 border-t border-slate-100 pt-2.5">
+                          {(w.clientSaid || []).length > 0 && (<div><Lbl>What the client said</Lbl>{w.clientSaid.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x}</p>)}</div>)}
+                          {(w.ourCommitments || []).length > 0 && (<div><Lbl>We promised</Lbl>{w.ourCommitments.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x.what}{x.due ? " — by " + fmtDate(x.due) : ""}</p>)}</div>)}
+                          {(w.theirCommitments || []).length > 0 && (<div><Lbl>They promised</Lbl>{w.theirCommitments.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x.what}{x.due ? " — by " + fmtDate(x.due) : ""}</p>)}</div>)}
+                          {(w.challenges || []).length > 0 && (<div><Lbl>Objections — and how they went</Lbl>{w.challenges.map((x, i) => (
+                            <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color={x.status === "solved" ? "green" : x.status === "watch" ? "amber" : "red"}>{x.status}</Chip> {x.challenge}{x.action && <span className="text-slate-500"> → {x.action}</span>}</p>))}</div>)}
+                          {(w.ideas || []).length > 0 && (<div><Lbl>Ideas credited</Lbl>{w.ideas.map((x, i) => (
+                            <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color="purple">{x.by || "?"}</Chip> {x.idea} {x.value && <span className="font-mono text-xs text-purple-600">·{x.value}/5</span>}</p>))}</div>)}
+                          {(w.decisions || []).length > 0 && (<div><Lbl>Decided</Lbl>{w.decisions.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x.what}</p>)}</div>)}
+                          {w.nextStep && w.nextStep.what && (<div><Lbl>Next step</Lbl><p className="text-sm text-slate-700">{w.nextStep.what}{w.nextStep.when ? " — by " + fmtDate(w.nextStep.when) : ""}</p></div>)}
+                          {w.risk && <p className="text-xs text-red-600">Risk: {w.risk}</p>}
+                          <details><summary className="text-xs text-slate-400 cursor-pointer">The note as it was written</summary><p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{t.body}</p></details>
+                          <Btn size="sm" disabled={busy} onClick={() => makeDraft(t)}><Sparkles size={12} /> Draft the follow-up</Btn>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-            <p className="text-sm font-medium text-slate-800 mt-1.5">{t.subject || w.title}</p>
-            {w.summary && <p className="text-xs text-slate-600 mt-1">{w.summary}</p>}
-            {(w.ourCommitments || w.challenges || w.clientSaid) && (
-              <button onClick={() => setOpen(open === t.id ? null : t.id)} className="text-xs text-blue-600 hover:underline mt-2">
-                {open === t.id ? "▾" : "▸"} Full write-up
-              </button>
-            )}
-            {open === t.id && (
-              <div className="mt-2 space-y-2.5 border-t border-slate-100 pt-2.5">
-                {(w.clientSaid || []).length > 0 && (<div><Lbl>What the client said</Lbl>{w.clientSaid.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x}</p>)}</div>)}
-                {(w.challenges || []).length > 0 && (<div><Lbl>Objections — and how they went</Lbl>{w.challenges.map((x, i) => (
-                  <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color={x.status === "solved" ? "green" : x.status === "watch" ? "amber" : "red"}>{x.status}</Chip> {x.challenge}{x.action && <span className="text-slate-500"> → {x.action}</span>}</p>))}</div>)}
-                {(w.ideas || []).length > 0 && (<div><Lbl>Ideas credited</Lbl>{w.ideas.map((x, i) => (
-                  <p key={i} className="text-sm text-slate-700 py-0.5"><Chip color="purple">{x.by || "?"}</Chip> {x.idea} {x.value && <span className="font-mono text-xs text-purple-600">·{x.value}/5</span>}</p>))}</div>)}
-                {(w.decisions || []).length > 0 && (<div><Lbl>Decided</Lbl>{w.decisions.map((x, i) => <p key={i} className="text-sm text-slate-700 py-0.5">• {x.what}</p>)}</div>)}
-                {w.nextStep && w.nextStep.what && (<div><Lbl>Next step</Lbl><p className="text-sm text-slate-700">{w.nextStep.what}{w.nextStep.when ? " — by " + fmtDate(w.nextStep.when) : ""}</p></div>)}
-                {w.risk && <p className="text-xs text-red-600">Risk: {w.risk}</p>}
-                <details><summary className="text-xs text-slate-400 cursor-pointer">The note as it was written</summary><p className="text-xs text-slate-500 whitespace-pre-wrap mt-1">{t.body}</p></details>
-                <Btn size="sm" disabled={busy} onClick={() => makeDraft(t)}><Sparkles size={12} /> Draft the follow-up</Btn>
-              </div>
-            )}
           </div>
-        );
-      })}
+        </div>
+      )}
       {touches && touches.length === 0 && (
         <Empty icon={Phone} title={"Nothing logged with " + c.name + " yet"}
           sub="Every call, mail and meeting belongs here — it is what the account remembers when someone else picks it up." />
