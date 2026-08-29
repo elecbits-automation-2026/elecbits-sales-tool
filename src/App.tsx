@@ -16,7 +16,7 @@ import {
   loadTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
-  saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog,
+  saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
 } from "./lib/data";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
@@ -742,6 +742,7 @@ export default function App() {
           {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} saveScrums={saveScrums} saveDeals={saveDeals} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "rfqs" && <RfqsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "chatlogs" && <WorkChatLogsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "resources" && <ResourcesView me={me} data={data} saveUsers={saveUsers} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
@@ -870,6 +871,7 @@ function navGroups(me) {
     ] },
     { label: "Team", items: [
       { key: "resources", label: "Resources", icon: Users },
+      { key: "chatlogs", label: "Work Chat Logs", icon: BookOpen },
       { key: "expenses", label: "Expenses", icon: Receipt },
     ] },
   ];
@@ -4990,6 +4992,87 @@ function DriveCard({ company }) {
 /* ============================================================
    COMPANY ASSISTANT — trainable questions + chat → notes & tasks
    ============================================================ */
+
+/* WORK CHAT LOGS — the sidebar view: the same date-wise log, across EVERY
+   client, filterable by company and person. Read-only; click through to the
+   company for the full workspace. */
+function WorkChatLogsView({ me, data, openCompany }) {
+  const { users, companies } = data;
+  const [rows, setRows] = useState(null);
+  const [companyF, setCompanyF] = useState("all");
+  const [personF, setPersonF] = useState("all");
+  const [open, setOpen] = useState({});
+  useEffect(() => { let a = true; loadAllClientLogs().then((x) => a && setRows(x)); return () => { a = false; }; }, []);
+  const list = (rows || []).filter((r) =>
+    (companyF === "all" || r.orgId === companyF) && (personF === "all" || r.personId === personF));
+  return (
+    <div className="max-w-4xl mx-auto">
+      <div className="mb-4">
+        <h1 className="text-lg font-semibold flex items-center gap-2"><BookOpen size={18} className="text-blue-600" /> Work Chat Logs</h1>
+        <p className="text-xs text-slate-500 mt-0.5">Every AI conversation about every client — deal copilots, stage gates, task chats, Ask-the-AI — date-wise, with the images.</p>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-2.5">
+        <Sel className="w-48" value={companyF} onChange={(e) => setCompanyF(e.target.value)}>
+          <option value="all">All companies</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Sel>
+        <Sel className="w-44" value={personF} onChange={(e) => setPersonF(e.target.value)}>
+          <option value="all">All people</option>
+          {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </Sel>
+        <span className="ml-auto text-xs text-slate-500"><b className="text-slate-800 font-mono tabular-nums">{list.length}</b> day-log{list.length !== 1 ? "s" : ""}</span>
+      </div>
+      {rows === null && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> loading the logs…</p>}
+      {rows && !list.length && <Empty icon={BookOpen} title="No logs yet" sub="Talk to any deal copilot, run a stage gate, or use Ask the AI — every conversation lands here, per client, per day." />}
+      <div className="space-y-2">
+        {list.map((day, i) => {
+          const who = users.find((u) => u.id === day.personId);
+          const comp = companies.find((c) => c.id === day.orgId);
+          const key = day.date + "|" + day.personId + "|" + day.orgId;
+          const isOpen = open[key] !== undefined ? open[key] : i === 0;
+          return (
+            <div key={key} className="bg-white border border-slate-200 rounded-xl">
+              <button onClick={() => setOpen({ ...open, [key]: !isOpen })} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left hover:bg-slate-50/60 rounded-xl">
+                <span className="font-mono text-xs text-slate-500 flex-none">{fmtDate(day.date)}</span>
+                {comp && <span onClick={(e) => { e.stopPropagation(); openCompany(comp.id); }} className="text-sm font-semibold text-slate-900 hover:text-blue-700 hover:underline cursor-pointer">{comp.name}</span>}
+                {who && <span className="text-xs text-slate-600 flex items-center gap-1.5"><Avatar name={who.name} size="sm" /> {who.name}</span>}
+                <span className="text-[11px] text-slate-400 mr-auto">{day.messages.length} entr{day.messages.length === 1 ? "y" : "ies"}</span>
+                <ChevronRight size={13} className={cls("text-slate-400 transition-transform", isOpen && "rotate-90")} />
+              </button>
+              {isOpen && (
+                <div className="px-4 pb-3 pt-2 space-y-1.5 border-t border-slate-100 max-h-96 overflow-y-auto">
+                  {day.messages.map((m, j) => {
+                    const blockImgs = Array.isArray(m.content)
+                      ? m.content.filter((b) => b && b.type === "image" && b.source && b.source.data)
+                          .map((b) => "data:" + (b.source.media_type || "image/png") + ";base64," + b.source.data)
+                      : [];
+                    const imgs = [...(m.images || []), ...blockImgs].slice(0, 4);
+                    return (
+                      <div key={j} className="text-[12px] leading-snug">
+                        {m.kind && <span className="text-[9px] font-bold uppercase tracking-wide text-purple-500 mr-1.5">{m.kind}</span>}
+                        <span className={cls("text-[9.5px] font-bold uppercase mr-1.5", m.role === "user" ? "text-blue-600" : "text-slate-400")}>{m.role === "user" ? (who ? who.name.split(" ")[0] : "user") : "ai"}</span>
+                        <span className="text-slate-700 whitespace-pre-wrap">{typeof m.content === "string" ? m.content : (m.display || (imgs.length ? "" : "📎 attachment"))}</span>
+                        {imgs.length > 0 && (
+                          <span className="flex gap-1.5 mt-1 flex-wrap">
+                            {imgs.map((src, k) => (
+                              <a key={k} href={src} target="_blank" rel="noreferrer">
+                                <img src={src} alt="attachment" className="h-20 rounded-md border border-slate-200 object-cover hover:opacity-90" />
+                              </a>
+                            ))}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 /* THE WORK CHAT LOG — every AI conversation about this client, date-wise:
    deal copilot, stage gates, Ask-the-AI. Read-only history; latest day open. */
