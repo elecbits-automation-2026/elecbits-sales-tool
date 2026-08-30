@@ -11,6 +11,14 @@
 --     anon key gets NO grant here.
 -- ═══════════════════════════════════════════════════════════════════════════
 
+-- Normalize BEFORE constraining: older flows wrote values like 'won' into
+-- deals.temperature. A closed-won deal reads as 'hot' (its phase comes from
+-- stage='po' anyway); anything else unknown starts over at 'cold'.
+update sales.deals
+   set temperature = case when stage = 'po' then 'hot' else 'cold' end
+ where temperature is not null
+   and temperature not in ('cold','warm','rfq','hot');
+
 alter table sales.deals drop constraint if exists deals_temperature_check;
 alter table sales.deals add constraint deals_temperature_check
   check (temperature in ('cold','warm','rfq','hot'));

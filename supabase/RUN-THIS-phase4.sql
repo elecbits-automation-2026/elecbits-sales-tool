@@ -56,9 +56,17 @@ alter table sales.deals
   add column if not exists next_step_set_at  timestamptz,
   add column if not exists next_step_done_at timestamptz;
 
+-- Normalize BEFORE constraining: older flows wrote values like 'won' into
+-- deals.temperature. Closed-won reads as 'hot' (phase comes from stage='po');
+-- anything else unknown starts over at 'cold'.
+update sales.deals
+   set temperature = case when stage = 'po' then 'hot' else 'cold' end
+ where temperature is not null
+   and temperature not in ('cold','warm','rfq','hot');
+
 alter table sales.deals drop constraint if exists deals_temperature_check;
 alter table sales.deals add constraint deals_temperature_check
-  check (temperature in ('cold','warm','hot'));
+  check (temperature in ('cold','warm','rfq','hot'));
 
 create table if not exists sales.temperature_moves (
   id        uuid primary key default gen_random_uuid(),
@@ -125,6 +133,11 @@ union all select 'sales.scrum_sessions',   count(*) from sales.scrum_sessions;
 --     public page reads and submits through /api/rfq (service role) — the
 --     anon key gets NO grant here.
 -- ═══════════════════════════════════════════════════════════════════════════
+
+update sales.deals
+   set temperature = case when stage = 'po' then 'hot' else 'cold' end
+ where temperature is not null
+   and temperature not in ('cold','warm','rfq','hot');
 
 alter table sales.deals drop constraint if exists deals_temperature_check;
 alter table sales.deals add constraint deals_temperature_check
