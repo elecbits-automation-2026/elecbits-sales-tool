@@ -2318,7 +2318,18 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
         : [{ role: "user", content: "Open the conversation: in two or three sharp lines, where does this deal actually stand and what is the ONE next move?" }];
       // The Drive-searching loop can stall on a slow lookup — cap it, and fall
       // back to answering from the record alone rather than spinning forever.
-      const sys = dealChatSystem({ ...d, _openTasks: openTaskTitles }, comp, evidence());
+      // The DMP brain answers first: pull the playbook chunks that match the
+      // question (or the client's shape, for the opener) into the context.
+      let memCtx = "";
+      try {
+        const lastUser = history.length ? history[history.length - 1] : null;
+        const memQ = ((lastUser && (typeof lastUser.content === "string" ? lastUser.content : lastUser.display)) ||
+          ((comp ? comp.name + " " + (comp.industry || "") + " " : "") + (d.temperature || "cold") + " phase sales next move")).slice(0, 300);
+        const mj = await withTimeout(fetch("/api/memory?action=search&q=" + encodeURIComponent(memQ) + "&n=4").then((r) => r.json()), 6000);
+        memCtx = (mj.hits || []).map((h) => "[" + h.folder_path + "/" + h.file_name + "] " + String(h.content).slice(0, 500)).join("\n");
+      } catch (e) { /* the record alone still answers */ }
+      const sys = dealChatSystem({ ...d, _openTasks: openTaskTitles }, comp,
+        evidence() + (memCtx ? "\n\nFROM THE DMP KNOWLEDGE BASE (Drive playbooks & processes — name the file when you use one):\n" + memCtx : ""));
       let reply, notes;
       try {
         ({ reply, notes } = await withTimeout(askWithDrive(sys, convo), 40000));
@@ -5164,6 +5175,75 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
    SYSTEM MEMORY (admin) — durable facts the Assistant remembers
    ============================================================ */
 
+/* THE DMP BRAIN — System Memory's other half: everything learned from the
+   Google Drive DMP folder (Digital Manufacturing Platform), crawled folder by
+   folder, chunked and stored as pgvector embeddings. Learn is repeatable and
+   incremental; search proves what the brain knows. */
+function DmpBrainCard() {
+  const [st, setSt] = useState(null);
+  const [learning, setLearning] = useState(false);
+  const [report, setReport] = useState("");
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const refresh = () => fetch("/api/memory?action=status").then((r) => r.json()).then(setSt).catch(() => {});
+  useEffect(() => { refresh(); }, []);
+  const learn = async () => {
+    setLearning(true); setReport("");
+    try {
+      const j = await fetch("/api/memory?action=learn", { method: "POST" }).then((r) => r.json());
+      setReport(j.error ? j.error : "Visited " + j.foldersVisited + " folders · saw " + j.filesSeen + " files · learned " + j.learned + " (" + j.chunksWritten + " chunks)" + (j.skippedUnreadable ? " · " + j.skippedUnreadable + " unreadable" : "") + " — " + (j.note || ""));
+      refresh();
+    } catch (e) { setReport("Learn failed — check the connection and try again."); }
+    setLearning(false);
+  };
+  const search = async () => {
+    const t = q.trim();
+    if (!t || searching) return;
+    setSearching(true); setHits(null);
+    try {
+      const j = await fetch("/api/memory?action=search&q=" + encodeURIComponent(t)).then((r) => r.json());
+      setHits(j.hits || []);
+    } catch (e) { setHits([]); }
+    setSearching(false);
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4">
+      <SectionTitle right={
+        <Btn size="sm" kind="primary" disabled={learning} onClick={learn}>
+          {learning ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} Learn from DMP
+        </Btn>
+      }>The DMP brain — learned from Drive</SectionTitle>
+      <p className="text-xs text-slate-500 mb-2">
+        Crawls the <span className="font-mono">{(st && st.dmpFolder) || "DMP"}</span> folder in Drive — every sub-folder, every readable file — and stores what it reads as vector memory (pgvector). Click Learn repeatedly until it says up to date; changed files re-learn automatically.
+      </p>
+      {st && (
+        <p className="text-xs text-slate-600 mb-2">
+          <b className="font-mono tabular-nums">{st.files || 0}</b> files · <b className="font-mono tabular-nums">{st.chunks || 0}</b> chunks · <b className="font-mono tabular-nums">{st.embedded || 0}</b> embedded
+          {st.note && <span className="text-amber-700"> · {st.note}</span>}
+        </p>
+      )}
+      {report && <p className="text-xs text-slate-600 border border-slate-200 bg-slate-50 rounded-md px-2.5 py-1.5 mb-2">{report}</p>}
+      <div className="flex items-center gap-2 mt-2">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Test what it knows — e.g. PCBA process steps…"
+          onKeyDown={(e) => { if (e.key === "Enter") search(); }} className="text-xs" />
+        <Btn size="sm" disabled={searching || !q.trim()} onClick={search}>{searching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}</Btn>
+      </div>
+      {hits && (
+        <div className="mt-2 space-y-1.5 max-h-72 overflow-y-auto">
+          {!hits.length && <p className="text-xs text-slate-400">Nothing matched — learn first, or try other words.</p>}
+          {hits.map((h, i) => (
+            <div key={i} className="border border-slate-200 rounded-md px-2.5 py-1.5">
+              <p className="text-[10.5px] font-mono text-slate-400">{h.folder_path}/{h.file_name}{h.similarity != null ? " · " + Number(h.similarity).toFixed(2) : ""}</p>
+              <p className="text-[12px] text-slate-700 leading-snug line-clamp-3">{h.content}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SystemMemoryView({ me, data, saveMemory }) {
   const { users, memory } = data;
   const [editing, setEditing] = useState(null); // entry | "new"
@@ -5182,6 +5262,8 @@ function SystemMemoryView({ me, data, saveMemory }) {
         <Btn kind="primary" size="sm" onClick={() => setEditing("new")}><Plus size={14} /> Add memory</Btn>
       </div>
       <p className="text-sm text-slate-500 mb-4">Durable facts, positioning and rules the Assistant always keeps in mind. Keep each entry short and true.</p>
+
+      <DmpBrainCard />
 
       {(!memory || memory.length === 0) ? (
         <Empty icon={Database} title="No system memory yet" sub="Add the things the Assistant should never forget — positioning, pricing rules, do's and don'ts." action={<Btn kind="primary" onClick={() => setEditing("new")}><Plus size={14} /> Add memory</Btn>} />
