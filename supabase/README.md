@@ -44,8 +44,9 @@ whole thing rolls back and the database is untouched.
 | 14 | **`27-capacity.sql`** | `capacity` on `sales.people_detail` — the ODM CAP column (used/max on Resources) |
 | 15 | **`28-task-sources.sql`** | widens `tasks_source_check` for the `stage` (phase kickoff) and `step` (generated from the committed step) task origins |
 | 16 | **`29-memory-vectors.sql`** | the DMP brain: `vector` extension, `sales.memory_chunks` (pgvector 512), `match_memory` + full-text fallback — fed by /api/memory from the Drive DMP folder |
+| 17 | **`30-sop-ids.sql`** | SOP v2.0 IDs: `sales.sop_counters` + `next_sop_id()` (EB-C-YY-nnnn, January reset, floored at the master register) and `sales.intake_sessions` — the save-progress store for the chat that creates a client |
 
-Steps 10–16 are also bundled as **`RUN-THIS-phase4.sql`** (23 through 29, one
+Steps 10–17 are also bundled as **`RUN-THIS-phase4.sql`** (23 through 30, one
 paste, same idempotence rules).
 
 ### Step 5 is a real trap

@@ -369,10 +369,64 @@ export async function mintClientId(orgId: string, industryCode: number, sizeCode
   const { data: serial, error } = await supabase.schema("core").rpc(RPC.nextNumber, { p_kind: "client_serial" });
   if (error) { console.error("mintClientId", error.message); return null; }
   const cid = "Eb-" + String(industryCode).padStart(2, "0") + "-" + sizeCode + "-" + serial;
-  const { error: e2 } = await tbl(supabase, "orgs")
-    .update({ client_id: cid, org_size: sizeCode }).eq("id", orgId);
-  if (e2) { console.error("mintClientId.update", e2.message); return null; }
+  const { data: hit, error: e2 } = await tbl(supabase, "orgs")
+    .update({ client_id: cid, org_size: sizeCode }).eq("id", orgId).select("id");
+  if (e2 || !hit?.length) { console.error("mintClientId.update", e2?.message || "org row not found"); return null; }
   return cid;
+}
+
+// SOP v2.0 mint (30-sop-ids.sql): EB-C-YY-nnnn, serial resetting each
+// January. `floor` is the highest serial the master register already holds
+// (from /api/register?action=peek) so the DB counter can only move ABOVE the
+// sheet — the register stays the ID authority, XoR-style. One-way like the
+// legacy mint: an org that already carries an official ID keeps it.
+export async function mintSopClientId(orgId: string, floor = 0, sizeCode?: string): Promise<string | null> {
+  const { data: existing } = await tbl(supabase, "orgs").select("client_id").eq("id", orgId).maybeSingle();
+  if (existing?.client_id) return existing.client_id;
+  const { data: cid, error } = await supabase.rpc(RPC.nextSopId, { p_family: "EB-C", p_floor: Number(floor) || 0 });
+  if (error) { console.error("mintSopClientId", error.message); return null; }
+  const patch: any = { client_id: cid };
+  if (sizeCode) patch.org_size = sizeCode;
+  // .select verifies a row was actually stamped: a 0-row update (the org
+  // insert hasn't landed yet) must be a visible failure, not a void-mint
+  // whose ID exists only in the browser.
+  const { data: hit, error: e2 } = await tbl(supabase, "orgs").update(patch).eq("id", orgId).select("id");
+  if (e2 || !hit?.length) { console.error("mintSopClientId.update", e2?.message || "org row not found"); return null; }
+  return cid as string;
+}
+
+/* ---------- client-intake chat sessions (30-sop-ids.sql) ----------
+   The save-progress store for the chat that creates a client: every
+   exchange upserts the row, so a half-known company survives a closed tab
+   and anyone on the roster can pick the draft back up. */
+
+const intakeOut = (r: any) => ({
+  id: r.id, personId: r.person_id || "", orgId: r.org_id || "",
+  status: r.status || "draft", state: r.state || "company",
+  data: r.data || {}, messages: Array.isArray(r.messages) ? r.messages : [],
+  createdAt: r.created_at, updatedAt: r.updated_at,
+});
+
+export async function loadIntakeDrafts(): Promise<any[]> {
+  const { data, error } = await tbl(supabase, "intake_sessions")
+    .select("*").eq("status", "draft").order("updated_at", { ascending: false }).limit(20);
+  if (error) { console.error("loadIntakeDrafts", error.message); return []; }
+  return (data || []).map(intakeOut);
+}
+
+export async function upsertIntakeSession(s: any): Promise<boolean> {
+  const { error } = await tbl(supabase, "intake_sessions").upsert({
+    id: s.id, person_id: s.personId || null, org_id: s.orgId || null,
+    status: s.status || "draft", state: s.state || "company",
+    data: s.data || {}, messages: (s.messages || []).slice(-80),
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "id" });
+  return ok(error, "upsertIntakeSession");
+}
+
+export async function deleteIntakeSession(id: string): Promise<boolean> {
+  const { error } = await tbl(supabase, "intake_sessions").delete().eq("id", id);
+  return ok(error, "deleteIntakeSession");
 }
 
 // Raise a Project-ID request into the shared pipe (sales.requests → core.intake
