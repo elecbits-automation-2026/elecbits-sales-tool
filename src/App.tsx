@@ -17,7 +17,7 @@ import {
   deleteTask, deleteScrum,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
-  mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession,
+  mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession, sopMigrationPresent,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
@@ -1979,6 +1979,29 @@ function MintIdModal({ company: c, data, onClose, saveCompanies, me }) {
   const [size, setSize] = useState(c.orgSize || "ML");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // The pre-flight: every reason a mint can refuse, named before the button
+  // is pressed — the migration, the service account, the register sheet.
+  const [health, setHealth] = useState(null);
+  useEffect(() => {
+    (async () => {
+      const [mig, st] = await Promise.all([sopMigrationPresent(), registerStatus()]);
+      setHealth({ mig, st: st || {} });
+    })();
+  }, []);
+  const healthRows = health ? [
+    ["Migration 30 (the ID mint)", health.mig, health.mig ? "ready" : "NOT RUN — paste the fresh RUN-THIS-phase4.sql (steps 23–30) into the Supabase SQL editor"],
+    ["Drive service account", !!health.st.connected, health.st.connected ? "connected" :
+      health.st.error ? String(health.st.error) :
+      health.st.service_account_json === "missing" ? "GOOGLE_SERVICE_ACCOUNT_JSON missing in Vercel" :
+      health.st.service_account_json === "unparseable" ? "GOOGLE_SERVICE_ACCOUNT_JSON is set but unparseable" :
+      health.st.root_folder_id === "missing" ? "DRIVE_ROOT_FOLDER_ID missing in Vercel" : "not connected"],
+    ["Master register sheet", !!health.st?.register?.found, health.st?.register?.found
+      ? "found — “" + health.st.register.name + "”"
+      : health.st.connected
+        ? "NOT FOUND — share “" + ((health.st.register && health.st.register.name) || "Eb-Master_Register") + "” (Editor) with " + (health.st.email || "the service account")
+        : "checked after the service account connects"],
+  ] : null;
+  const healthOk = health && health.mig && (health.st.connected ? !!health.st?.register?.found : !health.st.error);
   const mint = async () => {
     setBusy(true); setErr("");
     const cid = await mintSopId(c.id, size);
@@ -2006,6 +2029,17 @@ function MintIdModal({ company: c, data, onClose, saveCompanies, me }) {
       footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={busy} onClick={mint}>{busy ? <Loader2 size={14} className="animate-spin" /> : <BadgeCheck size={14} />} Mint EB-C-{String(new Date().getFullYear()).slice(-2)}-…</Btn></>}>
       <div className="space-y-3">
         <p className="text-xs text-slate-500">SOP v2.0: <span className="font-mono">EB-C-YY-nnnn</span>, one independent serial per year, minted above whatever the master register already holds. The row lands in the register first, the client folder second, and the folder link is filed back into the row. This cannot be undone or retyped; the old working ID ({c.cid || "none"}) stays on record in the Legacy ID column.</p>
+        {healthRows && (
+          <div className={cls("rounded-md border px-3 py-2 space-y-1", healthOk ? "border-green-200 bg-green-50/40" : "border-amber-300 bg-amber-50/60")}>
+            {healthRows.map(([label, ok, detail]) => (
+              <p key={label} className="text-[11px] flex items-start gap-1.5">
+                {ok ? <CheckCircle2 size={12} className="text-green-600 mt-px flex-none" /> : <AlertTriangle size={12} className="text-amber-600 mt-px flex-none" />}
+                <span><span className="font-semibold text-slate-700">{label}:</span> <span className={ok ? "text-slate-500" : "text-amber-800"}>{detail}</span></span>
+              </p>
+            ))}
+            {!healthOk && <p className="text-[11px] text-amber-800">Until every line is green the mint refuses — it will not issue an ID the register can't record.</p>}
+          </div>
+        )}
         <Field label="Sector (for the register)">
           <Sel value={ind} onChange={(e) => setInd(e.target.value)}>
             <option value="">— pick —</option>

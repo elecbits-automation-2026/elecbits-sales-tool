@@ -263,6 +263,7 @@ export default async function handler(req, res) {
       register: sheet ? { found: true, id: sheet.id, name: sheet.name || REGISTER_NAME } : { found: false, name: REGISTER_NAME },
       service_account_json: sa ? "ok" : (process.env.GOOGLE_SERVICE_ACCOUNT_JSON ? "unparseable" : "missing"),
       root_folder_id: root ? "set" : "missing",
+      email: sa ? sa.client_email : null,   // who to share the sheet with
     });
   }
   if (!sa || !root) {

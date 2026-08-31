@@ -407,6 +407,16 @@ const intakeOut = (r: any) => ({
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 
+// Has 30-sop-ids.sql been run? Probed through intake_sessions (same
+// migration file as the mint RPC) because selecting is side-effect-free —
+// calling next_sop_id to "test" it would consume a real serial.
+export async function sopMigrationPresent(): Promise<boolean> {
+  try {
+    const { error } = await tbl(supabase, "intake_sessions").select("id").limit(1);
+    return !error;
+  } catch { return false; }
+}
+
 export async function loadIntakeDrafts(): Promise<any[]> {
   const { data, error } = await tbl(supabase, "intake_sessions")
     .select("*").eq("status", "draft").order("updated_at", { ascending: false }).limit(20);
