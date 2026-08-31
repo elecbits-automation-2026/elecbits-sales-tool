@@ -59,6 +59,7 @@ const WHERE = {
   temperature_moves:  ["sales", "temperature_moves"],
   scrum_sessions:     ["sales", "scrum_sessions"],
   rfq_links:          ["sales", "rfq_links"],
+  intake_sessions:    ["sales", "intake_sessions"],
 } as const;
 
 export type TableName = keyof typeof WHERE;
@@ -69,6 +70,8 @@ export const RPC = {
   upsertPerson: "upsert_person",
   /** Mint the next official Eb- client id from the shared core.numbering. */
   nextNumber: "next_number",
+  /** SOP v2.0 mint: EB-<family>-YY-nnnn, floored at the master register. */
+  nextSopId: "next_sop_id",
 } as const;
 
 /* The client's default schema, set in supabase.ts. A table in this schema is

@@ -17,7 +17,9 @@ import {
   deleteTask, deleteScrum,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
+  mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession,
 } from "./lib/data";
+import { registerClient, registerDeal, registerPeek } from "./lib/register";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
   askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
@@ -316,6 +318,77 @@ function nextSeq(items, field, prefix) {
     if (m) mx = Math.max(mx, parseInt(m[1], 10));
   });
   return prefix + pad4(mx + 1);
+}
+
+/* ── SOP v2.0 IDs (EbSOP_ProjectCreationandIDCreation_v2.0) ──────────────
+   Client: EB-C-YY-nnnn — an independent family serial, reset each January,
+   minted through sales.next_sop_id() and floored at the master register so
+   the sheet stays the ID authority. Deal: the FULL parent + one suffix,
+   EB-C-YY-nnnn-Dss — derived, never a fresh serial. Companies that predate
+   the SOP keep their legacy IDs (Law: legacy IDs are recorded, never
+   reused) and their deals keep the legacy EB-D- series. */
+const SOP_CID_RE = /^EB-C-\d{2}-\d{4}$/;
+
+function sopDealCode(company, deals) {
+  const cid = String(company?.cid || "");
+  if (!SOP_CID_RE.test(cid)) return nextSeq(deals, "did", "EB-D-");
+  let mx = 0;
+  deals.forEach((d) => {
+    if (d.companyId !== company.id) return;
+    const m = String(d.did || "").match(/-D(\d+)$/);
+    if (m && String(d.did).startsWith(cid)) mx = Math.max(mx, parseInt(m[1], 10));
+  });
+  return cid + "-D" + String(mx + 1).padStart(2, "0");
+}
+
+/* The full mint: peek the register's max serial (best-effort), then mint
+   above it. Returns the EB-C id, or null when the RPC is unreachable. */
+async function mintSopId(orgId, sizeCode) {
+  const floor = await registerPeek("EB-C");
+  return mintSopClientId(orgId, floor, sizeCode || undefined);
+}
+
+/* "Once deal is created, the deal folder and information inside is created"
+   — the information: a brief seeded from everything the record knows. */
+function dealBriefText(company, deal, ownerName) {
+  return [
+    "# " + deal.did + " — " + company.name,
+    "",
+    "Client ID: " + (company.cid || "—"),
+    "Deal ID: " + deal.did,
+    "Opened: " + String(deal.createdAt || "").slice(0, 10) + " · Owner: " + (ownerName || "—"),
+    "Estimated value: ₹" + (deal.value || 0),
+    "",
+    "## The client",
+    "Industry: " + (company.industry || "—") + " · Size: " + (company.orgSize || "—") + " · City: " + (company.city || "—"),
+    "Contact: " + (company.contactPerson || "—") + (company.designation ? " (" + company.designation + ")" : "") +
+      (company.email ? " · " + company.email : "") + (company.phone ? " · " + company.phone : ""),
+    company.website ? "Website: " + company.website : "",
+    company.whatTheyDo ? "What they do: " + company.whatTheyDo : "",
+    company.source ? "Source: " + company.source : "",
+    "",
+    "_Created by the Elecbits Sales OS. The live record is the deal room; this brief is the Drive copy._",
+  ].filter((l) => l !== null).join("\n");
+}
+
+/* Deal paperwork, XoR-style and fire-and-forget: the Deals-tab register row
+   first, then the deal folder inside the client folder with the brief
+   inside, then the folder link back into the row. Never blocks the save —
+   the caller gets an activity note through `onNote` when something lands. */
+function fileDealFootprint(company, deal, ownerName, onNote) {
+  registerDeal({
+    dealId: deal.did, clientId: SOP_CID_RE.test(company.cid || "") ? company.cid : "",
+    clientName: company.name, dealName: company.name + " — " + deal.did,
+    status: "Open", value: deal.value || 0, currency: "INR", owner: ownerName || "",
+    dateOpened: String(deal.createdAt || nowTS()).slice(0, 10),
+    notes: "Opened from the Sales OS",
+    brief: dealBriefText(company, deal, ownerName),
+  }).then((r) => {
+    if (!onNote || !r) return;
+    if (r.registered) onNote("Master register: deal row added for " + deal.did + ".");
+    if (r.folderLink) onNote("Deal folder created: " + deal.did + (r.registered ? " (link filed in the register)" : ""));
+    (r.warnings || []).forEach((w) => onNote("Deal filing warning: " + w));
+  }).catch(() => {});
 }
 
 function completeness(c) {
@@ -989,6 +1062,9 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
   const { users, companies, deals } = data;
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(null); // company object or "new"
+  const [intake, setIntake] = useState(null);   // "new" | draft session object
+  const [drafts, setDrafts] = useState([]);     // saved intake chats to resume
+  useEffect(() => { loadIntakeDrafts().then(setDrafts); }, [intake]);
   const openId = focusCompanyId;
   const open = companies.find((c) => c.id === openId) || null;
 
@@ -1033,30 +1109,45 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
     setEditing(null);
     setFocusCompanyId(c.id);
     if (!isNew) return;
-    // Onboarding in one go: mint the official client ID (when a size was
-    // picked and the industry maps), and put the first deal on the board.
+    // Onboarding, SOP v2.0 order: mint EB-C-YY-nnnn, then the master-register
+    // row, THEN the client folder (Law 6: no register row, no folder), the
+    // folder link filed back — and the first deal with its own paperwork.
     (async () => {
       let latest = { ...clean };
       const note = (text) => { latest = { ...latest, activity: [...(latest.activity || []), { at: nowTS(), by: me.id, text }] }; };
-      const ind = industryCodeOf(clean.industry);
-      if (clean.orgSize && ind) {
-        const cid = await mintClientId(clean.id, Number(ind), clean.orgSize);
-        if (cid) { latest = { ...latest, cid, official: true }; note("Official client ID minted: " + cid); }
+      const cid = await mintSopId(clean.id, clean.orgSize);
+      if (cid) {
+        latest = { ...latest, cid, official: true, legacyCid: latest.legacyCid || (clean.cid !== cid ? clean.cid : "") };
+        note("Official client ID minted: " + cid);
       }
-      // The company's Drive folder, created up front so filing never waits.
-      try {
-        const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(latest))).then((x) => x.json());
-        if (r && r.id) note("Drive folder created: " + driveFolderName(latest));
-      } catch (e) { /* Drive not configured — the folder can come later */ }
+      const reg = await registerClient({
+        clientId: cid || latest.cid, legacyId: latest.legacyCid || "",
+        name: clean.name, sector: clean.industry || "", orgSize: clean.orgSize || "",
+        addedBy: me.name, poc: clean.contactPerson || "", notes: clean.whatTheyDo || "",
+      });
+      if (reg?.registered) note("Master register: client row added" + (reg.duplicate ? "" : " for " + (cid || latest.cid)) + ".");
+      if (reg?.duplicate) note("Master register already holds " + (cid || latest.cid) + " — row kept as is.");
+      if (reg?.folderLink) note("Client folder created: " + (cid || latest.cid) + " — " + clean.name);
+      (reg?.warnings || []).forEach((w) => note("Filing warning: " + w));
+      if (!reg?.folderLink) {
+        // Register API unreachable — fall back to the plain Drive folder so
+        // day-one filing still has somewhere to land.
+        try {
+          const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(latest))).then((x) => x.json());
+          if (r && r.id) note("Drive folder created: " + driveFolderName(latest));
+        } catch (e) { /* Drive not configured — the folder can come later */ }
+      }
       saveCompanies(next.map((x) => (x.id === clean.id ? latest : x)));
       const val = Number(_dealValue || clean.potential || 0);
       const d = {
-        id: uid(), did: nextSeq(deals, "did", "EB-D-"), companyId: clean.id, ownerId: clean.accountOwner || me.id,
+        id: uid(), did: sopDealCode(latest, deals), companyId: clean.id, ownerId: clean.accountOwner || me.id,
         value: val, stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
         temperature: "cold", tempHistory: [], plan: [], planLog: [],
         history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created with the company." }],
       };
       saveDeals([d, ...deals]);
+      const ownerU = users.find((u) => u.id === d.ownerId);
+      fileDealFootprint(latest, d, ownerU ? ownerU.name : me.name, null);
     })();
   };
 
@@ -1073,8 +1164,30 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <Input placeholder="Search name, ID, city…" value={q} onChange={(e) => setQ(e.target.value)} className="pl-8 w-56" />
         </div>
-        <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={15} /> Add company</Btn>
+        <Btn kind="primary" onClick={() => setIntake("new")}><Plus size={15} /> Add company</Btn>
       </div>
+
+      {drafts.length > 0 && (
+        <div className="bg-amber-50/60 border border-amber-200 rounded-xl p-3 mb-4">
+          <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wide mb-2">Saved intake chats — pick up where you left off</p>
+          <div className="flex flex-wrap gap-2">
+            {drafts.map((s) => {
+              const by = users.find((u) => u.id === s.personId);
+              return (
+                <div key={s.id} className="bg-white border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-2.5">
+                  <div>
+                    <p className="text-sm font-medium text-slate-800">{s.data?.name || "(company not named yet)"}</p>
+                    <p className="text-[11px] text-slate-400">{by ? by.name + " · " : ""}{fmtDate(s.updatedAt)} · at “{s.state}”</p>
+                  </div>
+                  <Btn size="sm" kind="primary" onClick={() => setIntake(s)}>Resume</Btn>
+                  <button title="Discard this draft" onClick={() => { deleteIntakeSession(s.id); setDrafts(drafts.filter((x) => x.id !== s.id)); }}
+                    className="text-slate-300 hover:text-red-600"><Trash2 size={14} /></button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded-xl p-3.5 mb-4 flex flex-wrap items-end gap-3">
         {[
@@ -1103,7 +1216,7 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
       </div>
 
       {visible.length === 0 ? (
-        <Empty icon={Building2} title="No companies yet" sub="Every client starts here. Add the company with full details — the pipeline pulls from this record." action={<Btn kind="primary" onClick={() => setEditing("new")}><Plus size={15} /> Add company</Btn>} />
+        <Empty icon={Building2} title="No companies yet" sub="Every client starts here. Tell the intake chat whatever you know — it structures the record, and you can save progress at any point." action={<Btn kind="primary" onClick={() => setIntake("new")}><Plus size={15} /> Add company</Btn>} />
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {visible.map((c) => {
@@ -1145,6 +1258,9 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
       )}
 
       {editing && <CompanyModal me={me} data={data} company={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={upsert} />}
+      {intake && <ClientIntakeChat me={me} data={data} draft={intake === "new" ? null : intake}
+        onClose={() => setIntake(null)} onCreate={upsert}
+        onUseForm={() => { setIntake(null); setEditing("new"); }} />}
     </div>
   );
 }
@@ -1192,11 +1308,11 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
       </div>
       {!company && (
         <div className="mt-4 border border-blue-200 bg-blue-50/40 rounded-lg p-3">
-          <Lbl>On save — the client ID and the first deal, in one go</Lbl>
+          <Lbl>On save — the client ID, the register row, the folder and the first deal, in one go</Lbl>
           <div className="grid sm:grid-cols-2 gap-3 mt-2">
-            <Field label="Company size (for the official client ID)">
+            <Field label="Company size (for the master register)">
               <Sel value={f.orgSize || ""} onChange={(e) => set("orgSize", e.target.value)}>
-                <option value="">— skip minting for now —</option>
+                <option value="">— unknown for now —</option>
                 {ORG_SIZES.map(([k, l]) => <option key={k} value={k}>{k} — {l}</option>)}
               </Sel>
             </Field>
@@ -1204,7 +1320,7 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
               <Input type="number" value={f._dealValue || ""} onChange={(e) => set("_dealValue", e.target.value.replace(/[^\d]/g, ""))} />
             </Field>
           </div>
-          <p className="text-[11px] text-slate-500 mt-1.5">Pick a size and the official <span className="font-mono">Eb-&lt;industry&gt;-&lt;size&gt;-&lt;serial&gt;</span> ID is minted from the shared serial the moment you save. The deal lands on the pipeline immediately.</p>
+          <p className="text-[11px] text-slate-500 mt-1.5">On save the official <span className="font-mono">EB-C-YY-nnnn</span> ID is minted (SOP v2.0), the row lands in the Eb-Master_Register, the client folder is created, and the first deal (<span className="font-mono">…-D01</span>) opens on the pipeline with its own folder and register row.</p>
         </div>
       )}
       <div className="mt-4">
@@ -1220,6 +1336,242 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
               <Btn size="sm" onClick={() => setF((p) => ({ ...p, custom: p.custom.filter((_, j) => j !== i) }))}><Trash2 size={13} /></Btn>
             </div>
           ))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   CHAT-BASED CLIENT CREATION — the XoR intake, in-house.
+   A scripted state machine (XoR lib/orchestrator.ts shape) with AI
+   extraction on top: the salesperson pastes whatever they know, the
+   AI structures it, chips settle sector and size, and the whole
+   conversation persists to sales.intake_sessions after every
+   exchange — "save the progress of the company, or save the chat,
+   till whatever you know". Creation runs the full SOP pipeline:
+   EB-C mint → register row → client folder → first deal + its
+   paperwork (the same `upsert` the form used).
+   ============================================================ */
+
+const INTAKE_STEPS = ["company", "contact", "industry", "size", "details", "review"];
+
+const intakeExtractSystem = () => [
+  "You extract structured client data for the Elecbits Sales OS client-intake chat. Today: " + todayStr() + ".",
+  "From the user's message, pull whatever is actually present. Reply with ONLY one line, nothing else:",
+  'INTAKE_JSON {"name":"","city":"","website":"","industry":"","whatTheyDo":"","contactPerson":"","designation":"","email":"","phone":"","orgSize":"","potential":0,"source":"","notes":""}',
+  "Include ONLY the keys you found — omit anything not in the message. Never invent values.",
+  "industry, if present, must be the closest match from: " + INDUSTRIES.map(([, l]) => l).join(", ") + ".",
+  "orgSize, if guessable, one of: PL (proto-level startup), ML (mid-level startup), EL (enterprise), EM (EMS), GO (government), UN (unknown/individual).",
+  "potential is a plain number in ₹ (lakh→×100000, cr→×10000000).",
+].join("\n");
+
+function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
+  const { companies } = data;
+  const [sess] = useState(() => draft ? { ...draft } : {
+    id: uid(), personId: me.id, orgId: "", status: "draft", state: "company", data: {}, messages: [],
+  });
+  const [state, setState] = useState(sess.state || "company");
+  const [f, setF] = useState(sess.data || {});
+  const [msgs, setMsgs] = useState(() => (sess.messages && sess.messages.length) ? sess.messages : [
+    { who: "bot", text: "New client — tell me everything you know in one go: company name, city, website, what they do, who you spoke to. I'll structure it, and whatever you don't know yet we simply save for later." },
+  ]);
+  const [input, setInput] = useState("");
+  const [typing, setTyping] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const bodyRef = useRef(null);
+  const fRef = useRef(f); fRef.current = f;
+  const msgsRef = useRef(msgs); msgsRef.current = msgs;
+  const stateRef = useRef(state); stateRef.current = state;
+
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, typing]);
+
+  // Save-progress: every exchange writes the session; closing the tab
+  // mid-thought loses nothing. Anyone on the roster can resume the draft.
+  const persist = (over = {}) => {
+    upsertIntakeSession({
+      ...sess, state: over.state ?? stateRef.current, data: over.data ?? fRef.current,
+      messages: over.messages ?? msgsRef.current, status: over.status || "draft", orgId: over.orgId ?? sess.orgId,
+    });
+  };
+
+  const say = (text, nextState) => {
+    setTyping(true);
+    setTimeout(() => {
+      setTyping(false);
+      setMsgs((m) => { const out = [...m, { who: "bot", text }]; persist({ messages: out, state: nextState ?? stateRef.current }); return out; });
+      if (nextState) setState(nextState);
+    }, 350);
+  };
+
+  const known = (d) => [
+    d.name && "company: " + d.name, d.city && "city: " + d.city, d.website && "site: " + d.website,
+    d.industry && "sector: " + d.industry, d.orgSize && "size: " + d.orgSize,
+    d.contactPerson && "contact: " + d.contactPerson + (d.designation ? " (" + d.designation + ")" : ""),
+    d.email && d.email, d.phone && d.phone,
+    d.potential ? "potential ₹" + d.potential : "", d.source && "via " + d.source,
+  ].filter(Boolean).join(" · ");
+
+  const extract = async (text) => {
+    try {
+      const reply = await withTimeout(askClaude(intakeExtractSystem(), [{ role: "user", content: text.slice(0, 6000) }], { maxTokens: 300 }), 12000);
+      const v = extractMarkedJSON(reply, "INTAKE_JSON");
+      if (v && typeof v === "object") {
+        const picked = {};
+        for (const [k, val] of Object.entries(v)) {
+          if (val === "" || val == null) continue;
+          if (k === "potential") { const n = Number(val); if (n > 0) picked[k] = n; }
+          else picked[k] = String(val);
+        }
+        return picked;
+      }
+    } catch (e) { /* the chat never stalls on the AI */ }
+    return {};
+  };
+
+  const dupeOf = (name) => {
+    const n = String(name || "").trim().toLowerCase();
+    if (!n) return null;
+    return companies.find((c) => c.name.trim().toLowerCase() === n)
+        || companies.find((c) => c.name.trim().toLowerCase().startsWith(n.split(" ")[0]) && n.length > 3);
+  };
+
+  const askForState = (s, d) => {
+    if (s === "contact") return "Who's the person there — name, designation, email or phone? One line is fine.";
+    if (s === "industry") return "Which sector are they in? Pick below" + (d.industry ? " — I'd say " + d.industry + "." : ".");
+    if (s === "size") return "And the org size?";
+    if (s === "details") return "Last bits — rough deal potential in ₹, where this lead came from, anything worth noting. Or just say skip.";
+    return "Here's the record so far:\n" + (known(d) || "(nothing yet)") + "\n\nHit “Create client” and I'll mint the EB-C ID, file the master-register row, create the folder and open the first deal — or keep typing corrections and extra details.";
+  };
+
+  const advanceFrom = (s, d) => {
+    // The next thing genuinely missing, not a fixed script: known answers
+    // are never asked again (a paste often covers three steps at once).
+    for (const step of INTAKE_STEPS) {
+      if (step === "company" && !d.name) return "company";
+      if (step === "contact" && !d.contactPerson && !d.email && !d.phone) return "contact";
+      if (step === "industry" && !d.industry) return "industry";
+      if (step === "size" && !d.orgSize) return "size";
+      if (step === "details" && !d._detailsDone && !d.potential && !d.source) return "details";
+    }
+    return "review";
+  };
+
+  const handleText = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput("");
+    setMsgs((m) => [...m, { who: "me", text }]);
+    setBusy(true);
+    const cur = stateRef.current;
+    let d = { ...fRef.current };
+    if (cur === "details" && /^skip\b/i.test(text)) d._detailsDone = true;
+    else {
+      const picked = await extract(text);
+      // Free text on a specific step still lands even when the AI is down.
+      if (!Object.keys(picked).length) {
+        if (cur === "company") picked.name = text;
+        else if (cur === "contact") picked.contactPerson = text;
+        else if (cur === "details") picked.notes = ((d.notes || "") + " " + text).trim();
+        else picked.notes = ((d.notes || "") + " " + text).trim();
+      }
+      if (cur === "details") d._detailsDone = true;
+      d = { ...d, ...picked };
+    }
+    setF(d);
+    const dupe = cur === "company" && d.name ? dupeOf(d.name) : null;
+    const next = advanceFrom(cur, d);
+    const caught = known(d);
+    const lead = dupe
+      ? "Heads up — " + dupe.name + " (" + (dupe.cid || "no ID") + ") already exists in the book. If this is them, close this chat and open that record; if it's a different company, carry on.\n\n"
+      : "";
+    const got = caught ? "On file: " + caught + "\n\n" : "";
+    say(lead + got + askForState(next, d), next);
+    persist({ data: d });
+    setBusy(false);
+  };
+
+  const pickChip = (key, value, label) => {
+    setMsgs((m) => [...m, { who: "me", text: label || value }]);
+    const d = { ...fRef.current, [key]: value };
+    setF(d);
+    const next = advanceFrom(stateRef.current, d);
+    say(askForState(next, d), next);
+    persist({ data: d });
+  };
+
+  const canCreate = String(f.name || "").trim() && (String(f.contactPerson || "").trim() || String(f.email || "").trim() || String(f.phone || "").trim());
+
+  const create = async () => {
+    if (!canCreate || busy) return;
+    setBusy(true);
+    const company = {
+      id: uid(), cid: nextSeq(companies, "cid", "EB-C-"),
+      name: String(f.name).trim(), city: f.city || "", website: f.website || "",
+      industry: f.industry || "", whatTheyDo: f.whatTheyDo || "",
+      contactPerson: f.contactPerson || "", designation: f.designation || "",
+      email: f.email || "", phone: f.phone || "",
+      orgSize: f.orgSize || "", potential: Number(f.potential || 0),
+      source: f.source || "Intake chat", address: "", legacyCid: "",
+      accountOwner: me.id, createdBy: me.id, createdAt: nowTS(), custom: [],
+      activity: [{ at: nowTS(), by: me.id, text: "Client created through the intake chat." }],
+      _dealValue: String(f.potential || ""),
+    };
+    if (f.notes) company.custom = [{ k: "Intake notes", v: String(f.notes).trim() }];
+    await upsertIntakeSession({ ...sess, state: "review", data: fRef.current, messages: msgsRef.current, status: "created", orgId: company.id });
+    onCreate(company);   // the SOP pipeline: mint → register → folder → deal
+    onClose();
+  };
+
+  const saveAndClose = () => { persist(); onClose(); };
+
+  return (
+    <Modal wide title={"New client — chat" + (f.name ? " · " + f.name : "")} onClose={saveAndClose}
+      footer={<>
+        <button onClick={() => { persist(); onUseForm(); }} className="text-xs text-slate-400 hover:text-slate-600 mr-auto">use the classic form instead</button>
+        <Btn onClick={saveAndClose}>Save progress & close</Btn>
+        <Btn kind="primary" disabled={!canCreate || busy} onClick={create}>
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <BadgeCheck size={14} />} Create client
+        </Btn>
+      </>}>
+      <div className="flex flex-col" style={{ height: "min(58vh, 520px)" }}>
+        <div ref={bodyRef} className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-1">
+          {msgs.map((m, i) => (
+            <div key={i} className={cls("flex", m.who === "me" ? "justify-end" : "justify-start")}>
+              <div className={cls("max-w-[85%] rounded-2xl px-3.5 py-2 text-[13.5px] whitespace-pre-wrap leading-relaxed",
+                m.who === "me" ? "bg-blue-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md")}>
+                {m.text}
+              </div>
+            </div>
+          ))}
+          {typing && <div className="flex"><div className="bg-slate-100 rounded-2xl rounded-bl-md px-3.5 py-2 text-slate-400 text-sm">…</div></div>}
+        </div>
+
+        <div className="border-t border-slate-100 pt-2.5 mt-2">
+          {state === "industry" && (
+            <div className="flex flex-wrap gap-1.5 mb-2 max-h-28 overflow-y-auto">
+              {INDUSTRIES.map(([n, l]) => (
+                <button key={n} onClick={() => pickChip("industry", l)}
+                  className={cls("px-2 py-1 rounded-lg text-[11px] font-medium border", f.industry === l ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{l}</button>
+              ))}
+            </div>
+          )}
+          {state === "size" && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {ORG_SIZES.map(([k, l]) => (
+                <button key={k} onClick={() => pickChip("orgSize", k, k + " — " + l)}
+                  className={cls("px-2.5 py-1.5 rounded-lg text-xs font-medium border", f.orgSize === k ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{k} — {l}</button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-end gap-2">
+            <TA value={input} onChange={(e) => setInput(e.target.value)} className="min-h-11 flex-1"
+              placeholder={state === "company" ? "e.g. Sunrise Meditech, Pune — makes patient monitors, spoke to Dr. Rao (CTO), rao@sunrise.in" : "type here… (everything you add is saved as you go)"}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleText(); } }} />
+            <Btn kind="primary" size="sm" disabled={!input.trim() || busy} onClick={handleText}>
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+            </Btn>
+          </div>
         </div>
       </div>
     </Modal>
@@ -1268,11 +1620,15 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
   };
   const createDeal = (value, ownerId) => {
     const d = {
-      id: uid(), did: nextSeq(deals, "did", "EB-D-"), companyId: c.id, ownerId, value: Number(value || 0),
+      id: uid(), did: sopDealCode(c, deals), companyId: c.id, ownerId, value: Number(value || 0),
       stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
       history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created." }],
     };
     saveDeals([d, ...deals]); setNewDeal(false); setTab("pipeline");
+    const ownerU = users.find((u) => u.id === ownerId);
+    fileDealFootprint(c, d, ownerU ? ownerU.name : me.name, (text) => {
+      saveCompanies(data.companies.map((x) => x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text }] } : x));
+    });
   };
 
   return (
@@ -1565,35 +1921,49 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
   );
 }
 
-/* Mint the official Eb-<industry>-<size>-<serial> from the shared company mint. */
+/* Mint the official EB-C-YY-nnnn (SOP v2.0). The industry and size no longer
+   live inside the ID — they travel to the master register as Sector and Org
+   Size columns instead. Minting also files the Clients-tab row and the
+   client folder, in that order (Law 6). */
 function MintIdModal({ company: c, data, onClose, saveCompanies, me }) {
   const { companies } = data;
-  const guess = industryCodeOf(c.industry);
-  const [ind, setInd] = useState(guess || 21);
+  const [ind, setInd] = useState(c.industry || "");
   const [size, setSize] = useState(c.orgSize || "ML");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const mint = async () => {
     setBusy(true); setErr("");
-    const cid = await mintClientId(c.id, Number(ind), size);
+    const cid = await mintSopId(c.id, size);
+    if (!cid) { setBusy(false); setErr("Minting failed — check connection (run 30-sop-ids.sql if it hasn't been)."); return; }
+    const notes = ["Official client ID minted: " + cid];
+    const reg = await registerClient({
+      clientId: cid, legacyId: c.official ? (c.legacyCid || "") : (c.cid || ""),
+      name: c.name, sector: ind || c.industry || "", orgSize: size,
+      addedBy: me.name, poc: c.contactPerson || "", notes: c.whatTheyDo || "",
+    });
+    if (reg?.registered) notes.push("Master register: client row added.");
+    if (reg?.duplicate) notes.push("Master register already holds " + cid + " — row kept as is.");
+    if (reg?.folderLink) notes.push("Client folder created: " + cid + " — " + c.name);
+    (reg?.warnings || []).forEach((w) => notes.push("Filing warning: " + w));
     setBusy(false);
-    if (!cid) { setErr("Minting failed — check connection (the serial mint lives in core.numbering)."); return; }
     saveCompanies(companies.map((x) => x.id === c.id
-      ? { ...x, cid, official: true, orgSize: size, legacyCid: x.official ? x.legacyCid : x.cid, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text: "Official client ID minted: " + cid }] }
+      ? { ...x, cid, official: true, orgSize: size, industry: ind || x.industry, legacyCid: x.official ? x.legacyCid : x.cid,
+          activity: [...(x.activity || []), ...notes.map((text) => ({ at: nowTS(), by: me.id, text }))] }
       : x));
     onClose();
   };
   return (
     <Modal title="Mint official client ID" onClose={onClose}
-      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={busy} onClick={mint}>{busy ? <Loader2 size={14} className="animate-spin" /> : <BadgeCheck size={14} />} Mint Eb-{String(ind).padStart(2, "0")}-{size}-…</Btn></>}>
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={busy} onClick={mint}>{busy ? <Loader2 size={14} className="animate-spin" /> : <BadgeCheck size={14} />} Mint EB-C-{String(new Date().getFullYear()).slice(-2)}-…</Btn></>}>
       <div className="space-y-3">
-        <p className="text-xs text-slate-500">One serial, company-wide, from the shared mint — the same series the client ID sheet uses. This cannot be undone or retyped; the old working ID ({c.cid || "none"}) stays on record as the legacy ID.</p>
-        <Field label="Industry / application" req>
+        <p className="text-xs text-slate-500">SOP v2.0: <span className="font-mono">EB-C-YY-nnnn</span>, one independent serial per year, minted above whatever the master register already holds. The row lands in the register first, the client folder second, and the folder link is filed back into the row. This cannot be undone or retyped; the old working ID ({c.cid || "none"}) stays on record in the Legacy ID column.</p>
+        <Field label="Sector (for the register)">
           <Sel value={ind} onChange={(e) => setInd(e.target.value)}>
-            {INDUSTRIES.map(([n, l]) => <option key={n} value={n}>{String(n).padStart(2, "0")} — {l}</option>)}
+            <option value="">— pick —</option>
+            {INDUSTRIES.map(([n, l]) => <option key={n} value={l}>{l}</option>)}
           </Sel>
         </Field>
-        <Field label="Org size" req>
+        <Field label="Org size (for the register)" req>
           <Sel value={size} onChange={(e) => setSize(e.target.value)}>
             {ORG_SIZES.map(([k, l]) => <option key={k} value={k}>{k} — {l}</option>)}
           </Sel>
@@ -3067,12 +3437,17 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
   };
 
   const createDeal = (value, ownerId, companyId) => {
+    const comp = companies.find((x) => x.id === companyId);
     const d = {
-      id: uid(), did: nextSeq(deals, "did", "EB-D-"), companyId, ownerId, value: Number(value || 0),
+      id: uid(), did: comp ? sopDealCode(comp, deals) : nextSeq(deals, "did", "EB-D-"), companyId, ownerId, value: Number(value || 0),
       stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
       history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created." }],
     };
     saveDeals([d, ...deals]); setNewDeal(false);
+    if (comp) {
+      const ownerU = users.find((u) => u.id === ownerId);
+      fileDealFootprint(comp, d, ownerU ? ownerU.name : me.name, null);
+    }
   };
 
   const totalOpen = visible.filter((d) => !d.lost).reduce((s, d) => s + Number(d.value || 0), 0);
@@ -5083,8 +5458,10 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
               const comp = byName(a.company, nextCompanies);
               if (comp) {
                 const owner = byName(a.owner, users) || me;
-                nextDeals = [{ id: uid(), did: nextSeq(nextDeals, "did", "EB-D-"), companyId: comp.id, ownerId: owner.id, value: Number(a.value || 0), stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false, history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created via Assistant." }] }, ...nextDeals];
-                results.push("✓ deal on " + comp.name);
+                const nd = { id: uid(), did: sopDealCode(comp, nextDeals), companyId: comp.id, ownerId: owner.id, value: Number(a.value || 0), stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false, history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created via Assistant." }] };
+                nextDeals = [nd, ...nextDeals];
+                fileDealFootprint(comp, nd, owner.name, null);
+                results.push("✓ deal on " + comp.name + " (" + nd.did + ")");
               }
             } else if (a.type === "memory" && a.text) {
               nextMemory = [{ id: uid(), title: a.title || "Note", text: a.text, updatedAt: nowTS(), by: me.id }, ...nextMemory];
@@ -6296,6 +6673,7 @@ function RfqsView({ me, data, openCompany }) {
                   <Chip color={l.status === "submitted" ? "green" : stageN === 2 ? "amber" : l.status === "opened" ? "purple" : "blue"}>
                     {l.status === "submitted" ? "SUBMITTED" : stageN === 2 ? "FILLING · " + pct + "%" : l.status === "opened" ? "OPENED" : "SENT"}
                   </Chip>
+                  {r._sanction && <Chip color="purple"><Rocket size={11} /> SANCTION APPLIED</Chip>}
                   <button onClick={() => c && openCompany(c.id)} className="font-medium text-sm text-slate-900 hover:text-blue-700">{c ? c.name : "?"}</button>
                   {l.contactName && <span className="text-xs text-slate-500">→ {l.contactName}</span>}
                   <span className="mr-auto" />
@@ -6360,6 +6738,7 @@ function RfqLinkRow({ l }) {
         <Chip color={l.status === "submitted" ? "green" : l.status === "opened" ? "purple" : "slate"}>
           {l.status === "submitted" ? "input received" : l.status === "opened" ? "opened — awaiting input" : "sent, not opened yet"}
         </Chip>
+        {r._sanction && <Chip color="purple"><Rocket size={11} /> sanction applied</Chip>}
         <span className="text-slate-800 mr-auto">{l.title || "RFQ"}{l.contactName ? " → " + l.contactName : ""}</span>
         {l.status === "submitted" && (
           <button onClick={() => setOpen(!open)} className="text-xs text-blue-600 hover:underline">{open ? "hide" : "view"} input</button>
@@ -6418,6 +6797,8 @@ function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
           <p className="font-mono text-xs text-blue-700 break-all mb-3">{rfqUrl(made)}</p>
           <Btn kind="primary" onClick={() => { navigator.clipboard?.writeText(rfqUrl(made)); setCopied(true); }}><Copy size={14} /> {copied ? "Copied!" : "Copy link"}</Btn>
           <p className="text-xs text-slate-400 mt-3 max-w-sm mx-auto">Send it to {contact.trim() || "the client"} on WhatsApp or mail — your only job is getting it filled. You'll see “opened” and “input received” on the company page and the pipeline card.</p>
+          <p className="font-mono text-[11px] text-slate-400 mt-2">{[company.cid && "Client " + company.cid, deal && deal.did && "Deal " + deal.did].filter(Boolean).join(" · ")}</p>
+          <p className="text-[11px] text-slate-400 mt-0.5 max-w-sm mx-auto">The link carries these IDs — everything the client fills lands on this deal, and the form's last stage walks them into applying for project sanctioning.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -6433,7 +6814,13 @@ function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
 /* The public page at #rfq/<id> — a CHAT, not a form. A scripted
    conversation asks one thing at a time, tells the client what Elecbits
    will share back along the way, and files the answers through /api/rfq.
-   Deterministic (no AI call from a public page), so it never stalls. */
+   Deterministic (no AI call from a public page), so it never stalls.
+
+   The link carries the official Client ID and Deal ID — whatever the
+   client fills lands against that deal. And submission is not the end:
+   the chat STAYS ACTIVE afterwards, asking only the basics and steering
+   to the form's LAST stage — applying for project sanctioning, which is
+   filed into the same ULM pipe the in-app application uses. */
 function RfqPublicPage({ token }) {
   const [link, setLink] = useState(null);
   const [err, setErr] = useState("");
@@ -6444,8 +6831,18 @@ function RfqPublicPage({ token }) {
   const [typing, setTyping] = useState(false);
   const [input, setInput] = useState("");
   const [picks, setPicks] = useState([]);   // multi-select buffer for chip steps
+  const [phase, setPhase] = useState("form");   // form → post → done
+  const [postStep, setPostStep] = useState(0);
+  const [sanctioned, setSanctioned] = useState(false);
   const f = useRef({ name: "", email: "", phone: "", need: "", qty: "", timeline: "", budget: "", notes: "", services: [], docs: [] });
+  const pf = useRef({ projectName: "", kickoff: "", decider: "" });
   const bodyRef = useRef(null);
+
+  const POST_STEPS = [
+    { key: "projectName", ask: "What should we call this project internally? A short working name is perfect.", placeholder: "e.g. Patient monitor v1", skip: true },
+    { key: "kickoff", ask: "If the commercials line up, when would you want to kick off?", placeholder: "e.g. first week of October", skip: true },
+    { key: "decider", ask: "And who signs off on this on your side?", placeholder: "name / role", skip: true },
+  ];
 
   const STEPS = [
     { key: "name", ask: "First things first — what should we call you?", type: "text", placeholder: "Your name" },
@@ -6464,7 +6861,20 @@ function RfqPublicPage({ token }) {
       .then((j) => {
         if (j.error) { setErr(j.error); return; }
         setLink(j);
-        if (j.submitted) { setSent(true); return; }
+        setSanctioned(!!j.sanction);
+        if (j.submitted) {
+          setSent(true);
+          if (j.sanction) { setPhase("done"); return; }
+          // The requirement is in but the form isn't finished: the chat
+          // stays active, basics only, heading for the sanctioning stage.
+          setPhase("post");
+          setMsgs([
+            { who: "bot", text: "Welcome back" + (j.respondent ? ", " + j.respondent : "") + " — we already have your requirement" + (j.company ? " for " + j.company : "") + ", and the Elecbits team is on it." },
+            { who: "bot", text: "One stage of this form is left: applying for project sanctioning. Elecbits' leadership reviews the application and allocates the project team. A couple of basics first." },
+            { who: "bot", text: POST_STEPS[0].ask },
+          ]);
+          return;
+        }
         const hello = [
           { who: "bot", text: "Hi! You're talking to Elecbits" + (j.company ? " about " + j.company + "'s requirement" : "") + ". This takes about two minutes, and at the end our team gets everything they need to come back to you properly." },
           ...(j.note ? [{ who: "bot", text: j.note }] : []),
@@ -6534,8 +6944,49 @@ function RfqPublicPage({ token }) {
         body: JSON.stringify({ response: f.current }),
       }).then((x) => x.json());
       if (r.error) setErr(r.error);
-      else { setSent(true); setMsgs((m) => [...m, { who: "bot", text: "Received — thank you" + (f.current.name ? ", " + f.current.name : "") + "! The Elecbits team is on it. 🚀" }]); }
+      else {
+        setSent(true);
+        // Not the end of the form — the sanctioning stage is. The chat
+        // carries straight on with the basics.
+        setPhase("post"); setPostStep(0);
+        setMsgs((m) => [...m,
+          { who: "bot", text: "Received — thank you" + (f.current.name ? ", " + f.current.name : "") + "! The Elecbits team is on it. 🚀" },
+          { who: "bot", text: "This chat stays open — one last stage: applying for project sanctioning, where Elecbits' leadership reviews everything and allocates the project team. A couple of basics while they dig in." },
+          { who: "bot", text: POST_STEPS[0].ask },
+        ]);
+      }
     } catch (e) { setErr("Could not submit — please try again."); }
+    setBusy(false);
+  };
+
+  const submitPost = () => {
+    const curP = POST_STEPS[postStep];
+    if (!curP) return;
+    const v = input.trim();
+    if (!v && !curP.skip) return;
+    pf.current[curP.key] = v;
+    setInput("");
+    setMsgs((m) => [...m, { who: "me", text: v || "(skipped)" }]);
+    const nxt = postStep + 1;
+    setPostStep(nxt);
+    if (nxt < POST_STEPS.length) botSay(POST_STEPS[nxt].ask);
+    else botSay("That's everything. The last stage of this form: apply for project sanctioning below, and it goes straight to Elecbits' leadership for review.");
+  };
+
+  const applySanction = async () => {
+    if (busy) return;
+    setBusy(true); setErr("");
+    try {
+      const r = await fetch("/api/rfq?id=" + encodeURIComponent(token), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sanction: true, post: pf.current }),
+      }).then((x) => x.json());
+      if (r.error) setErr(r.error);
+      else {
+        setSanctioned(true); setPhase("done");
+        setMsgs((m) => [...m, { who: "bot", text: "Your project sanctioning application is in ✅ Elecbits' leadership reviews it, and " + (pf.current.decider || "your team") + " will hear from us with the decision and the project allocation. Thank you!" }]);
+      }
+    } catch (e) { setErr("Could not apply — please try again."); }
     setBusy(false);
   };
 
@@ -6544,7 +6995,12 @@ function RfqPublicPage({ token }) {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col">
       <div className="max-w-xl w-full mx-auto px-4 py-6 flex-1 flex flex-col">
-        <div className="flex items-center gap-3 mb-4"><Logo height={26} /><span className="text-xs text-slate-400 ml-auto font-mono">requirement chat</span></div>
+        <div className="flex items-center gap-3 mb-1.5"><Logo height={26} /><span className="text-xs text-slate-400 ml-auto font-mono">requirement chat</span></div>
+        {link && (link.clientId || link.dealId) && (
+          <p className="font-mono text-[11px] text-slate-400 mb-3">
+            {[link.clientId && "Client " + link.clientId, link.dealId && "Deal " + link.dealId].filter(Boolean).join(" · ")}
+          </p>
+        )}
         {err && !link && <p className="text-sm text-red-600 mt-6">{err}</p>}
         {!err && !link && <p className="text-sm text-slate-400 mt-6 flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> Loading…</p>}
         {link && (
@@ -6553,7 +7009,8 @@ function RfqPublicPage({ token }) {
               {sent && !started && (
                 <div className="text-center py-10">
                   <CheckCircle2 size={30} className="mx-auto text-green-600 mb-2" />
-                  <p className="text-sm font-semibold">We already have your requirement — thank you!</p>
+                  <p className="text-sm font-semibold">{sanctioned ? "Requirement received and your project sanctioning application is in — thank you!" : "We already have your requirement — thank you!"}</p>
+                  {sanctioned && <p className="text-xs text-slate-500 mt-1">Elecbits' leadership reviews the application and comes back with the decision.</p>}
                 </div>
               )}
               {msgs.map((m, i) => (
@@ -6597,6 +7054,27 @@ function RfqPublicPage({ token }) {
               <div className="border-t border-slate-100 p-3">
                 <Btn kind="primary" disabled={busy} onClick={sendAll} className="w-full justify-center">
                   {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} Send to Elecbits
+                </Btn>
+                {err && <p className="text-xs text-red-600 mt-1.5">{err}</p>}
+              </div>
+            )}
+            {/* Submitted, form not finished: the basics, then the last stage. */}
+            {sent && phase === "post" && postStep < POST_STEPS.length && !typing && (
+              <div className="border-t border-slate-100 p-3">
+                <div className="flex items-end gap-2">
+                  <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder={POST_STEPS[postStep].placeholder}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitPost(); } }} />
+                  <div className="flex flex-col gap-1">
+                    <Btn kind="primary" size="sm" disabled={!input.trim() && !POST_STEPS[postStep].skip} onClick={submitPost}><Send size={13} /></Btn>
+                    {POST_STEPS[postStep].skip && !input.trim() && <button onClick={submitPost} className="text-[11px] text-slate-400 hover:text-slate-600">skip</button>}
+                  </div>
+                </div>
+              </div>
+            )}
+            {sent && phase === "post" && postStep >= POST_STEPS.length && !typing && (
+              <div className="border-t border-slate-100 p-3">
+                <Btn kind="primary" disabled={busy} onClick={applySanction} className="w-full justify-center">
+                  {busy ? <Loader2 size={15} className="animate-spin" /> : <Rocket size={15} />} Apply for project sanctioning
                 </Btn>
                 {err && <p className="text-xs text-red-600 mt-1.5">{err}</p>}
               </div>
