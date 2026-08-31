@@ -298,14 +298,7 @@ export async function loadWorkspace() {
     requirement: r.requirement || {}, ai: r.ai || {}, overtake: r.overtake || "pending",
   }));
 
-  const rfqOut = rfqLinks.map((l: any) => ({
-    id: l.id, companyId: l.org_id, dealId: l.deal_id || "",
-    title: l.title || "", offer: Array.isArray(l.offer) ? l.offer : [],
-    note: l.note_to_client || "", contactName: l.contact_name || "",
-    status: l.status, response: l.response || {},
-    openedAt: l.opened_at || "", submittedAt: l.submitted_at || "",
-    createdBy: l.created_by || "", createdAt: l.created_at,
-  }));
+  const rfqOut = rfqLinks.map(rfqLinkOut);
 
   return {
     users, companies, deals: dealsOut, kpis, trainings: trainingsOut,
@@ -629,6 +622,28 @@ export async function saveNextStep(dealId: string, step: { what: string; due?: s
     next_step_done_at: step.doneAt === undefined ? null : step.doneAt,
   }).eq("id", dealId);
   return ok(error, "saveNextStep");
+}
+
+// The client fills the RFQ in their own browser, against /api/rfq — so the
+// only way this app learns they typed something is to ask again. Everything
+// the salesperson sees about an RFQ (opened, filling %, submitted, sanction
+// applied) comes from re-reading these rows, so the shape lives in one
+// place and both the initial load and the live refresh use it.
+export const rfqLinkOut = (l: any) => ({
+  id: l.id, companyId: l.org_id, dealId: l.deal_id || "",
+  title: l.title || "", offer: Array.isArray(l.offer) ? l.offer : [],
+  note: l.note_to_client || "", contactName: l.contact_name || "",
+  status: l.status, response: l.response || {},
+  openedAt: l.opened_at || "", submittedAt: l.submitted_at || "",
+  createdBy: l.created_by || "", createdAt: l.created_at,
+});
+
+/** Re-read every RFQ link — the client's progress, as it stands right now. */
+export async function loadRfqLinks(): Promise<any[] | null> {
+  const { data, error } = await tbl(supabase, "rfq_links")
+    .select("*").order("created_at", { ascending: false });
+  if (error) { console.error("loadRfqLinks", error.message); return null; }
+  return (data || []).map(rfqLinkOut);
 }
 
 // RFQ links: created/updated from the app (authenticated). The public page

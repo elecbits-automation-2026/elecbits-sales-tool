@@ -75,6 +75,7 @@ export default async function handler(req, res) {
         link.status = "opened";
       }
       const resp = link.response || {};
+      const answeredCount = Math.max(0, Math.min(Number(resp._answered) || 0, 100));
       return res.status(200).json({
         id: link.id, company, clientId, dealId: dealCode,
         title: link.title || "", offer: link.offer || [],
@@ -86,6 +87,11 @@ export default async function handler(req, res) {
         // never trust the shape.)
         respondent: String(resp.name || "").split(/\s+/)[0] || "",
         sanction: !!resp._sanction,
+        // Their own half-finished answers, handed back so the chat resumes
+        // where they stopped instead of asking everything again. Same
+        // person, same link — nothing here is new to them.
+        saved: (link.status !== "submitted" && answeredCount > 0)
+          ? { answered: answeredCount, answers: resp } : null,
       });
     }
 
@@ -124,6 +130,10 @@ export default async function handler(req, res) {
         const title = "Project sanction — " + (post.projectName || link.title || "RFQ " + id.slice(0, 8));
         const summary = [
           "Filed by the client from the RFQ link (public form, last stage: sanctioning).",
+          // Also in the text, not only in requirement jsonb: on a database
+          // that predates 23-pipeline-brain.sql the jsonb is dropped, and
+          // the trace back to the token must survive that fallback.
+          "RFQ link token: " + id + (link.deal_id ? " · deal " + link.deal_id : ""),
           post.projectName ? "Project name: " + post.projectName : "",
           post.kickoff ? "Wants to kick off: " + post.kickoff : "",
           post.decider ? "Signs off on their side: " + post.decider : "",

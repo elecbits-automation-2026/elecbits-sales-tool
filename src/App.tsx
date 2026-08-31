@@ -18,6 +18,7 @@ import {
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
   mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession, sopMigrationPresent,
+  loadRfqLinks,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
@@ -763,6 +764,32 @@ export default function App() {
     return () => { alive = false; };
   }, [authReady, authEmail]);
 
+  // The client fills the RFQ in THEIR browser, so nothing pushes their
+  // progress here — this is the app asking again. Every minute while the tab
+  // is visible, and immediately whenever it regains focus (the salesperson
+  // comes back from WhatsApp to see whether the form moved). Quiet: a failed
+  // poll leaves the last known state alone rather than blanking the list.
+  const [rfqCheckedAt, setRfqCheckedAt] = useState("");
+  const refreshRfq = useCallback(async () => {
+    const fresh = await loadRfqLinks();
+    if (fresh) { setRfq(fresh); setRfqCheckedAt(nowTS()); }
+    return fresh;
+  }, []);
+  useEffect(() => {
+    if (!authEmail || loading) return;
+    let alive = true;
+    const tick = () => { if (alive && document.visibilityState === "visible") refreshRfq(); };
+    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
+    const id = setInterval(tick, 60000);
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false; clearInterval(id);
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [authEmail, loading, refreshRfq]);
+
   // Save wrappers: state updates immediately; the sync persists to the
   // relational schema and flags the toast on failure.
   const flag = (p) => { p.then((okd) => { if (!okd) setSaveErr(true); }); };
@@ -797,7 +824,7 @@ export default function App() {
   };
 
   const me = (authEmail && users.find((u) => (u.email || "").toLowerCase() === authEmail && u.active !== false)) || null;
-  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests, rfq, setRfq, corePeople };
+  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests, rfq, setRfq, refreshRfq, rfqCheckedAt, corePeople };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
@@ -2187,13 +2214,28 @@ function tempVelocity(d) {
 }
 
 /* The freshest RFQ link on a deal (or its company), as a card badge. */
+/* How far along one link is — 0 is closed/dead, 5 is the client applied for
+   sanctioning. A deal usually has one link; when it has several (a second
+   contact, a resend), the deal must report the FURTHEST one. Reporting the
+   newest instead would hide a submitted requirement behind a just-sent
+   link and tell the salesperson to chase a client who already answered. */
+function rfqRank(l) {
+  const r = l.response || {};
+  if (l.status === "closed") return 0;
+  if (r._sanction) return 5;
+  if (l.status === "submitted") return 4;
+  if ((Number(r._answered) || 0) > 0) return 3;
+  if (l.status === "opened") return 2;
+  return 1;
+}
 function rfqBadgeFor(d, rfq) {
   const l = (rfq || []).filter((x) => x.dealId === d.id || (!x.dealId && x.companyId === d.companyId))
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0];
+    .sort((a, b) => (rfqRank(b) - rfqRank(a)) || (a.createdAt < b.createdAt ? 1 : -1))[0];
   if (!l) return null;
   const answered = Number((l.response || {})._answered) || 0;
   const total = Number((l.response || {})._total) || 9;
-  return l.status === "submitted" ? { label: "RFQ input received", color: "green", link: l }
+  return (l.response || {})._sanction ? { label: "RFQ in · sanction applied", color: "green", link: l }
+    : l.status === "submitted" ? { label: "RFQ input received", color: "green", link: l }
     : answered > 0 ? { label: "RFQ filling · " + Math.round((answered / total) * 100) + "%", color: "amber", link: l }
     : l.status === "opened" ? { label: "RFQ opened, awaiting input", color: "purple", link: l }
     : l.status === "created" ? { label: "RFQ link sent", color: "purple", link: l } : null;
@@ -6722,15 +6764,25 @@ function DriveIntel({ me, company: c, data, saveCompanies }) {
    ============================================================ */
 
 const RFQ_SERVICES = ["PCB design", "Firmware", "Enclosure / mechanical", "Certification", "Assembly / EMS", "Box build", "Complete product (ODM)"];
+/* The token IS the link: sales.rfq_links.id, a v4 uuid, unguessable, and the
+   only thing the client's browser ever presents. */
 const rfqUrl = (id) => window.location.origin + "/#rfq/" + id;
+/* rfq_links.deal_id is the deal's uuid; the human-readable code lives on the
+   deal itself (EB-C-26-0007-D01). */
+const dealCodeOf = (data, dealId) => {
+  const d = (data.deals || []).find((x) => x.id === dealId);
+  return d ? d.did : "";
+};
 
 /* Every RFQ link ever generated, across the whole book — who it went to,
    whether the client opened it, and the filled form when it came back. */
 function RfqsView({ me, data, openCompany }) {
-  const { users, companies, rfq } = data;
+  const { users, companies, rfq, refreshRfq, rfqCheckedAt } = data;
   const [statusF, setStatusF] = useState("all");
   const [open, setOpen] = useState("");     // expanded link id
   const [copied, setCopied] = useState(""); // link id just copied
+  const [checking, setChecking] = useState(false);
+  const recheck = async () => { setChecking(true); if (refreshRfq) await refreshRfq(); setChecking(false); };
   const list = (rfq || [])
     .filter((l) => statusF === "all" || l.status === statusF)
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
@@ -6740,13 +6792,19 @@ function RfqsView({ me, data, openCompany }) {
     <div className="max-w-4xl mx-auto">
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <h1 className="text-lg font-semibold mr-auto flex items-center gap-2"><FileText size={18} className="text-blue-600" /> RFQs</h1>
+        <Btn size="sm" disabled={checking} onClick={recheck}>
+          {checking ? <Loader2 size={13} className="animate-spin" /> : <ArrowRight size={13} />} Check now
+        </Btn>
         <div className="flex rounded-md border border-slate-300 overflow-hidden">
           {[["all", "All"], ["created", "Sent"], ["opened", "Opened"], ["submitted", "Input received"]].map(([k, l]) => (
             <button key={k} onClick={() => setStatusF(k)} className={cls("px-2.5 py-1 text-xs font-medium", statusF === k ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-100")}>{l}</button>
           ))}
         </div>
       </div>
-      <p className="text-xs text-slate-500 mb-3">Every requirement link generated from a company page. Your job: get them filled — chase the ones stuck on “sent”.</p>
+      <p className="text-xs text-slate-500 mb-3">
+        Every requirement link generated from a company page. Your job: get them filled — chase the ones stuck on “sent”.
+        <span className="text-slate-400"> The client fills this in their own browser, so this page re-checks every minute and whenever you come back to the tab{rfqCheckedAt ? " — last checked " + new Date(rfqCheckedAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }) : ""}.</span>
+      </p>
       {list.length === 0 ? (
         <Empty icon={FileText} title="No RFQ links yet" sub="Create one from any company page — the client fills in the requirement themselves." />
       ) : (
@@ -6772,10 +6830,11 @@ function RfqsView({ me, data, openCompany }) {
                   <span className="mr-auto" />
                   {by && <span className="text-xs text-slate-400 flex items-center gap-1"><Avatar name={by.name} size="sm" /> {by.name}</span>}
                   <span className="text-[11px] font-mono text-slate-400">{fmtDate(l.createdAt)}</span>
-                  {l.status !== "submitted" && (
-                    <button onClick={() => { navigator.clipboard?.writeText(rfqUrl(l.id)); setCopied(l.id); setTimeout(() => setCopied(""), 1500); }}
-                      className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> {copied === l.id ? "copied!" : "copy link"}</button>
-                  )}
+                  {/* Always copyable: the chat stays live after submission to
+                      carry the client through the sanctioning stage, so a
+                      submitted link is exactly the one they may need resent. */}
+                  <button onClick={() => { navigator.clipboard?.writeText(rfqUrl(l.id)); setCopied(l.id); setTimeout(() => setCopied(""), 1500); }}
+                    className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> {copied === l.id ? "copied!" : "copy link"}</button>
                   {answered > 0 && (
                     <Btn size="sm" onClick={() => setOpen(open === l.id ? "" : l.id)}>{open === l.id ? "hide answers" : "view answers"}</Btn>
                   )}
@@ -6795,6 +6854,12 @@ function RfqsView({ me, data, openCompany }) {
                   </div>
                   <span className="text-[10.5px] font-mono text-slate-500 tabular-nums">{answered}/{total} answered</span>
                 </div>
+                {/* What this link is bound to — the trace line. The token is
+                    the link's own id: it is what /api/rfq is called with, and
+                    what the sanction application records as rfq_link. */}
+                <p className="text-[10.5px] font-mono text-slate-400 mt-1.5">
+                  {[c && c.cid, l.dealId && dealCodeOf(data, l.dealId), "token " + String(l.id).slice(0, 8)].filter(Boolean).join(" · ")}
+                </p>
                 {l.status === "submitted" && (
                   <p className="text-xs text-slate-500 mt-1.5 line-clamp-1">{r.need || ""}</p>
                 )}
@@ -6860,18 +6925,40 @@ function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
   const [note, setNote] = useState("");
   const [made, setMade] = useState(null); // the created link id
   const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  // Which deal the token binds to is the whole point of the link — the
+  // client's answers land on THIS deal — so it is chosen, not guessed.
+  // Live deals only (a closed-won deal must never collect a new RFQ), the
+  // caller's suggestion first, then most recently worked.
+  const live = deals.filter((d) => d.companyId === company.id && !d.lost && d.stage !== "po")
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  const [dealId, setDealId] = useState(
+    (deal && live.some((d) => d.id === deal.id) ? deal.id : (live[0] ? live[0].id : "")));
+  const bound = deals.find((d) => d.id === dealId) || null;
 
   const create = async () => {
-    const l = { id: uid(), companyId: company.id, dealId: deal ? deal.id : "", title: "RFQ — " + company.name,
+    if (busy) return;
+    setBusy(true); setErr("");
+    const l = { id: uid(), companyId: company.id, dealId: dealId || "", title: "RFQ — " + company.name,
       offer: [], note: note.trim(), contactName: contact.trim(), status: "created", createdBy: me.id, createdAt: nowTS() };
-    await saveRfqLink(l);
+    // The row IS the link. If it did not save there is nothing at the other
+    // end of that URL — say so instead of handing over a dead link.
+    const saved = await saveRfqLink(l);
+    if (!saved) {
+      setBusy(false);
+      setErr("The link could not be created — nothing was saved, so don't send anything yet. Check your connection (and that 24-rfq-links.sql has run), then try again.");
+      return;
+    }
     setRfq([l, ...(rfq || [])]);
     // An RFQ in flight IS the rfq phase — recorded like any other move.
-    if (deal && !deal.lost && ["cold", "warm"].includes(deal.temperature || "cold")) {
-      setTemperature(deal.id, { from: deal.temperature || "cold", to: "rfq", why: "RFQ link sent" + (contact.trim() ? " to " + contact.trim() : ""), decided: "human", by: me.id });
-      saveDeals(deals.map((x) => (x.id === deal.id ? { ...x, temperature: "rfq", temperatureAt: nowTS(), temperatureWhy: "RFQ link sent", updatedAt: nowTS(),
-        tempHistory: [...(x.tempHistory || []), { from: deal.temperature || "cold", to: "rfq", why: "RFQ link sent", decided: "human", at: nowTS() }] } : x)));
+    if (bound && !bound.lost && ["cold", "warm"].includes(bound.temperature || "cold")) {
+      setTemperature(bound.id, { from: bound.temperature || "cold", to: "rfq", why: "RFQ link sent" + (contact.trim() ? " to " + contact.trim() : ""), decided: "human", by: me.id });
+      saveDeals(deals.map((x) => (x.id === bound.id ? { ...x, temperature: "rfq", temperatureAt: nowTS(), temperatureWhy: "RFQ link sent", updatedAt: nowTS(),
+        tempHistory: [...(x.tempHistory || []), { from: bound.temperature || "cold", to: "rfq", why: "RFQ link sent", decided: "human", at: nowTS() }] } : x)));
     }
+    setBusy(false);
     setMade(l.id);
   };
 
@@ -6881,7 +6968,9 @@ function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
         ? <Btn kind="primary" onClick={onClose}>Done</Btn>
         : <>
             <Btn onClick={onClose}>Cancel</Btn>
-            <Btn kind="primary" onClick={create}><Send size={14} /> Create the link</Btn>
+            <Btn kind="primary" disabled={busy} onClick={create}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Create the link
+            </Btn>
           </>}>
       {made ? (
         <div className="text-center py-6">
@@ -6890,14 +6979,21 @@ function RfqLinkModal({ me, data, company, deal, onClose, saveDeals }) {
           <p className="font-mono text-xs text-blue-700 break-all mb-3">{rfqUrl(made)}</p>
           <Btn kind="primary" onClick={() => { navigator.clipboard?.writeText(rfqUrl(made)); setCopied(true); }}><Copy size={14} /> {copied ? "Copied!" : "Copy link"}</Btn>
           <p className="text-xs text-slate-400 mt-3 max-w-sm mx-auto">Send it to {contact.trim() || "the client"} on WhatsApp or mail — your only job is getting it filled. You'll see “opened” and “input received” on the company page and the pipeline card.</p>
-          <p className="font-mono text-[11px] text-slate-400 mt-2">{[company.cid && "Client " + company.cid, deal && deal.did && "Deal " + deal.did].filter(Boolean).join(" · ")}</p>
+          <p className="font-mono text-[11px] text-slate-400 mt-2">{[company.cid && "Client " + company.cid, bound && bound.did && "Deal " + bound.did, "token " + String(made).slice(0, 8)].filter(Boolean).join(" · ")}</p>
           <p className="text-[11px] text-slate-400 mt-0.5 max-w-sm mx-auto">The link carries these IDs — everything the client fills lands on this deal, and the form's last stage walks them into applying for project sanctioning.</p>
         </div>
       ) : (
         <div className="space-y-3">
           <p className="text-xs text-slate-500">The client gets a chat that walks them through their requirement — it tells them what Elecbits will share back as they fill it. You just get this link filled.</p>
+          <Field label="Which deal do these answers belong to?" hint={live.length ? "The link carries this deal's ID; everything the client fills lands on it." : "No open deal on this company — the answers will land on the company only, until you open one."}>
+            <Sel value={dealId} onChange={(e) => setDealId(e.target.value)} disabled={!live.length}>
+              {!live.length && <option value="">— no open deal —</option>}
+              {live.map((d) => <option key={d.id} value={d.id}>{d.did} · {fmtINRc(d.value)} · {(d.temperature || "cold").toUpperCase()}</option>)}
+            </Sel>
+          </Field>
           <Field label="Send to (client contact)"><Input value={contact} onChange={(e) => setContact(e.target.value)} /></Field>
           <Field label="A line to open the chat with (optional)"><TA value={note} onChange={(e) => setNote(e.target.value)} className="min-h-14" placeholder="e.g. Great speaking today, Rahul — this takes two minutes." /></Field>
+          {err && <p className="text-xs text-red-600">{err}</p>}
         </div>
       )}
     </Modal>
@@ -6965,6 +7061,30 @@ function RfqPublicPage({ token }) {
             { who: "bot", text: "Welcome back" + (j.respondent ? ", " + j.respondent : "") + " — we already have your requirement" + (j.company ? " for " + j.company : "") + ", and the Elecbits team is on it." },
             { who: "bot", text: "One stage of this form is left: applying for project sanctioning. Elecbits' leadership reviews the application and allocates the project team. A couple of basics first." },
             { who: "bot", text: POST_STEPS[0].ask },
+          ]);
+          return;
+        }
+        // Half-finished and coming back: the token remembers. Restore what
+        // they typed and resume at the first unanswered question rather than
+        // making them do the whole thing again.
+        const saved = j.saved;
+        if (saved && saved.answered > 0 && saved.answered < STEPS.length) {
+          f.current = { ...f.current, ...(saved.answers || {}) };
+          const at = Math.min(saved.answered, STEPS.length - 1);
+          setStep(at);
+          const q = STEPS[at].ask;
+          setMsgs([
+            { who: "bot", text: "Welcome back" + (j.respondent ? ", " + j.respondent : "") + " — I kept everything you'd already told us" + (j.company ? " about " + j.company + "'s requirement" : "") + ", so we can carry on from where you stopped." },
+            { who: "bot", text: typeof q === "function" ? q(f.current) : q },
+          ]);
+          return;
+        }
+        if (saved && saved.answered >= STEPS.length) {
+          // Every question answered but never sent — offer the send button.
+          f.current = { ...f.current, ...(saved.answers || {}) };
+          setStep(STEPS.length);
+          setMsgs([
+            { who: "bot", text: "Welcome back" + (j.respondent ? ", " + j.respondent : "") + " — you'd answered everything last time but hadn't sent it yet. Hit send and it goes straight to the Elecbits team." },
           ]);
           return;
         }
