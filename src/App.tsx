@@ -2243,8 +2243,13 @@ function rfqRank(l) {
   if (l.status === "opened") return 2;
   return 1;
 }
-function rfqBadgeFor(d, rfq) {
-  const l = (rfq || []).filter((x) => x.dealId === d.id || (!x.dealId && x.companyId === d.companyId))
+/* A link with no deal on it (sent before any deal existed, or orphaned when
+   a deal was deleted) belongs to the company, not to one deal. Showing it on
+   every deal of that company would put one client's answers on three cards.
+   It attaches only when there is exactly one deal it could possibly mean. */
+function rfqBadgeFor(d, rfq, deals) {
+  const soleDeal = !deals || (deals.filter((x) => x.companyId === d.companyId && !x.lost).length === 1);
+  const l = (rfq || []).filter((x) => x.dealId === d.id || (!x.dealId && x.companyId === d.companyId && soleDeal))
     .sort((a, b) => (rfqRank(b) - rfqRank(a)) || (a.createdAt < b.createdAt ? 1 : -1))[0];
   if (!l) return null;
   const answered = Number((l.response || {})._answered) || 0;
@@ -2394,7 +2399,7 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
               <span className="font-mono text-sm text-slate-500">{d.did}</span>
               <Chip color={ph === "won" ? "green" : ph === "lost" ? "slate" : tempColor(d.temperature)}>{ph === "won" ? "CLOSED WON" : ph === "lost" ? "CLOSED LOST" : ph.toUpperCase()}</Chip>
               <span className="font-mono text-sm tabular-nums text-slate-800">{fmtINRc(d.value)}</span>
-              {rfqBadgeFor(d, data.rfq) && <Chip color={rfqBadgeFor(d, data.rfq).color}>{rfqBadgeFor(d, data.rfq).label}</Chip>}
+              {rfqBadgeFor(d, data.rfq, data.deals) && <Chip color={rfqBadgeFor(d, data.rfq, data.deals).color}>{rfqBadgeFor(d, data.rfq, data.deals).label}</Chip>}
               <span className="mr-auto" />
               <Btn size="sm" onClick={() => setRoom(d.id)}>Deal Room</Btn>
             </div>
@@ -2501,7 +2506,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
           loadTouches(d.companyId).catch(() => []),
           loadCommitments(d.companyId).catch(() => []),
         ]);
-        const rfqL = rfqBadgeFor(d, data.rfq);
+        const rfqL = rfqBadgeFor(d, data.rfq, data.deals);
         const research = comp.plan && comp.plan.research;
         evRef.current = [
           dealEvidence(d, comp, data.tasks || [], tch, cms),
@@ -2736,7 +2741,7 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
 
   const evidence = () => {
-    const rfqL = rfqBadgeFor(d, data.rfq);
+    const rfqL = rfqBadgeFor(d, data.rfq, data.deals);
     const research = comp && comp.plan && comp.plan.research;
     return [
       dealEvidence(d, comp, tasks, touches, commits),
@@ -3230,7 +3235,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
   const ns = nextStepState(d);
   const ph = d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
-  const rfqB = rfqBadgeFor(d, data.rfq);
+  const rfqB = rfqBadgeFor(d, data.rfq, data.deals);
 
   // The story, phase by phase: what each one actually produced, straight from
   // the record — no AI call, so the room opens instantly. Segments follow the
@@ -3526,7 +3531,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 
 function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompany }) {
   const { users, companies, deals, gates, rfq } = data;
-  const rfqBadge = (d) => { const b = rfqBadgeFor(d, rfq); return b ? <Chip color={b.color}>{b.label}</Chip> : null; };
+  const rfqBadge = (d) => { const b = rfqBadgeFor(d, rfq, deals); return b ? <Chip color={b.color}>{b.label}</Chip> : null; };
   const [scope, setScope] = useState(me.role === "agent" ? "mine" : "team");
   const [gate, setGate] = useState(null); // {deal, from, to, mode} — the lost post-mortem
   const [newDeal, setNewDeal] = useState(false);
@@ -6798,6 +6803,16 @@ function RfqsView({ me, data, openCompany }) {
   const [copied, setCopied] = useState(""); // link id just copied
   const [checking, setChecking] = useState(false);
   const recheck = async () => { setChecking(true); if (refreshRfq) await refreshRfq(); setChecking(false); };
+  // A token is a bearer credential with no expiry: whoever holds the URL can
+  // read the deal's IDs and submit. Forwarded outside the client, or the deal
+  // dies — you need a way to switch it off. `closed` is refused by /api/rfq
+  // on both read and write; the answers already given are kept.
+  const closeLink = async (l) => {
+    if (!window.confirm("Close this RFQ link?\n\nThe URL stops working for the client immediately. Everything they already filled in is kept on the record.")) return;
+    const shut = { ...l, status: "closed" };
+    if (await saveRfqLink(shut)) data.setRfq((data.rfq || []).map((x) => (x.id === l.id ? shut : x)));
+    else window.alert("Could not close the link — check the connection and try again.");
+  };
   const list = (rfq || [])
     .filter((l) => statusF === "all" || l.status === statusF)
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
@@ -6836,8 +6851,8 @@ function RfqsView({ me, data, openCompany }) {
             return (
               <div key={l.id} className="bg-white border border-slate-200 rounded-xl px-4 py-3">
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  <Chip color={l.status === "submitted" ? "green" : stageN === 2 ? "amber" : l.status === "opened" ? "purple" : "blue"}>
-                    {l.status === "submitted" ? "SUBMITTED" : stageN === 2 ? "FILLING · " + pct + "%" : l.status === "opened" ? "OPENED" : "SENT"}
+                  <Chip color={l.status === "closed" ? "slate" : l.status === "submitted" ? "green" : stageN === 2 ? "amber" : l.status === "opened" ? "purple" : "blue"}>
+                    {l.status === "closed" ? "CLOSED" : l.status === "submitted" ? "SUBMITTED" : stageN === 2 ? "FILLING · " + pct + "%" : l.status === "opened" ? "OPENED" : "SENT"}
                   </Chip>
                   {r._sanction && <Chip color="purple"><Rocket size={11} /> SANCTION APPLIED</Chip>}
                   <button onClick={() => c && openCompany(c.id)} className="font-medium text-sm text-slate-900 hover:text-blue-700">{c ? c.name : "?"}</button>
@@ -6850,6 +6865,10 @@ function RfqsView({ me, data, openCompany }) {
                       submitted link is exactly the one they may need resent. */}
                   <button onClick={() => { navigator.clipboard?.writeText(rfqUrl(l.id)); setCopied(l.id); setTimeout(() => setCopied(""), 1500); }}
                     className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> {copied === l.id ? "copied!" : "copy link"}</button>
+                  {l.status !== "closed" && (
+                    <button onClick={() => closeLink(l)} title="Stop this link working — everything already filled in is kept"
+                      className="text-xs text-slate-400 hover:text-red-600 flex items-center gap-1"><XCircle size={11} /> close</button>
+                  )}
                   {answered > 0 && (
                     <Btn size="sm" onClick={() => setOpen(open === l.id ? "" : l.id)}>{open === l.id ? "hide answers" : "view answers"}</Btn>
                   )}
