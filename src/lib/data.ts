@@ -369,9 +369,9 @@ export async function mintClientId(orgId: string, industryCode: number, sizeCode
   const { data: serial, error } = await supabase.schema("core").rpc(RPC.nextNumber, { p_kind: "client_serial" });
   if (error) { console.error("mintClientId", error.message); return null; }
   const cid = "Eb-" + String(industryCode).padStart(2, "0") + "-" + sizeCode + "-" + serial;
-  const { error: e2 } = await tbl(supabase, "orgs")
-    .update({ client_id: cid, org_size: sizeCode }).eq("id", orgId);
-  if (e2) { console.error("mintClientId.update", e2.message); return null; }
+  const { data: hit, error: e2 } = await tbl(supabase, "orgs")
+    .update({ client_id: cid, org_size: sizeCode }).eq("id", orgId).select("id");
+  if (e2 || !hit?.length) { console.error("mintClientId.update", e2?.message || "org row not found"); return null; }
   return cid;
 }
 
@@ -387,8 +387,11 @@ export async function mintSopClientId(orgId: string, floor = 0, sizeCode?: strin
   if (error) { console.error("mintSopClientId", error.message); return null; }
   const patch: any = { client_id: cid };
   if (sizeCode) patch.org_size = sizeCode;
-  const { error: e2 } = await tbl(supabase, "orgs").update(patch).eq("id", orgId);
-  if (e2) { console.error("mintSopClientId.update", e2.message); return null; }
+  // .select verifies a row was actually stamped: a 0-row update (the org
+  // insert hasn't landed yet) must be a visible failure, not a void-mint
+  // whose ID exists only in the browser.
+  const { data: hit, error: e2 } = await tbl(supabase, "orgs").update(patch).eq("id", orgId).select("id");
+  if (e2 || !hit?.length) { console.error("mintSopClientId.update", e2?.message || "org row not found"); return null; }
   return cid as string;
 }
 

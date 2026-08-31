@@ -58,6 +58,11 @@ export default async function handler(req, res) {
         }).then((r) => r.json());
         company = (orgs && orgs[0] && orgs[0].name) || "";
         clientId = (orgs && orgs[0] && orgs[0].client_id) || "";
+        if (!clientId) {
+          // Pre-SOP clients: the working/legacy id still identifies them.
+          const det = await pg("org_detail?org_id=eq." + link.org_id + "&select=legacy_cid");
+          clientId = (det && det[0] && det[0].legacy_cid) || "";
+        }
       } catch (e) { /* ids are informative */ }
       if (link.deal_id) {
         try {
@@ -77,8 +82,9 @@ export default async function handler(req, res) {
         submitted: link.status === "submitted", closed: link.status === "closed",
         // Enough for the chat to stay alive after submission without leaking
         // the whole response back out: who they are, and where the
-        // sanctioning stage stands.
-        respondent: (resp.name || "").split(/\s+/)[0] || "",
+        // sanctioning stage stands. (resp is client-written — coerce types,
+        // never trust the shape.)
+        respondent: String(resp.name || "").split(/\s+/)[0] || "",
         sanction: !!resp._sanction,
       });
     }
@@ -97,7 +103,24 @@ export default async function handler(req, res) {
         if (link.status !== "submitted") return res.status(409).json({ error: "Submit the requirement first." });
         const resp = link.response || {};
         if (resp._sanction) return res.status(200).json({ ok: true, already: true });
-        const post = (b.post && typeof b.post === "object") ? JSON.parse(JSON.stringify(b.post).slice(0, 8000)) : {};
+        // The basics are a fixed three fields — whitelist them rather than
+        // storing whatever shape the browser sent (and never truncate
+        // serialized JSON: a cut-off string is not JSON at all).
+        const raw = (b.post && typeof b.post === "object") ? b.post : {};
+        const post = {};
+        for (const k of ["projectName", "kickoff", "decider"]) {
+          const v = String(raw[k] == null ? "" : raw[k]).trim().slice(0, 300);
+          if (v) post[k] = v;
+        }
+        const stamp = { ...post, at: new Date().toISOString() };
+        // Claim the stamp FIRST, conditionally on it being absent — of two
+        // concurrent (or retried) applications only one PATCH matches a row,
+        // so only one sales.requests row is ever filed.
+        const claimed = await pg("rfq_links?id=eq." + id + "&response-%3E_sanction=is.null", {
+          method: "PATCH",
+          body: JSON.stringify({ response: { ...resp, _sanction: stamp } }),
+        });
+        if (!claimed || !claimed.length) return res.status(200).json({ ok: true, already: true });
         const title = "Project sanction — " + (post.projectName || link.title || "RFQ " + id.slice(0, 8));
         const summary = [
           "Filed by the client from the RFQ link (public form, last stage: sanctioning).",
@@ -105,7 +128,7 @@ export default async function handler(req, res) {
           post.kickoff ? "Wants to kick off: " + post.kickoff : "",
           post.decider ? "Signs off on their side: " + post.decider : "",
           resp.need ? "Requirement: " + String(resp.need).slice(0, 2000) : "",
-          (resp.services || []).length ? "Services: " + resp.services.join(", ") : "",
+          Array.isArray(resp.services) && resp.services.length ? "Services: " + resp.services.join(", ") : "",
           resp.qty ? "Qty: " + resp.qty : "", resp.timeline ? "Timeline: " + resp.timeline : "",
           resp.budget ? "Budget signal: " + resp.budget : "",
           resp.name ? "Client contact: " + resp.name + (resp.email ? " · " + resp.email : "") + (resp.phone ? " · " + resp.phone : "") : "",
@@ -117,26 +140,35 @@ export default async function handler(req, res) {
         // `requirement` exists only after 23-pipeline-brain.sql — retry
         // without it rather than losing the application itself.
         const withReq = { ...row, requirement: { ...resp, _sanction: post, source: "rfq_public", rfq_link: id, deal_id: link.deal_id || null } };
-        try { await pg("requests", { method: "POST", body: JSON.stringify(withReq) }); }
-        catch (e) {
-          if (!/requirement|column/i.test(String(e.message || ""))) throw e;
-          await pg("requests", { method: "POST", body: JSON.stringify(row) });
+        try {
+          try { await pg("requests", { method: "POST", body: JSON.stringify(withReq) }); }
+          catch (e) {
+            if (!/requirement|column/i.test(String(e.message || ""))) throw e;
+            await pg("requests", { method: "POST", body: JSON.stringify(row) });
+          }
+        } catch (e) {
+          // The insert failed after the claim: release the stamp so the
+          // client's retry can file for real, then surface the error.
+          try { await pg("rfq_links?id=eq." + id, { method: "PATCH", body: JSON.stringify({ response: resp }) }); } catch (e2) { /* stamp stays; 'already' beats a duplicate */ }
+          throw e;
         }
-        await pg("rfq_links?id=eq." + id, {
-          method: "PATCH",
-          body: JSON.stringify({ response: { ...resp, _sanction: { ...post, at: new Date().toISOString() } } }),
-        });
         return res.status(200).json({ ok: true });
       }
 
       const response = b.response;
       if (!response || typeof response !== "object") return res.status(400).json({ error: "response required" });
-      const rows = await pg("rfq_links?id=eq." + id + "&select=id,status");
+      const rows = await pg("rfq_links?id=eq." + id + "&select=id,status,response");
       const link = rows && rows[0];
       if (!link) return res.status(404).json({ error: "This link does not exist." });
       if (link.status === "closed") return res.status(409).json({ error: "This link was closed." });
-      // Bound the payload; the client's browser is untrusted input.
-      const clean = JSON.parse(JSON.stringify(response).slice(0, 40000));
+      // Bound the payload; the client's browser is untrusted input. Reject
+      // rather than truncate — a cut serialization is not JSON any more.
+      if (JSON.stringify(response).length > 40000) return res.status(413).json({ error: "response too large" });
+      const clean = JSON.parse(JSON.stringify(response));
+      // A re-submit must never erase the sanctioning stamp — that would
+      // re-open the double-file window and re-offer the stage in the chat.
+      const prevSanction = link.response && link.response._sanction;
+      if (prevSanction) clean._sanction = prevSanction;
       if (b.partial) {
         // Mid-form progress: saved as they type, so the salesperson sees how
         // much is filled. Never downgrades a submitted link.

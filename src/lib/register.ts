@@ -4,16 +4,30 @@
    filed in SOP order: register row BEFORE folder (Law 6), append → verify →
    repair, folder link written back into the row.
 
+   Every call carries the signed-in person's Supabase JWT: /api/register
+   refuses anonymous callers, because the register is the company-wide ID
+   authority and even the peek feeds the mint's floor.
+
    Same contract as lib/drive.ts: every function resolves rather than throws.
    The durable record is the database row; the register and the folders are
    the company-wide paperwork, and a paperwork failure must never take a
    client save down with it. Callers read `warnings` and surface them.     */
 
+import { supabase } from "./supabase";
+
+async function authHeaders(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    const t = data?.session?.access_token;
+    return t ? { Authorization: "Bearer " + t } : {};
+  } catch { return {}; }
+}
+
 const post = async (action: string, body: any): Promise<any> => {
   try {
     const r = await fetch("/api/register?action=" + action, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
       body: JSON.stringify(body),
     });
     return await r.json();
@@ -24,18 +38,22 @@ const post = async (action: string, body: any): Promise<any> => {
 
 /** Is the register configured, and was the sheet found? */
 export const registerStatus = async (): Promise<any> => {
-  try { return await fetch("/api/register?action=status").then((r) => r.json()); }
-  catch { return { connected: false }; }
+  try {
+    return await fetch("/api/register?action=status", { headers: await authHeaders() }).then((r) => r.json());
+  } catch { return { connected: false }; }
 };
 
-/** The highest EB-C serial the register already holds this year — the floor
-    the SOP mint must clear. 0 when the sheet is unreachable (the DB counter
-    then stands alone, which is safe: it only ever moves up). */
-export async function registerPeek(family = "EB-C"): Promise<number> {
+/** The highest serial the register already holds this year — the floor the
+    SOP mint must clear. Returns NULL when the sheet could not actually be
+    read (network down, register not found): the caller must then refuse to
+    mint blind rather than treat "couldn't look" as "sheet says zero" —
+    that confusion is exactly how two tools issue the same serial. */
+export async function registerPeek(family = "EB-C"): Promise<number | null> {
   try {
-    const j = await fetch("/api/register?action=peek&family=" + encodeURIComponent(family)).then((r) => r.json());
-    return Number(j?.max) || 0;
-  } catch { return 0; }
+    const j = await fetch("/api/register?action=peek&family=" + encodeURIComponent(family),
+      { headers: await authHeaders() }).then((r) => r.json());
+    return j?.register === true ? (Number(j.max) || 0) : null;
+  } catch { return null; }
 }
 
 /** Client born: Clients-tab row, then the "<clientId> — <name>" folder,

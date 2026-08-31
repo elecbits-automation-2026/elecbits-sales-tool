@@ -31,16 +31,26 @@ returns text
 language plpgsql security definer set search_path = sales, pg_temp
 as $$
 declare
-  v_yy text := to_char(now(), 'YY');
-  v_n  int;
+  -- Business time is IST: an ID minted at 2am on Jan 1st in India must not
+  -- carry last year's yy just because UTC is still in December.
+  v_yy    text := to_char(now() at time zone 'Asia/Kolkata', 'YY');
+  -- The floor comes from the browser (the register peek) — clamp it so a
+  -- corrupted sheet cell or a hostile call can't jump the counter past the
+  -- 4-digit serial space and break the EB-C-YY-nnnn format for the year.
+  v_floor int  := least(greatest(coalesce(p_floor, 0), 0), 9998);
+  v_n     int;
 begin
   insert into sales.sop_counters as c (family, yy, last)
-  values (upper(p_family), v_yy, greatest(coalesce(p_floor, 0), 0) + 1)
+  values (upper(p_family), v_yy, v_floor + 1)
   on conflict (family, yy) do update
-    set last = greatest(c.last, coalesce(p_floor, 0)) + 1
+    set last = greatest(c.last, v_floor) + 1
   returning last into v_n;
+  if v_n > 9999 then
+    raise exception 'SOP serial space exhausted for % in 20%', upper(p_family), v_yy;
+  end if;
   return upper(p_family) || '-' || v_yy || '-' || lpad(v_n::text, 4, '0');
 end $$;
+revoke all on function sales.next_sop_id(text, int) from public, anon;
 grant execute on function sales.next_sop_id(text, int) to authenticated;
 
 create table if not exists sales.intake_sessions (

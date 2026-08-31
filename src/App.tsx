@@ -19,7 +19,7 @@ import {
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
   mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession,
 } from "./lib/data";
-import { registerClient, registerDeal, registerPeek } from "./lib/register";
+import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
   askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
@@ -341,10 +341,21 @@ function sopDealCode(company, deals) {
   return cid + "-D" + String(mx + 1).padStart(2, "0");
 }
 
-/* The full mint: peek the register's max serial (best-effort), then mint
-   above it. Returns the EB-C id, or null when the RPC is unreachable. */
+/* The full mint: peek the register's max serial, then mint above it. A null
+   peek means the sheet EXISTS but could not be read right now — minting
+   blind there could issue a serial the register already gave another tool,
+   so refuse and let the caller retry. Only a deployment with no register
+   configured at all mints from the local counter alone. */
 async function mintSopId(orgId, sizeCode) {
   const floor = await registerPeek("EB-C");
+  if (floor == null) {
+    // Mint from the local counter alone ONLY when the deployment positively
+    // reports "no register configured". Errors and 401s are unknowns — and
+    // minting on an unknown is how two tools issue the same serial.
+    const st = await registerStatus();
+    if (st && st.connected === false && !st.error) return mintSopClientId(orgId, 0, sizeCode || undefined);
+    return null;
+  }
   return mintSopClientId(orgId, floor, sizeCode || undefined);
 }
 
@@ -373,11 +384,15 @@ function dealBriefText(company, deal, ownerName) {
 
 /* Deal paperwork, XoR-style and fire-and-forget: the Deals-tab register row
    first, then the deal folder inside the client folder with the brief
-   inside, then the folder link back into the row. Never blocks the save —
-   the caller gets an activity note through `onNote` when something lands. */
+   inside, then the folder link back into the row. Never blocks the save.
+   The caller gets ALL activity notes in ONE `onNote(notes)` call — one call,
+   one state update, so no note overwrites another. The company's cid rides
+   along whatever its vintage: a legacy id still names the client folder and
+   still belongs in the register's Client ID column ("recorded, never
+   reused"). */
 function fileDealFootprint(company, deal, ownerName, onNote) {
   registerDeal({
-    dealId: deal.did, clientId: SOP_CID_RE.test(company.cid || "") ? company.cid : "",
+    dealId: deal.did, clientId: company.cid || "",
     clientName: company.name, dealName: company.name + " — " + deal.did,
     status: "Open", value: deal.value || 0, currency: "INR", owner: ownerName || "",
     dateOpened: String(deal.createdAt || nowTS()).slice(0, 10),
@@ -385,9 +400,12 @@ function fileDealFootprint(company, deal, ownerName, onNote) {
     brief: dealBriefText(company, deal, ownerName),
   }).then((r) => {
     if (!onNote || !r) return;
-    if (r.registered) onNote("Master register: deal row added for " + deal.did + ".");
-    if (r.folderLink) onNote("Deal folder created: " + deal.did + (r.registered ? " (link filed in the register)" : ""));
-    (r.warnings || []).forEach((w) => onNote("Deal filing warning: " + w));
+    const notes = [];
+    if (r.error) notes.push("Deal filing failed (will need a retry): " + r.error);
+    if (r.registered) notes.push("Master register: deal row added for " + deal.did + ".");
+    if (r.folderLink) notes.push("Deal folder created: " + deal.did + (r.registered ? " (link filed in the register)" : ""));
+    (r.warnings || []).forEach((w) => notes.push("Deal filing warning: " + w));
+    if (notes.length) onNote(notes);
   }).catch(() => {});
 }
 
@@ -749,7 +767,19 @@ export default function App() {
   // relational schema and flags the toast on failure.
   const flag = (p) => { p.then((okd) => { if (!okd) setSaveErr(true); }); };
   const saveUsers = (v) => { setUsers(v); flag(syncUsers(v)); };
-  const saveCompanies = (v) => { setCompanies(v); flag(syncCompanies(v)); };
+  // saveCompanies accepts an updater function too: a callback that fires
+  // seconds after render (Drive/register paperwork landing) must build its
+  // list from CURRENT state, or it reverts every edit made in the interim
+  // and re-syncs the stale rows over the database.
+  const saveCompanies = (v) => {
+    if (typeof v === "function") {
+      setCompanies((prev) => {
+        const next = v(prev);
+        queueMicrotask(() => flag(syncCompanies(next)));
+        return next;
+      });
+    } else { setCompanies(v); flag(syncCompanies(v)); }
+  };
   const saveDeals = (v) => { setDeals(v); flag(syncDeals(v)); };
   const saveKpis = (v) => { setKpis(v); flag(syncKpis(v)); };
   const saveTrainings = (v) => { setTrainings(v); flag(syncTrainings(v)); };
@@ -1109,29 +1139,35 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
     setEditing(null);
     setFocusCompanyId(c.id);
     if (!isNew) return;
-    // Onboarding, SOP v2.0 order: mint EB-C-YY-nnnn, then the master-register
-    // row, THEN the client folder (Law 6: no register row, no folder), the
-    // folder link filed back — and the first deal with its own paperwork.
+    // Onboarding, SOP v2.0 order: the org row FIRST (the mint stamps it, so
+    // it must exist), then mint EB-C-YY-nnnn, then the master-register row,
+    // THEN the client folder (Law 6: no register row, no folder), the folder
+    // link filed back — and the first deal with its own paperwork. When the
+    // mint fails, NOTHING goes to the register: the working cid is a
+    // placeholder that exists nowhere, and filing it would pollute the ID
+    // authority forever. MintIdModal re-runs the whole chain later.
     (async () => {
       let latest = { ...clean };
       const note = (text) => { latest = { ...latest, activity: [...(latest.activity || []), { at: nowTS(), by: me.id, text }] }; };
+      await syncCompanies([clean]);   // the row the mint is about to stamp
       const cid = await mintSopId(clean.id, clean.orgSize);
       if (cid) {
-        latest = { ...latest, cid, official: true, legacyCid: latest.legacyCid || (clean.cid !== cid ? clean.cid : "") };
+        latest = { ...latest, cid, official: true };
         note("Official client ID minted: " + cid);
-      }
-      const reg = await registerClient({
-        clientId: cid || latest.cid, legacyId: latest.legacyCid || "",
-        name: clean.name, sector: clean.industry || "", orgSize: clean.orgSize || "",
-        addedBy: me.name, poc: clean.contactPerson || "", notes: clean.whatTheyDo || "",
-      });
-      if (reg?.registered) note("Master register: client row added" + (reg.duplicate ? "" : " for " + (cid || latest.cid)) + ".");
-      if (reg?.duplicate) note("Master register already holds " + (cid || latest.cid) + " — row kept as is.");
-      if (reg?.folderLink) note("Client folder created: " + (cid || latest.cid) + " — " + clean.name);
-      (reg?.warnings || []).forEach((w) => note("Filing warning: " + w));
-      if (!reg?.folderLink) {
-        // Register API unreachable — fall back to the plain Drive folder so
-        // day-one filing still has somewhere to land.
+        const reg = await registerClient({
+          clientId: cid, legacyId: latest.legacyCid || "",
+          name: clean.name, sector: clean.industry || "", orgSize: clean.orgSize || "",
+          addedBy: me.name, poc: clean.contactPerson || "", notes: clean.whatTheyDo || "",
+        });
+        if (reg?.error) note("Master register filing failed — use “mint official client ID” on the company page to retry: " + reg.error);
+        if (reg?.registered) note("Master register: client row added for " + cid + ".");
+        if (reg?.duplicate) note("Master register already holds " + cid + " — row kept as is.");
+        if (reg?.folderLink) note("Client folder created: " + cid + " — " + clean.name);
+        (reg?.warnings || []).forEach((w) => note("Filing warning: " + w));
+      } else {
+        note("Official ID not minted (master register unreachable, or 30-sop-ids.sql not run) — the register row and client folder follow the mint. Use “mint official client ID” on the company page to retry.");
+        // Day-one filing still needs somewhere to land: the plain Drive
+        // folder under the working name, exactly as before the SOP port.
         try {
           const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(latest))).then((x) => x.json());
           if (r && r.id) note("Drive folder created: " + driveFolderName(latest));
@@ -1147,7 +1183,10 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
       };
       saveDeals([d, ...deals]);
       const ownerU = users.find((u) => u.id === d.ownerId);
-      fileDealFootprint(latest, d, ownerU ? ownerU.name : me.name, null);
+      fileDealFootprint(latest, d, ownerU ? ownerU.name : me.name, (notes) => {
+        saveCompanies((prev) => prev.map((x) => x.id === clean.id
+          ? { ...x, activity: [...(x.activity || []), ...notes.map((text) => ({ at: nowTS(), by: me.id, text }))] } : x));
+      });
     })();
   };
 
@@ -1395,13 +1434,17 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
     });
   };
 
-  const say = (text, nextState) => {
+  // One place composes the exchange: the final message list is built NOW
+  // (from the caller's own composed base, never a possibly-stale ref) and
+  // persisted NOW — only the visual reveal waits for the typing beat. Close
+  // the tab mid-beat and the draft is already whole.
+  const say = (text, o = {}) => {
+    const out = [...(o.base || msgsRef.current), { who: "bot", text }];
+    if (o.state) setState(o.state);
+    if (o.data) setF(o.data);
+    persist({ messages: out, state: o.state, data: o.data });
     setTyping(true);
-    setTimeout(() => {
-      setTyping(false);
-      setMsgs((m) => { const out = [...m, { who: "bot", text }]; persist({ messages: out, state: nextState ?? stateRef.current }); return out; });
-      if (nextState) setState(nextState);
-    }, 350);
+    setTimeout(() => { setTyping(false); setMsgs(out); }, 350);
   };
 
   const known = (d) => [
@@ -1461,8 +1504,9 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
     const text = input.trim();
     if (!text || busy) return;
     setInput("");
-    setMsgs((m) => [...m, { who: "me", text }]);
-    setBusy(true);
+    const echoed = [...msgsRef.current, { who: "me", text }];
+    setMsgs(echoed);
+    setBusy(true);   // chips included — nothing else may mutate f mid-extract
     const cur = stateRef.current;
     let d = { ...fRef.current };
     if (cur === "details" && /^skip\b/i.test(text)) d._detailsDone = true;
@@ -1472,13 +1516,11 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
       if (!Object.keys(picked).length) {
         if (cur === "company") picked.name = text;
         else if (cur === "contact") picked.contactPerson = text;
-        else if (cur === "details") picked.notes = ((d.notes || "") + " " + text).trim();
         else picked.notes = ((d.notes || "") + " " + text).trim();
       }
       if (cur === "details") d._detailsDone = true;
       d = { ...d, ...picked };
     }
-    setF(d);
     const dupe = cur === "company" && d.name ? dupeOf(d.name) : null;
     const next = advanceFrom(cur, d);
     const caught = known(d);
@@ -1486,18 +1528,17 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
       ? "Heads up — " + dupe.name + " (" + (dupe.cid || "no ID") + ") already exists in the book. If this is them, close this chat and open that record; if it's a different company, carry on.\n\n"
       : "";
     const got = caught ? "On file: " + caught + "\n\n" : "";
-    say(lead + got + askForState(next, d), next);
-    persist({ data: d });
+    say(lead + got + askForState(next, d), { state: next, data: d, base: echoed });
     setBusy(false);
   };
 
   const pickChip = (key, value, label) => {
-    setMsgs((m) => [...m, { who: "me", text: label || value }]);
+    if (busy) return;   // a pick mid-extract would be wiped by the merge
+    const echoed = [...msgsRef.current, { who: "me", text: label || value }];
+    setMsgs(echoed);
     const d = { ...fRef.current, [key]: value };
-    setF(d);
     const next = advanceFrom(stateRef.current, d);
-    say(askForState(next, d), next);
-    persist({ data: d });
+    say(askForState(next, d), { state: next, data: d, base: echoed });
   };
 
   const canCreate = String(f.name || "").trim() && (String(f.contactPerson || "").trim() || String(f.email || "").trim() || String(f.phone || "").trim());
@@ -1518,7 +1559,13 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
       _dealValue: String(f.potential || ""),
     };
     if (f.notes) company.custom = [{ k: "Intake notes", v: String(f.notes).trim() }];
-    await upsertIntakeSession({ ...sess, state: "review", data: fRef.current, messages: msgsRef.current, status: "created", orgId: company.id });
+    // intake_sessions.org_id references core.orgs — the org row must exist
+    // BEFORE the session points at it, or the FK rejects the status flip and
+    // a ghost draft survives every creation (resuming it would mint a
+    // duplicate client). syncCompanies is an idempotent upsert; the later
+    // saveCompanies re-upsert inside onCreate is harmless.
+    const orgSaved = await syncCompanies([company]);
+    await upsertIntakeSession({ ...sess, state: "review", data: fRef.current, messages: msgsRef.current, status: "created", orgId: orgSaved ? company.id : "" });
     onCreate(company);   // the SOP pipeline: mint → register → folder → deal
     onClose();
   };
@@ -1551,16 +1598,16 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
           {state === "industry" && (
             <div className="flex flex-wrap gap-1.5 mb-2 max-h-28 overflow-y-auto">
               {INDUSTRIES.map(([n, l]) => (
-                <button key={n} onClick={() => pickChip("industry", l)}
-                  className={cls("px-2 py-1 rounded-lg text-[11px] font-medium border", f.industry === l ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{l}</button>
+                <button key={n} disabled={busy} onClick={() => pickChip("industry", l)}
+                  className={cls("px-2 py-1 rounded-lg text-[11px] font-medium border disabled:opacity-50", f.industry === l ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{l}</button>
               ))}
             </div>
           )}
           {state === "size" && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {ORG_SIZES.map(([k, l]) => (
-                <button key={k} onClick={() => pickChip("orgSize", k, k + " — " + l)}
-                  className={cls("px-2.5 py-1.5 rounded-lg text-xs font-medium border", f.orgSize === k ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{k} — {l}</button>
+                <button key={k} disabled={busy} onClick={() => pickChip("orgSize", k, k + " — " + l)}
+                  className={cls("px-2.5 py-1.5 rounded-lg text-xs font-medium border disabled:opacity-50", f.orgSize === k ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-300 hover:border-blue-400")}>{k} — {l}</button>
               ))}
             </div>
           )}
@@ -1626,8 +1673,9 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
     };
     saveDeals([d, ...deals]); setNewDeal(false); setTab("pipeline");
     const ownerU = users.find((u) => u.id === ownerId);
-    fileDealFootprint(c, d, ownerU ? ownerU.name : me.name, (text) => {
-      saveCompanies(data.companies.map((x) => x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text }] } : x));
+    fileDealFootprint(c, d, ownerU ? ownerU.name : me.name, (notes) => {
+      saveCompanies((prev) => prev.map((x) => x.id === c.id
+        ? { ...x, activity: [...(x.activity || []), ...notes.map((text) => ({ at: nowTS(), by: me.id, text }))] } : x));
     });
   };
 
@@ -1941,6 +1989,7 @@ function MintIdModal({ company: c, data, onClose, saveCompanies, me }) {
       name: c.name, sector: ind || c.industry || "", orgSize: size,
       addedBy: me.name, poc: c.contactPerson || "", notes: c.whatTheyDo || "",
     });
+    if (reg?.error) notes.push("Master register filing failed — mint again to retry the row: " + reg.error);
     if (reg?.registered) notes.push("Master register: client row added.");
     if (reg?.duplicate) notes.push("Master register already holds " + cid + " — row kept as is.");
     if (reg?.folderLink) notes.push("Client folder created: " + cid + " — " + c.name);
@@ -5452,8 +5501,18 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
                 nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: "", assignee: who.id, author: me.id, title: a.title, details: "Via Assistant", due: a.due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
               results.push("✓ task: " + a.title + (who ? " → " + who.name : ""));
             } else if (a.type === "company" && a.name && !byName(a.name, nextCompanies)) {
-              nextCompanies = [{ id: uid(), cid: nextSeq(nextCompanies, "cid", "EB-C-"), name: a.name, contactPerson: a.contact || "", designation: "", phone: "", email: "", city: a.city || "", industry: a.industry || "", whatTheyDo: "", source: "Assistant", potential: 0, website: "", address: "", accountOwner: me.id, createdBy: me.id, createdAt: nowTS(), custom: [], activity: [{ at: nowTS(), by: me.id, text: "Company created via Assistant." }] }, ...nextCompanies];
-              results.push("✓ company: " + a.name);
+              // The Assistant path runs the SAME SOP pipeline as the other
+              // creation doors: org row → EB-C mint → register row → folder.
+              const co = { id: uid(), cid: nextSeq(nextCompanies, "cid", "EB-C-"), name: a.name, contactPerson: a.contact || "", designation: "", phone: "", email: "", city: a.city || "", industry: a.industry || "", whatTheyDo: "", source: "Assistant", potential: 0, website: "", address: "", accountOwner: me.id, createdBy: me.id, createdAt: nowTS(), custom: [], activity: [{ at: nowTS(), by: me.id, text: "Company created via Assistant." }] };
+              await syncCompanies([co]);
+              const cid = await mintSopId(co.id, "");
+              if (cid) {
+                co.cid = cid; co.official = true;
+                co.activity.push({ at: nowTS(), by: me.id, text: "Official client ID minted: " + cid });
+                registerClient({ clientId: cid, legacyId: "", name: co.name, sector: co.industry || "", orgSize: "", addedBy: me.name, poc: co.contactPerson || "", notes: "" }).catch(() => {});
+              }
+              nextCompanies = [co, ...nextCompanies];
+              results.push("✓ company: " + a.name + (cid ? " (" + cid + ")" : " (official ID pending — mint from the company page)"));
             } else if (a.type === "deal" && a.company) {
               const comp = byName(a.company, nextCompanies);
               if (comp) {
