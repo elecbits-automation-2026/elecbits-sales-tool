@@ -770,15 +770,40 @@ export default function App() {
   // comes back from WhatsApp to see whether the form moved). Quiet: a failed
   // poll leaves the last known state alone rather than blanking the list.
   const [rfqCheckedAt, setRfqCheckedAt] = useState("");
+  const [rfqNews, setRfqNews] = useState(null);   // {text} — a client just moved
+  const rfqRef = useRef([]);
+  const orgNameRef = useRef(new Map());
   const refreshRfq = useCallback(async () => {
     // Requests ride along: the form's last stage files a sanctioning
     // application from the client's browser, and a chip on the link is not
     // the same as the application appearing on the company page.
     const [fresh, reqs] = await Promise.all([loadRfqLinks(), loadRequests()]);
-    if (fresh) { setRfq(fresh); setRfqCheckedAt(nowTS()); }
+    if (fresh) {
+      // A silent update is a missed update: the salesperson is usually on
+      // some other tab when the client finally fills the form. Announce the
+      // two moments worth interrupting for.
+      const was = new Map(rfqRef.current.map((l) => [l.id, l]));
+      const moved = fresh.filter((l) => {
+        const b = was.get(l.id);
+        if (!b) return false;                       // brand-new link: not news
+        const sanctioned = !!(l.response || {})._sanction && !(b.response || {})._sanction;
+        return sanctioned || (l.status === "submitted" && b.status !== "submitted");
+      });
+      if (moved.length) {
+        const who = orgNameRef.current.get(moved[0].companyId) || "A client";
+        const sanctioned = !!(moved[0].response || {})._sanction;
+        setRfqNews({ text: moved.length > 1
+          ? moved.length + " RFQ links just came back from clients."
+          : who + (sanctioned ? " applied for project sanctioning." : " just submitted their RFQ.") });
+      }
+      rfqRef.current = fresh;
+      setRfq(fresh); setRfqCheckedAt(nowTS());
+    }
     if (reqs) setRequests(reqs);
     return fresh;
   }, []);
+  useEffect(() => { rfqRef.current = rfq; }, [rfq]);
+  useEffect(() => { orgNameRef.current = new Map(companies.map((c) => [c.id, c.name])); }, [companies]);
   useEffect(() => {
     if (!authEmail || loading) return;
     let alive = true;
@@ -889,6 +914,13 @@ export default function App() {
           <div className="fixed bottom-3 left-3 z-50 bg-red-600 text-white text-xs px-3 py-2 rounded-md shadow-lg flex items-center gap-2">
             <AlertCircle size={14} /> A save failed — check connection, then retry your last change.
             <button onClick={() => setSaveErr(false)} className="ml-1 opacity-80 hover:opacity-100"><X size={12} /></button>
+          </div>
+        )}
+        {rfqNews && (
+          <div className="fixed bottom-3 right-3 z-50 bg-green-600 text-white text-xs px-3 py-2 rounded-md shadow-lg flex items-center gap-2">
+            <CheckCircle2 size={14} /> {rfqNews.text}
+            <button onClick={() => { setTab("rfqs"); setRfqNews(null); }} className="underline font-semibold">open RFQs</button>
+            <button onClick={() => setRfqNews(null)} className="ml-1 opacity-80 hover:opacity-100"><X size={12} /></button>
           </div>
         )}
       </div>
