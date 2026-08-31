@@ -2288,6 +2288,10 @@ function rfqBadgeFor(d, rfq, deals) {
   const total = Number((l.response || {})._total) || 9;
   return (l.response || {})._sanction ? { label: "RFQ in · sanction applied", color: "green", link: l }
     : l.status === "submitted" ? { label: "RFQ input received", color: "green", link: l }
+    // Answered everything and never pressed send: "filling · 100%" reads as
+    // "nearly there, leave them alone", when it actually means one nudge
+    // closes it. Different state, different words.
+    : answered >= total ? { label: "RFQ answered, not sent — nudge them", color: "amber", link: l }
     : answered > 0 ? { label: "RFQ filling · " + Math.round((answered / total) * 100) + "%", color: "amber", link: l }
     : l.status === "opened" ? { label: "RFQ opened, awaiting input", color: "purple", link: l }
     : l.status === "created" ? { label: "RFQ link sent", color: "purple", link: l } : null;
@@ -6884,7 +6888,9 @@ function RfqsView({ me, data, openCompany }) {
               <div key={l.id} className="bg-white border border-slate-200 rounded-xl px-4 py-3">
                 <div className="flex items-center gap-2.5 flex-wrap">
                   <Chip color={l.status === "closed" ? "slate" : l.status === "submitted" ? "green" : stageN === 2 ? "amber" : l.status === "opened" ? "purple" : "blue"}>
-                    {l.status === "closed" ? "CLOSED" : l.status === "submitted" ? "SUBMITTED" : stageN === 2 ? "FILLING · " + pct + "%" : l.status === "opened" ? "OPENED" : "SENT"}
+                    {l.status === "closed" ? "CLOSED" : l.status === "submitted" ? "SUBMITTED"
+                      : answered >= total ? "ANSWERED, NOT SENT"
+                      : stageN === 2 ? "FILLING · " + pct + "%" : l.status === "opened" ? "OPENED" : "SENT"}
                   </Chip>
                   {r._sanction && <Chip color="purple"><Rocket size={11} /> SANCTION APPLIED</Chip>}
                   <button onClick={() => c && openCompany(c.id)} className="font-medium text-sm text-slate-900 hover:text-blue-700">{c ? c.name : "?"}</button>
@@ -7154,23 +7160,29 @@ function RfqPublicPage({ token }) {
         // they typed and resume at the first unanswered question rather than
         // making them do the whole thing again.
         const saved = j.saved;
-        if (saved && saved.answered > 0 && saved.answered < STEPS.length) {
+        if (saved && saved.answered > 0) {
           f.current = { ...f.current, ...(saved.answers || {}) };
-          const at = Math.min(saved.answered, STEPS.length - 1);
-          setStep(at);
-          const q = STEPS[at].ask;
+          // Replay the conversation, not just the answers: being told "I kept
+          // everything you said" without being shown it leaves the client
+          // unable to check it or spot a typo.
+          const replay = [];
+          for (let i = 0; i < Math.min(saved.answered, STEPS.length); i++) {
+            const s = STEPS[i];
+            const q = s.ask;
+            replay.push({ who: "bot", text: typeof q === "function" ? q(f.current) : q });
+            const v = s.key === "contact"
+              ? [f.current.email, f.current.phone].filter(Boolean).join(" · ")
+              : Array.isArray(f.current[s.key]) ? f.current[s.key].join(", ") : f.current[s.key];
+            replay.push({ who: "me", text: v || "(skipped)" });
+          }
+          const done = saved.answered >= STEPS.length;
+          setStep(done ? STEPS.length : saved.answered);
           setMsgs([
-            { who: "bot", text: "Welcome back" + (j.respondent ? ", " + j.respondent : "") + " — I kept everything you'd already told us" + (j.company ? " about " + j.company + "'s requirement" : "") + ", so we can carry on from where you stopped." },
-            { who: "bot", text: typeof q === "function" ? q(f.current) : q },
-          ]);
-          return;
-        }
-        if (saved && saved.answered >= STEPS.length) {
-          // Every question answered but never sent — offer the send button.
-          f.current = { ...f.current, ...(saved.answers || {}) };
-          setStep(STEPS.length);
-          setMsgs([
-            { who: "bot", text: "Welcome back" + (j.respondent ? ", " + j.respondent : "") + " — you'd answered everything last time but hadn't sent it yet. Hit send and it goes straight to the Elecbits team." },
+            { who: "bot", text: "Welcome back" + (j.respondent ? ", " + j.respondent : "") + " — here's everything you'd already told us" + (j.company ? " about " + j.company + "'s requirement" : "") + "." },
+            ...replay,
+            { who: "bot", text: done
+              ? "You'd answered everything last time but hadn't sent it yet. Hit send and it goes straight to the Elecbits team."
+              : (() => { const q = STEPS[saved.answered].ask; return typeof q === "function" ? q(f.current) : q; })() },
           ]);
           return;
         }

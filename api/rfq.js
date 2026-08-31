@@ -48,6 +48,14 @@ export default async function handler(req, res) {
       const rows = await pg("rfq_links?id=eq." + id + "&select=id,org_id,deal_id,title,offer,note_to_client,contact_name,status,submitted_at,response");
       const link = rows && rows[0];
       if (!link) return res.status(404).json({ error: "This link does not exist or was closed." });
+      // Closing a link has to stop the READ too, not only the write. This
+      // response carries the company name, the official Client ID, the deal
+      // code and the contact — exactly what a revoked link must stop
+      // disclosing — so a closed token dies here, before any of it is
+      // resolved.
+      if (link.status === "closed") {
+        return res.status(410).json({ error: "This link was closed. Ask your Elecbits contact for a new one." });
+      }
       // The company's public name and official Client ID come from core.orgs;
       // the Deal ID (the SOP code, not the uuid) from sales.deals. Both ride
       // the link so what the client fills lands against the right IDs.

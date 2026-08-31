@@ -326,6 +326,13 @@ function check(name, cond, got) {
   const l = newLink({ status: "closed" });
   const r = await call(rfq, { method: "POST", query: { id: l.id }, body: { response: { need: "late" } } });
   check("a closed link refuses new input", r.code === 409, r);
+  // Revoking must stop the READ too: this payload is the company name, the
+  // official Client ID, the deal code and the contact.
+  const g = await call(rfq, { query: { id: l.id } });
+  check("a closed link is dead on read (410)", g.code === 410, g);
+  check("a closed link discloses no company name", !g.json?.company, g.json);
+  check("a closed link discloses no Client ID", !g.json?.clientId, g.json);
+  check("a closed link discloses no Deal ID", !g.json?.dealId, g.json);
 }
 
 /* 12 — the register endpoint is not public */
