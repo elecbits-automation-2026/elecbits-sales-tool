@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 
 const db = {
   core:  { orgs: [] },
-  sales: { rfq_links: [], deals: [], org_detail: [], requests: [] },
+  sales: { rfq_links: [], deals: [], org_detail: [], requests: [], org_activities: [] },
 };
 
 const getPath = (row, path) => path.reduce((v, k) => (v == null ? v : v[k]), row);
@@ -240,6 +240,50 @@ function check(name, cond, got) {
 
   const back = await call(rfq, { query: { id: l.id } });
   check("reopening after sanction reports it", back.json?.sanction === true, back.json);
+}
+
+/* 8b — the sanctioning stage saves as they answer, and resumes */
+{
+  const l = newLink({ status: "submitted", response: { name: "Anita Rao", _answered: 9, _total: 9 } });
+  await call(rfq, {
+    method: "POST", query: { id: l.id },
+    body: { postPartial: true, post: { projectName: "Monitor v1" }, postStep: 1 },
+  });
+  check("post-stage answers are saved as they land", l.response._post?.projectName === "Monitor v1", l.response._post);
+  const back = await call(rfq, { query: { id: l.id } });
+  check("reopening resumes the sanctioning stage", back.json?.savedPost?.step === 1, back.json?.savedPost);
+  check("the sanctioning stage hands back its answers", back.json?.savedPost?.answers?.projectName === "Monitor v1", back.json?.savedPost);
+
+  // Applying with an empty post still uses what was saved along the way.
+  const before = db.sales.requests.length;
+  await call(rfq, { method: "POST", query: { id: l.id }, body: { sanction: true } });
+  const filed = db.sales.requests.slice(before)[0];
+  check("apply falls back to the saved answers", /Monitor v1/.test(filed?.title || ""), filed?.title);
+  check("a sanctioned link offers no post resume", (await call(rfq, { query: { id: l.id } })).json?.savedPost === null, "resume offered");
+}
+
+/* 8c — what ULM can actually read: core.intake exposes summary + columns */
+{
+  const l = newLink({ status: "submitted", response: {
+    name: "Anita", need: "Monitor", services: ["Complete product (ODM)"], qty: "500 units",
+  } });
+  const before = db.sales.requests.length;
+  await call(rfq, { method: "POST", query: { id: l.id }, body: { sanction: true, post: { projectName: "P" } } });
+  const filed = db.sales.requests.slice(before)[0];
+  check("the deal CODE (not a uuid) travels in the summary", /EB-C-26-0007-D01/.test(filed?.summary || ""), filed?.summary?.slice(0, 200));
+  check("qty is parsed into the column ULM reads", filed?.qty === 500, filed?.qty);
+  check("proposed_kind is derived from the services", filed?.proposed_kind === "odm", filed?.proposed_kind);
+  const note = db.sales.org_activities.slice(-1)[0];
+  check("the company activity feed records the application", /applied for project sanctioning/.test(note?.body || ""), note?.body);
+}
+
+/* 8d — a stale second device must not roll progress backwards */
+{
+  const l = newLink();
+  await call(rfq, { method: "POST", query: { id: l.id }, body: { partial: true, response: { name: "A", need: "full", _answered: 6, _total: 9 } } });
+  await call(rfq, { method: "POST", query: { id: l.id }, body: { partial: true, response: { name: "A", _answered: 2, _total: 9 } } });
+  check("a stale tab cannot walk the count backwards", l.response._answered === 6, l.response._answered);
+  check("and cannot erase the further-along answers", l.response.need === "full", l.response);
 }
 
 /* 9 — two clients hitting Apply at the same moment */

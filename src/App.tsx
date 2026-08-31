@@ -18,7 +18,7 @@ import {
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
   mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession, sopMigrationPresent,
-  loadRfqLinks,
+  loadRfqLinks, loadRequests,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
@@ -771,8 +771,12 @@ export default function App() {
   // poll leaves the last known state alone rather than blanking the list.
   const [rfqCheckedAt, setRfqCheckedAt] = useState("");
   const refreshRfq = useCallback(async () => {
-    const fresh = await loadRfqLinks();
+    // Requests ride along: the form's last stage files a sanctioning
+    // application from the client's browser, and a chip on the link is not
+    // the same as the application appearing on the company page.
+    const [fresh, reqs] = await Promise.all([loadRfqLinks(), loadRequests()]);
     if (fresh) { setRfq(fresh); setRfqCheckedAt(nowTS()); }
+    if (reqs) setRequests(reqs);
     return fresh;
   }, []);
   useEffect(() => {
@@ -1742,6 +1746,12 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
                 r.status === "accepted" ? "bg-green-50 border-green-200 text-green-800" : r.status === "rejected" ? "bg-red-50 border-red-200 text-red-800" : "bg-blue-50 border-blue-200 text-blue-800")}>
                 <Rocket size={14} className="flex-none" />
                 <span className="font-medium mr-auto">{r.title}</span>
+                {/* Where it came from: an application the CLIENT filed at the
+                    end of the RFQ chat looks identical to one raised in-app
+                    unless we say so — and the token is how you trace it. */}
+                {(r.requirement || {}).source === "rfq_public" && (
+                  <Chip color="purple"><Send size={11} /> filed by the client · token {String(r.requirement.rfq_link || "").slice(0, 8)}</Chip>
+                )}
                 <Chip color={r.status === "accepted" ? "green" : r.status === "rejected" ? "red" : "blue"}>{r.status === "submitted" ? "awaiting ULM sanction" : r.status}</Chip>
                                 {r.decisionNote && <span className="text-xs w-full">{r.decisionNote}</span>}
               </div>
@@ -1931,7 +1941,10 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
                 const total = Number(p._total) || 9;
                 const answered = l.status === "submitted" ? total : Math.min(Number(p._answered) || 0, total);
                 const pct = Math.round((answered / total) * 100);
-                const stageN = l.status === "submitted" ? 3 : answered > 0 ? 2 : l.status === "opened" ? 1 : 0;
+                // Five stages, not four: sanctioning is the form's last one,
+                // and this tab is where the salesperson comes to see how far
+                // the client got.
+                const stageN = p._sanction ? 4 : l.status === "submitted" ? 3 : answered > 0 ? 2 : l.status === "opened" ? 1 : 0;
                 const who = data.users.find((u) => u.id === l.createdBy);
                 return (
                   <div key={l.id} className="border border-slate-200 rounded-xl p-4">
@@ -1943,16 +1956,18 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
                       <Chip color={l.status === "submitted" ? "green" : stageN === 2 ? "amber" : l.status === "opened" ? "purple" : "blue"}>
                         {l.status === "submitted" ? "SUBMITTED" : stageN === 2 ? "FILLING · " + pct + "%" : l.status === "opened" ? "OPENED" : "SENT"}
                       </Chip>
-                      {l.status !== "submitted" && (
-                        <button onClick={() => navigator.clipboard?.writeText(rfqUrl(l.id))} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> copy link</button>
-                      )}
+                      {p._sanction && <Chip color="purple"><Rocket size={11} /> SANCTION APPLIED</Chip>}
+                      {/* Copyable at every stage — after submitting, the chat
+                          is still live for the sanctioning stage, so this is
+                          exactly the link a client asks to have resent. */}
+                      <button onClick={() => navigator.clipboard?.writeText(rfqUrl(l.id))} className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> copy link</button>
                     </div>
-                    {/* the journey: sent → opened → filling → submitted */}
+                    {/* the journey: sent → opened → filling → submitted → sanction */}
                     <div className="flex items-center gap-1.5 mt-3">
-                      {["Sent", "Opened", "Filling", "Submitted"].map((s, i) => (
+                      {["Sent", "Opened", "Filling", "Submitted", "Sanction"].map((s, i) => (
                         <React.Fragment key={s}>
                           <span className={cls("text-[10.5px] font-semibold uppercase tracking-wide", i <= stageN ? "text-blue-700" : "text-slate-300")}>{s}</span>
-                          {i < 3 && <span className={cls("h-px flex-1", i < stageN ? "bg-blue-400" : "bg-slate-200")} />}
+                          {i < 4 && <span className={cls("h-px flex-1", i < stageN ? "bg-blue-400" : "bg-slate-200")} />}
                         </React.Fragment>
                       ))}
                     </div>
@@ -6873,7 +6888,8 @@ function RfqsView({ me, data, openCompany }) {
                     <F label="Can share" v={(r.docs || []).join(", ")} />
                     <F label="Notes" v={r.notes} />
                     <div className="sm:col-span-2 text-[11px] text-slate-400 mt-1">
-                      From {r.name || "?"}{r.email ? " · " + r.email : ""}{r.phone ? " · " + r.phone : ""} · submitted {fmtDate(l.submittedAt)}
+                      From {r.name || "?"}{r.email ? " · " + r.email : ""}{r.phone ? " · " + r.phone : ""}
+                      {l.status === "submitted" ? " · submitted " + fmtDate(l.submittedAt) : " · still filling, " + answered + "/" + total + " so far"}
                     </div>
                   </div>
                 )}
@@ -6890,29 +6906,39 @@ function RfqLinkRow({ l }) {
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
   const r = l.response || {};
+  // Same live reading as the RFQ tab and the pipeline: a client 8 answers in
+  // is "filling", not "awaiting input" — this card sits on the Overview and
+  // must not contradict the tab beside it.
+  const total = Number(r._total) || 9;
+  const answered = l.status === "submitted" ? total : Math.min(Number(r._answered) || 0, total);
   return (
     <div className="border border-slate-200 rounded-md px-3 py-2 text-sm">
       <div className="flex items-center gap-2 flex-wrap">
-        <Chip color={l.status === "submitted" ? "green" : l.status === "opened" ? "purple" : "slate"}>
-          {l.status === "submitted" ? "input received" : l.status === "opened" ? "opened — awaiting input" : "sent, not opened yet"}
+        <Chip color={l.status === "submitted" ? "green" : answered > 0 ? "amber" : l.status === "opened" ? "purple" : "slate"}>
+          {l.status === "submitted" ? "input received"
+            : answered > 0 ? "filling · " + Math.round((answered / total) * 100) + "%"
+            : l.status === "opened" ? "opened — awaiting input" : "sent, not opened yet"}
         </Chip>
         {r._sanction && <Chip color="purple"><Rocket size={11} /> sanction applied</Chip>}
         <span className="text-slate-800 mr-auto">{l.title || "RFQ"}{l.contactName ? " → " + l.contactName : ""}</span>
-        {l.status === "submitted" && (
+        {answered > 0 && (
           <button onClick={() => setOpen(!open)} className="text-xs text-blue-600 hover:underline">{open ? "hide" : "view"} input</button>
         )}
         <button onClick={() => { navigator.clipboard?.writeText(rfqUrl(l.id)); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
           className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Copy size={11} /> {copied ? "copied!" : "copy link"}</button>
         <span className="text-[11px] font-mono text-slate-400">{fmtDate(l.createdAt)}</span>
       </div>
-      {open && l.status === "submitted" && (
+      {open && answered > 0 && (
         <div className="mt-2 border-t border-slate-100 pt-2 space-y-1 text-[13px]">
           {r.need && <p><span className="font-semibold text-slate-600">Need:</span> {r.need}</p>}
-          {(r.services || []).length > 0 && <p><span className="font-semibold text-slate-600">Services:</span> {r.services.join(", ")}</p>}
+          {(Array.isArray(r.services) ? r.services : []).length > 0 && <p><span className="font-semibold text-slate-600">Services:</span> {r.services.join(", ")}</p>}
           <p className="text-xs text-slate-500 font-mono">{[r.qty && "qty " + r.qty, r.timeline && "when: " + r.timeline, r.budget && "budget: " + r.budget].filter(Boolean).join(" · ")}</p>
-          {(r.docs || []).length > 0 && <p className="text-xs text-slate-500">Can share: {r.docs.join(", ")}</p>}
+          {(Array.isArray(r.docs) ? r.docs : []).length > 0 && <p className="text-xs text-slate-500">Can share: {r.docs.join(", ")}</p>}
           {r.notes && <p className="text-xs text-slate-500">{r.notes}</p>}
-          <p className="text-[11px] text-slate-400">From {r.name || "?"}{r.email ? " · " + r.email : ""}{r.phone ? " · " + r.phone : ""} · {fmtDate(l.submittedAt)}</p>
+          <p className="text-[11px] text-slate-400">
+            From {r.name || "?"}{r.email ? " · " + r.email : ""}{r.phone ? " · " + r.phone : ""}
+            {l.status === "submitted" ? " · submitted " + fmtDate(l.submittedAt) : " · still filling, " + answered + "/" + total}
+          </p>
         </div>
       )}
     </div>
@@ -7056,11 +7082,20 @@ function RfqPublicPage({ token }) {
           if (j.sanction) { setPhase("done"); return; }
           // The requirement is in but the form isn't finished: the chat
           // stays active, basics only, heading for the sanctioning stage.
+          // Anything they already answered in this stage is restored too.
           setPhase("post");
+          const sp = j.savedPost;
+          if (sp && sp.answers) pf.current = { ...pf.current, ...sp.answers };
+          const at = sp ? Math.max(0, Math.min(sp.step, POST_STEPS.length)) : 0;
+          setPostStep(at);
           setMsgs([
             { who: "bot", text: "Welcome back" + (j.respondent ? ", " + j.respondent : "") + " — we already have your requirement" + (j.company ? " for " + j.company : "") + ", and the Elecbits team is on it." },
-            { who: "bot", text: "One stage of this form is left: applying for project sanctioning. Elecbits' leadership reviews the application and allocates the project team. A couple of basics first." },
-            { who: "bot", text: POST_STEPS[0].ask },
+            { who: "bot", text: at > 0
+              ? "We were partway through the last stage — applying for project sanctioning. I kept your answers; let's finish it."
+              : "One stage of this form is left: applying for project sanctioning. Elecbits' leadership reviews the application and allocates the project team. A couple of basics first." },
+            { who: "bot", text: at < POST_STEPS.length
+              ? POST_STEPS[at].ask
+              : "That's everything — apply for project sanctioning below and it goes straight to Elecbits' leadership." },
           ]);
           return;
         }
@@ -7154,7 +7189,10 @@ function RfqPublicPage({ token }) {
     try {
       const r = await fetch("/api/rfq?id=" + encodeURIComponent(token), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ response: f.current }),
+        // Stamp the counters on the way out: a straight-through fill would
+        // otherwise submit without them, and a resumed one with stale ones,
+        // leaving the salesperson's "n/9 answered" wrong at the finish line.
+        body: JSON.stringify({ response: { ...f.current, _answered: STEPS.length, _total: STEPS.length } }),
       }).then((x) => x.json());
       if (r.error) setErr(r.error);
       else {
@@ -7182,6 +7220,14 @@ function RfqPublicPage({ token }) {
     setMsgs((m) => [...m, { who: "me", text: v || "(skipped)" }]);
     const nxt = postStep + 1;
     setPostStep(nxt);
+    // Saved as they answer, exactly like the requirement half — so this
+    // stage survives a closed tab and resumes on any device.
+    try {
+      fetch("/api/rfq?id=" + encodeURIComponent(token), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postPartial: true, post: pf.current, postStep: nxt }),
+      }).catch(() => {});
+    } catch (e) { /* progress is best-effort */ }
     if (nxt < POST_STEPS.length) botSay(POST_STEPS[nxt].ask);
     else botSay("That's everything. The last stage of this form: apply for project sanctioning below, and it goes straight to Elecbits' leadership for review.");
   };

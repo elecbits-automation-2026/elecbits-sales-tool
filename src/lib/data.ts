@@ -646,6 +646,26 @@ export async function loadRfqLinks(): Promise<any[] | null> {
   return (data || []).map(rfqLinkOut);
 }
 
+// Requests are written from outside this browser too: the RFQ form's last
+// stage files a sanctioning application under the service role. Without a
+// re-read, an application a client sent minutes ago is invisible until the
+// salesperson reloads the whole app.
+const requestOut = (r: any) => ({
+  id: r.id, companyId: r.org_id || "", title: r.title, summary: r.summary || "",
+  kind: r.proposed_kind || "", qty: r.qty, targetDate: r.target_date || "",
+  value: Number(r.value_inr || 0), urgency: r.urgency, status: r.status,
+  projectId: r.project_id || "", decidedAt: r.decided_at, decisionNote: r.decision_note || "",
+  submittedBy: r.submitted_by, submittedAt: r.submitted_at,
+  requirement: r.requirement || {}, ai: r.ai || {}, overtake: r.overtake || "pending",
+});
+
+/** Re-read the sanctioning requests — including ones the client filed. */
+export async function loadRequests(): Promise<any[] | null> {
+  const { data, error } = await tbl(supabase, "requests").select("*");
+  if (error) { console.error("loadRequests", error.message); return null; }
+  return (data || []).map(requestOut);
+}
+
 // RFQ links: created/updated from the app (authenticated). The public page
 // reads and submits through /api/rfq — never through this client.
 export async function saveRfqLink(l: any): Promise<boolean> {
