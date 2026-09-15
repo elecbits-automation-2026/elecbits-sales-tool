@@ -188,6 +188,8 @@ export async function loadWorkspace() {
   const dealsOut = deals.map((d: any) => ({
     id: d.id, did: d.code, companyId: d.org_id, ownerId: d.owner_id,
     value: Number(d.value || 0), stage: d.stage,
+    // 31-deal-product.sql — "" not null, so the input binds to a string.
+    product: d.product || "",
     createdAt: d.created_at, updatedAt: d.updated_at,
     lost: d.lost, lostInfo: d.lost ? { summary: d.lost_note || "" } : undefined,
     history: movesByDeal.get(d.id) || [],
@@ -535,9 +537,16 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
     id: d.id, code: d.did, org_id: d.companyId, owner_id: d.ownerId || null,
     value: Number(d.value || 0), stage: d.stage, lost: !!d.lost,
     lost_note: (d.lostInfo && d.lostInfo.summary) || null,
+    product: d.product || null,
     created_at: d.createdAt, updated_at: d.updatedAt,
   }));
-  const r1 = await tbl(supabase, "deals").upsert(dealRows, { onConflict: "id" });
+  // `product` arrives with 31-deal-product.sql — on a database that hasn't
+  // run it, retry without the column rather than failing every deal save.
+  let r1 = await tbl(supabase, "deals").upsert(dealRows, { onConflict: "id" });
+  if (r1.error && /product|column/i.test(r1.error.message || "")) {
+    r1 = await tbl(supabase, "deals")
+      .upsert(dealRows.map(({ product, ...rest }) => rest), { onConflict: "id" });
+  }
   let allOk = ok(r1.error, "syncDeals.deals");
 
   const fresh: any[] = [];
