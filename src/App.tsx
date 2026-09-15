@@ -391,7 +391,7 @@ function dealBriefText(company, deal, ownerName) {
    along whatever its vintage: a legacy id still names the client folder and
    still belongs in the register's Client ID column ("recorded, never
    reused"). */
-function fileDealFootprint(company, deal, ownerName, onNote) {
+function fileDealFootprint(company, deal, ownerName, onNote, skipFolder) {
   registerDeal({
     dealId: deal.did, clientId: company.cid || "",
     clientName: company.name, dealName: company.name + " — " + deal.did,
@@ -399,6 +399,7 @@ function fileDealFootprint(company, deal, ownerName, onNote) {
     dateOpened: String(deal.createdAt || nowTS()).slice(0, 10),
     notes: "Opened from the Sales OS",
     brief: dealBriefText(company, deal, ownerName),
+    skipFolder: !!skipFolder,
   }).then((r) => {
     if (!onNote || !r) return;
     const notes = [];
@@ -1196,7 +1197,9 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
   const upsert = (c) => {
     const exists = companies.some((x) => x.id === c.id);
     const isNew = !exists;
-    const { _dealValue, ...clean } = c;
+    // _-prefixed keys are instructions for the creation pipeline, not fields
+    // of the record — keep them out of the stored company.
+    const { _dealValue, _existingFolder, _skipFolder, ...clean } = c;
     const next = exists ? companies.map((x) => (x.id === c.id ? clean : x)) : [clean, ...companies];
     saveCompanies(next);
     setEditing(null);
@@ -1221,20 +1224,28 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
           clientId: cid, legacyId: latest.legacyCid || "",
           name: clean.name, sector: clean.industry || "", orgSize: clean.orgSize || "",
           addedBy: me.name, poc: clean.contactPerson || "", notes: clean.whatTheyDo || "",
+          // Migration: adopt the filing this client already has rather than
+          // creating a second, empty folder under the brand-new id.
+          existingFolder: _existingFolder || "", skipFolder: !!_skipFolder,
         });
         if (reg?.error) note("Master register filing failed — use “mint official client ID” on the company page to retry: " + reg.error);
         if (reg?.registered) note("Master register: client row added for " + cid + ".");
         if (reg?.duplicate) note("Master register already holds " + cid + " — row kept as is.");
-        if (reg?.folderLink) note("Client folder created: " + cid + " — " + clean.name);
+        if (reg?.folderLink) note(reg.adopted
+          ? "Existing Drive folder attached: " + (reg.folderName || "the one you named") + " — filed against " + cid + "."
+          : "Client folder created: " + cid + " — " + clean.name);
         (reg?.warnings || []).forEach((w) => note("Filing warning: " + w));
       } else {
         note("Official ID not minted (master register unreachable, or 30-sop-ids.sql not run) — the register row and client folder follow the mint. Use “mint official client ID” on the company page to retry.");
         // Day-one filing still needs somewhere to land: the plain Drive
-        // folder under the working name, exactly as before the SOP port.
-        try {
-          const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(latest))).then((x) => x.json());
-          if (r && r.id) note("Drive folder created: " + driveFolderName(latest));
-        } catch (e) { /* Drive not configured — the folder can come later */ }
+        // folder under the working name, exactly as before the SOP port —
+        // unless this is a migration and the filing already exists.
+        if (!_existingFolder && !_skipFolder) {
+          try {
+            const r = await fetch("/api/drive?action=open&name=" + encodeURIComponent(driveFolderName(latest))).then((x) => x.json());
+            if (r && r.id) note("Drive folder created: " + driveFolderName(latest));
+          } catch (e) { /* Drive not configured — the folder can come later */ }
+        }
       }
       saveCompanies(next.map((x) => (x.id === clean.id ? latest : x)));
       const val = Number(_dealValue || clean.potential || 0);
@@ -1249,7 +1260,7 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
       fileDealFootprint(latest, d, ownerU ? ownerU.name : me.name, (notes) => {
         saveCompanies((prev) => prev.map((x) => x.id === clean.id
           ? { ...x, activity: [...(x.activity || []), ...notes.map((text) => ({ at: nowTS(), by: me.id, text }))] } : x));
-      });
+      }, _skipFolder);
     })();
   };
 
@@ -1458,6 +1469,14 @@ function CompanyModal({ me, data, company, onClose, onSave }) {
 
 const INTAKE_STEPS = ["company", "contact", "industry", "size", "details", "review"];
 
+/* Migrating an existing lead: they already have a Drive folder, and the
+   default find-or-create would put a second empty one under the brand-new
+   EB-C id. Spotting either a pasted Drive link or the plain English claim
+   lets the chat offer to attach what they have instead. */
+const DRIVE_LINK_RE = /https?:\/\/(?:drive|docs)\.google\.com\/[^\s]+/i;
+const HAS_FOLDER_RE = /\b(already|existing|exists?)\b[^.]{0,40}\bfolder\b|\bfolder\b[^.]{0,30}\b(already|exists?)\b/i;
+const SKIP_FOLDER_RE = /\b(no|don'?t|do not|skip|without|bypass)\b[^.]{0,30}\bfolder\b/i;
+
 const intakeExtractSystem = () => [
   "You extract structured client data for the Elecbits Sales OS client-intake chat. Today: " + todayStr() + ".",
   "From the user's message, pull whatever is actually present. Reply with ONLY one line, nothing else:",
@@ -1547,7 +1566,15 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
     if (s === "industry") return "Which sector are they in? Pick below" + (d.industry ? " — I'd say " + d.industry + "." : ".");
     if (s === "size") return "And the org size?";
     if (s === "details") return "Last bits — rough deal potential in ₹, where this lead came from, anything worth noting. Or just say skip.";
-    return "Here's the record so far:\n" + (known(d) || "(nothing yet)") + "\n\nHit “Create client” and I'll mint the EB-C ID, file the master-register row, create the folder and open the first deal — or keep typing corrections and extra details.";
+    if (s === "folder") return "Good — paste the folder's Drive link (or its exact name) and I'll attach that one instead of creating a new one. Say “skip the folder” if you'd rather I left Drive alone entirely.";
+    const filing = d._skipFolder
+      ? "leave Drive alone (no folder)"
+      : d._existingFolder
+      ? "attach the folder you gave me instead of creating one"
+      : "create the folder";
+    return "Here's the record so far:\n" + (known(d) || "(nothing yet)")
+      + "\n\nHit “Create client” and I'll mint the EB-C ID, file the master-register row, " + filing
+      + " and open the first deal — or keep typing corrections and extra details.";
   };
 
   const advanceFrom = (s, d) => {
@@ -1572,6 +1599,32 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
     setBusy(true);   // chips included — nothing else may mutate f mid-extract
     const cur = stateRef.current;
     let d = { ...fRef.current };
+
+    // Filing instructions are handled before the extractor sees the message:
+    // "I already have the folder" is an instruction about Drive, not a fact
+    // about the company, and the extractor would just drop it.
+    const link = (text.match(DRIVE_LINK_RE) || [])[0];
+    if (link) { d._existingFolder = link; d._skipFolder = false; }
+    else if (SKIP_FOLDER_RE.test(text)) { d._skipFolder = true; d._existingFolder = ""; }
+    else if (cur === "folder" && !/^skip\b/i.test(text)) { d._existingFolder = text; d._skipFolder = false; }
+    const claimsFolder = !link && !d._existingFolder && !d._skipFolder && HAS_FOLDER_RE.test(text);
+    if (claimsFolder) {
+      // They told us it exists but not which one — ask, and don't let the
+      // extractor turn the sentence into a note.
+      setF(d);
+      say(askForState("folder", d), { state: "folder", data: d, base: echoed });
+      setBusy(false);
+      return;
+    }
+    if (link || d._skipFolder || cur === "folder") {
+      const where = d._skipFolder ? "No folder then — I'll leave Drive alone and just file the register row."
+        : "Got it — I'll attach that folder instead of creating one.";
+      const next = advanceFrom(cur === "folder" ? "details" : cur, d);
+      say(where + "\n\n" + askForState(next, d), { state: next, data: d, base: echoed });
+      setBusy(false);
+      return;
+    }
+
     if (cur === "details" && /^skip\b/i.test(text)) d._detailsDone = true;
     else {
       const picked = await extract(text);
@@ -1620,6 +1673,9 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
       accountOwner: me.id, createdBy: me.id, createdAt: nowTS(), custom: [],
       activity: [{ at: nowTS(), by: me.id, text: "Client created through the intake chat." }],
       _dealValue: String(f.potential || ""),
+      // Filing instructions ride to the SOP pipeline, not to the DB: the
+      // underscore keys are stripped by syncCompanies' explicit column list.
+      _existingFolder: f._existingFolder || "", _skipFolder: !!f._skipFolder,
     };
     if (f.notes) company.custom = [{ k: "Intake notes", v: String(f.notes).trim() }];
     // intake_sessions.org_id references core.orgs — the org row must exist
@@ -2053,6 +2109,10 @@ function MintIdModal({ company: c, data, onClose, saveCompanies, me }) {
   const [size, setSize] = useState(c.orgSize || "ML");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // Migrating a client who already has filing: attach that folder rather
+  // than letting find-or-create make an empty one under the new id.
+  const [folder, setFolder] = useState("");
+  const [noFolder, setNoFolder] = useState(false);
   // The pre-flight: every reason a mint can refuse, named before the button
   // is pressed — the migration, the service account, the register sheet.
   const [health, setHealth] = useState(null);
@@ -2085,11 +2145,14 @@ function MintIdModal({ company: c, data, onClose, saveCompanies, me }) {
       clientId: cid, legacyId: c.official ? (c.legacyCid || "") : (c.cid || ""),
       name: c.name, sector: ind || c.industry || "", orgSize: size,
       addedBy: me.name, poc: c.contactPerson || "", notes: c.whatTheyDo || "",
+      existingFolder: folder.trim(), skipFolder: noFolder,
     });
-    if (reg?.error) notes.push("Master register filing failed — mint again to retry the row: " + reg.error);
+    if (reg?.error) { setBusy(false); setErr(reg.error); return; }
     if (reg?.registered) notes.push("Master register: client row added.");
     if (reg?.duplicate) notes.push("Master register already holds " + cid + " — row kept as is.");
-    if (reg?.folderLink) notes.push("Client folder created: " + cid + " — " + c.name);
+    if (reg?.folderLink) notes.push(reg.adopted
+      ? "Existing Drive folder attached: " + (reg.folderName || "the one you named") + "."
+      : "Client folder created: " + cid + " — " + c.name);
     (reg?.warnings || []).forEach((w) => notes.push("Filing warning: " + w));
     setBusy(false);
     saveCompanies(companies.map((x) => x.id === c.id
@@ -2125,6 +2188,18 @@ function MintIdModal({ company: c, data, onClose, saveCompanies, me }) {
             {ORG_SIZES.map(([k, l]) => <option key={k} value={k}>{k} — {l}</option>)}
           </Sel>
         </Field>
+        <div className="border border-slate-200 rounded-lg p-3">
+          <Lbl>Drive folder</Lbl>
+          <p className="text-[11px] text-slate-500 mt-0.5 mb-2">Moving an existing client across? Point at the folder they already have — otherwise a second, empty one gets created under the new ID.</p>
+          <Field label="Existing folder (paste the Drive link, or its exact name)">
+            <Input value={folder} disabled={noFolder} placeholder="https://drive.google.com/drive/folders/…  or  Aerem"
+              onChange={(e) => setFolder(e.target.value)} />
+          </Field>
+          <label className="flex items-center gap-2 mt-2 text-xs text-slate-600">
+            <input type="checkbox" checked={noFolder} onChange={(e) => setNoFolder(e.target.checked)} />
+            Don't touch Drive at all — file the register row only
+          </label>
+        </div>
         {err && <p className="text-xs text-red-600">{err}</p>}
       </div>
     </Modal>
