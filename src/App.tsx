@@ -14,7 +14,7 @@ import {
   syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
   loadChat, loadChatDates, saveChat, saveSession, loadAllIdeas,
   loadTouches, saveTouch, loadCommitments, saveCommitments,
-  deleteTask, deleteScrum,
+  deleteTask, deleteScrum, deleteDeal,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
   mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession, sopMigrationPresent,
@@ -3344,6 +3344,40 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
+
+  // The duplicate deal — opened twice, or brought in twice by a migration.
+  // Typing the code is the guard: this cannot be undone, and the deal's own
+  // history goes with it. Tasks and RFQ links survive, detached to the
+  // company, so nobody's work disappears with the wrong click.
+  const delDeal = async () => {
+    const open = (data.tasks || []).filter((t) => t.dealId === d.id && t.status !== "done").length;
+    const links = (data.rfq || []).filter((l) => l.dealId === d.id).length;
+    const typed = window.prompt(
+      "Delete deal " + d.did + (comp ? " (" + comp.name + ")" : "") + "?\n\n"
+      + "Its phase history, stage plan and temperature history are deleted with it — this cannot be undone.\n"
+      + (open || links
+          ? (open ? open + " open task" + (open === 1 ? "" : "s") : "")
+            + (open && links ? " and " : "")
+            + (links ? links + " RFQ link" + (links === 1 ? "" : "s") : "")
+            + " stay on the company, no longer tied to a deal.\n"
+          : "")
+      + "\nType the deal ID to confirm:");
+    if (typed === null) return;
+    if (typed.trim().toLowerCase() !== String(d.did).trim().toLowerCase()) {
+      window.alert("That didn't match " + d.did + " — nothing deleted.");
+      return;
+    }
+    if (!(await deleteDeal(d.id))) {
+      window.alert("Could not delete — check the connection and try again.");
+      return;
+    }
+    // Mirror the database locally: the deal goes, its tasks and RFQ links
+    // detach rather than vanish.
+    if (saveTasks) saveTasks((data.tasks || []).map((t) => (t.dealId === d.id ? { ...t, dealId: "" } : t)));
+    if (data.setRfq) data.setRfq((data.rfq || []).map((l) => (l.dealId === d.id ? { ...l, dealId: "" } : l)));
+    saveDeals(deals.filter((x) => x.id !== d.id));
+    onClose();
+  };
   const ns = nextStepState(d);
   const ph = d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
   const rfqB = rfqBadgeFor(d, data.rfq, data.deals);
@@ -3514,6 +3548,10 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             </p>
           </div>
           {comp && <button onClick={() => { onClose(); openCompany(comp.id); }} className="text-xs text-blue-600 hover:underline">open the company →</button>}
+          {(me.role === "admin" || d.ownerId === me.id) && (
+            <button title="Delete this deal" onClick={delDeal}
+              className="text-slate-300 hover:text-red-600 p-1"><Trash2 size={15} /></button>
+          )}
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1"><X size={18} /></button>
         </div>
 
