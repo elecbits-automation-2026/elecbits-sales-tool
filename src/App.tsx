@@ -21,6 +21,7 @@ import {
   loadRfqLinks, loadRequests,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
+import { belongsToDeal } from "./lib/scope";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
   askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
@@ -2293,6 +2294,7 @@ function nextStepState(d) {
 const tempSystem = (deal, comp, evidence) => [
   "You judge the TEMPERATURE of a sales deal at Elecbits (electronics ODM/EMS). Temperature measures the CLIENT's live intent — not our effort, not how nice the notes sound.",
   "THE CRITERIA:\n" + TEMP_CRITERIA,
+  dealIdentity(deal, comp),
   "DEAL: " + (deal.did || "") + " · " + (comp ? comp.name : "unlinked") + " · stage " + stageName(deal.stage) + " · value ₹" + (deal.value || 0),
   "CURRENT READING: " + (deal.temperature || "cold") + (deal.temperatureWhy ? " (" + deal.temperatureWhy + ")" : ""),
   "THE EVIDENCE (recent touches, tasks, commitments — newest first):\n" + (evidence || "(nothing on record)"),
@@ -2319,9 +2321,17 @@ const reqSystem = (comp) => [
 ].join("\n");
 
 /* Everything recent and factual about a deal, for the AI to judge from. */
-function dealEvidence(deal, comp, tasks, touches, commits) {
+/* Which deal the AI is looking at. Without this every prompt about a
+   Schneider Electric deal reads identically, and the model happily writes a
+   next step about the wrong product. */
+const dealIdentity = (d, comp) =>
+  "THIS DEAL: " + (d.did || "") + (dealProduct(d) ? " — " + dealProduct(d) : "")
+  + " · client " + ((comp && comp.name) || "unknown")
+  + ". This client may have other deals running; everything below is about THIS one only, and your answer must be about THIS one only.";
+
+function dealEvidence(deal, comp, tasks, touches, commits, deals) {
   const lines = [];
-  for (const t of (touches || []).slice(0, 10)) {
+  for (const t of (touches || []).filter((x) => belongsToDeal(x, deal, deals)).slice(0, 10)) {
     const w = t.ai || {};
     lines.push(fmtDate(t.at) + " " + t.kind + " (" + (t.direction === "in" ? "they came to us" : "we reached out") + "): "
       + (t.subject || "") + (w.temperature ? " · write-up read " + w.temperature : "")
@@ -2329,7 +2339,7 @@ function dealEvidence(deal, comp, tasks, touches, commits) {
   }
   for (const cm of (commits || []).filter((x) => x.status === "open").slice(0, 6))
     lines.push("open promise (" + cm.side + "): " + cm.what + (cm.due ? " by " + fmtDate(cm.due) : ""));
-  const open = (tasks || []).filter((t) => t.companyId === (comp && comp.id) && t.status !== "done");
+  const open = (tasks || []).filter((t) => t.status !== "done" && belongsToDeal(t, deal, deals));
   if (open.length) lines.push("open tasks: " + open.slice(0, 5).map((t) => t.title).join(" · "));
   const hist = (deal.history || []).slice(-3);
   for (const h of hist) lines.push("stage " + (h.from ? stageName(h.from) + "→" : "") + stageName(h.to) + " " + fmtDate(h.at) + (h.summary ? ": " + String(h.summary).slice(0, 120) : ""));
@@ -2556,7 +2566,7 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
             {/* the deal's next tasks — raised by scrums or stage changes,
                completed only from My Tasks */}
             {(() => {
-              const open = (data.tasks || []).filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === c.id))).slice(0, 5);
+              const open = (data.tasks || []).filter((t) => t.status !== "done" && belongsToDeal(t, d, deals)).slice(0, 5);
               if (!open.length) return null;
               return (
                 <div className="mt-2.5 space-y-1">
@@ -2602,6 +2612,7 @@ const phaseMoveSystem = (d, comp, to, ev) => [
    the deal, the Scrum Master's book, and My Tasks, where they get completed. */
 const stageKickoffSystem = (d, comp, to, ev) => [
   "The deal with " + (comp ? comp.name : "a client") + " (₹" + (d.value || 0) + ") just reached " + to.toUpperCase() + " on the Elecbits Sales OS. Today: " + todayStr() + ".",
+  dealIdentity(d, comp),
   "THE RECORD (newest first):\n" + (ev || "(thin)"),
   "Write what happens next in this phase. Reply with ONLY one line:",
   'KICKOFF_JSON {"next_step":{"what":"first person, concrete","due":"YYYY-MM-DD"},"tasks":[{"title":"action-first, specific","due":"YYYY-MM-DD"}]}',
@@ -2651,7 +2662,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
         const rfqL = rfqBadgeFor(d, data.rfq, data.deals);
         const research = comp.plan && comp.plan.research;
         evRef.current = [
-          dealEvidence(d, comp, data.tasks || [], tch, cms),
+          dealEvidence(d, comp, data.tasks || [], tch, cms, data.deals),
           rfqL && rfqL.link && (rfqL.link.response || {}).need ? "RFQ input from the client: " + rfqL.link.response.need : "",
           research ? "Research: " + research.about : "",
         ].filter(Boolean).join("\n");
@@ -2834,6 +2845,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
    look in Drive. What gets agreed in chat is executed, not just said. ──── */
 const dealChatSystem = (d, comp, ev) => [
   "You are the DEAL COPILOT on the Elecbits Sales OS — the sharpest colleague on this one deal. Direct, specific, brief. Today: " + todayStr() + ".",
+  dealIdentity(d, comp),
   "DEAL: " + d.did + " · " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
     + (d.nextStep && !d.nextStepDoneAt ? " · committed next step: '" + d.nextStep + "'" + (d.nextStepDue ? " by " + fmtDate(d.nextStepDue) : "") : " · NO committed next step"),
   "EVERYTHING ON THE RECORD (newest first):\n" + (ev || "(nothing yet)"),
@@ -2886,7 +2898,7 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
     const rfqL = rfqBadgeFor(d, data.rfq, data.deals);
     const research = comp && comp.plan && comp.plan.research;
     return [
-      dealEvidence(d, comp, tasks, touches, commits),
+      dealEvidence(d, comp, tasks, touches, commits, deals),
       rfqL && rfqL.link && (rfqL.link.response || {}).need ? "RFQ input from the client: " + rfqL.link.response.need : "",
       research ? "Research: " + research.about + ((research.opportunities || []).length ? " Opportunities: " + research.opportunities.join("; ") : "") : "",
     ].filter(Boolean).join("\n");
@@ -3110,7 +3122,7 @@ const stepProofSystem = (d, comp, account, mailCtx, ev) => [
 ].join("\n");
 
 function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose }) {
-  const { tasks } = data;
+  const { tasks, deals } = data;
   const [account, setAccount] = useState("");
   const [atts, setAtts] = useState([]);
   const [mailCtx, setMailCtx] = useState("");
@@ -3148,7 +3160,7 @@ function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose })
         ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: "Judge the claim on this evidence." }]
         : "Judge the claim.";
       const reply = await withTimeout(askClaude(
-        stepProofSystem(d, comp, account.trim(), mailCtx, dealEvidence(d, comp, tasks, touches, commits)),
+        stepProofSystem(d, comp, account.trim(), mailCtx, dealEvidence(d, comp, tasks, touches, commits, deals)),
         [{ role: "user", content }], { maxTokens: 500 }), 30000);
       const v = extractMarkedJSON(reply, "STEP_VERDICT_JSON");
       if (!v || typeof v.believe !== "boolean") throw new Error("unparseable");
@@ -3223,6 +3235,7 @@ function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose })
    commits (step + its task), or write your own at the bottom. */
 const stepOptionsSystem = (d, comp, ev) => [
   "You lay out the POSSIBLE NEXT STEPS for a sales deal at Elecbits (electronics design & manufacturing services). Today: " + todayStr() + ".",
+  dealIdentity(d, comp),
   "DEAL: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
     + (d.nextStep && !d.nextStepDoneAt ? " · currently committed: '" + d.nextStep + "'" : ""),
   "THE RECORD (newest first):\n" + (ev || "(thin)"),
@@ -3231,14 +3244,14 @@ const stepOptionsSystem = (d, comp, ev) => [
 ].join("\n");
 
 function NextStepModal({ me, d, comp, data, touches, commits, onCommit, onClose }) {
-  const { tasks } = data;
+  const { tasks, deals } = data;
   const [opts, setOpts] = useState(null);
   const [err, setErr] = useState("");
   const [what, setWhat] = useState(d.nextStep && !d.nextStepDoneAt ? d.nextStep : "");
   const [due, setDue] = useState(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : "");
   useEffect(() => {
     let a = true;
-    withTimeout(askClaude(stepOptionsSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits)),
+    withTimeout(askClaude(stepOptionsSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits, deals)),
       [{ role: "user", content: "Lay out the possible next steps." }], { maxTokens: 800 }), 30000)
       .then((reply) => {
         if (!a) return;
@@ -3284,6 +3297,7 @@ function NextStepModal({ me, d, comp, data, touches, commits, onCommit, onClose 
    the obsolete, fixes titles and dates, adds what is missing. */
 const realignSystem = (d, comp, step, taskLines, ev) => [
   "You are the TASK REALIGNER for one deal on the Elecbits Sales OS. Today: " + todayStr() + ".",
+  dealIdentity(d, comp),
   "DEAL: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0),
   "COMMITTED NEXT STEP: " + (step || "(none committed)"),
   "OPEN TASKS ON THE DEAL:\n" + (taskLines || "(none)"),
@@ -3332,7 +3346,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     draftedRef.current = dealId;
     const cc = companies.find((x) => x.id === dd.companyId);
     setDrafting(true);
-    askClaude(stageKickoffSystem(dd, cc, dd.temperature || "cold", dealEvidence(dd, cc, tasks, touches, commits)),
+    askClaude(stageKickoffSystem(dd, cc, dd.temperature || "cold", dealEvidence(dd, cc, tasks, touches, commits, deals)),
       [{ role: "user", content: "Write the kickoff." }], { maxTokens: 500 })
       .then((reply) => {
         const v = extractMarkedJSON(reply, "KICKOFF_JSON");
@@ -3450,7 +3464,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const reassess = async () => {
     setBusyTemp(true); setErr("");
     try {
-      const reply = await withTimeout(askClaude(tempSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits)),
+      const reply = await withTimeout(askClaude(tempSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits, deals)),
         [{ role: "user", content: "Judge the temperature now." }], { maxTokens: 400 }), 20000);
       const v = extractMarkedJSON(reply, "TEMP_JSON");
       if (!v || !["cold", "warm", "rfq", "hot"].includes(v.temperature)) throw new Error("unparseable");
@@ -3502,7 +3516,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
       const stepLine = d.nextStep && !d.nextStepDoneAt ? d.nextStep + (d.nextStepDue ? " (by " + fmtDate(d.nextStepDue) + ")" : "") : "";
       // A long task list needs a long answer — a tight budget truncated the
       // JSON mid-op and looked like "no brain". Budget scales, timeout too.
-      const reply = await withTimeout(askClaude(realignSystem(d, comp, stepLine, lines, dealEvidence(d, comp, tasks, touches, commits)),
+      const reply = await withTimeout(askClaude(realignSystem(d, comp, stepLine, lines, dealEvidence(d, comp, tasks, touches, commits, deals)),
         [{ role: "user", content: "Realign the tasks." }], { maxTokens: 2000 }), 45000);
       const v = extractMarkedJSON(reply, "REALIGN_JSON");
       if (!v || !Array.isArray(v.ops)) throw new Error("no ops");
@@ -3547,9 +3561,10 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 
   // The deal's NEXT TASKS: raised by scrums or when the deal reached this
   // stage. They are completed in My Tasks (where the AI checks the evidence),
-  // never ticked off here.
+  // never ticked off here. Scoped to THIS deal — a company-level task only
+  // appears when there is one live deal it could belong to.
   const dealTasks = tasks
-    .filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)))
+    .filter((t) => t.status !== "done" && belongsToDeal(t, d, deals))
     .sort((a, b) => ((a.due || "9999") < (b.due || "9999") ? -1 : 1)).slice(0, 8);
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 overflow-y-auto" onClick={onClose}>

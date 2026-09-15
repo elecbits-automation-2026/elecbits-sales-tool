@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "check": "node scripts/check-sales.mjs",
     "check:ci": "node scripts/check-sales.mjs --quiet --db",
-    "test:scrum": "node scripts/test-scrum.mjs"
+    "test:scrum": "node scripts/test-scrum.mjs",
+    "test:scope": "node --experimental-strip-types scripts/test-deal-scope.mjs",
+    "test:rfq": "node scripts/test-rfq-token.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
