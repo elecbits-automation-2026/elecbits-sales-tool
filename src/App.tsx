@@ -364,10 +364,11 @@ async function mintSopId(orgId, sizeCode) {
    — the information: a brief seeded from everything the record knows. */
 function dealBriefText(company, deal, ownerName) {
   return [
-    "# " + deal.did + " — " + company.name,
+    "# " + deal.did + " — " + company.name + (dealProduct(deal) ? " · " + dealProduct(deal) : ""),
     "",
     "Client ID: " + (company.cid || "—"),
     "Deal ID: " + deal.did,
+    dealProduct(deal) ? "What it's for: " + dealProduct(deal) : "",
     "Opened: " + String(deal.createdAt || "").slice(0, 10) + " · Owner: " + (ownerName || "—"),
     "Estimated value: ₹" + (deal.value || 0),
     "",
@@ -394,7 +395,10 @@ function dealBriefText(company, deal, ownerName) {
 function fileDealFootprint(company, deal, ownerName, onNote, skipFolder) {
   registerDeal({
     dealId: deal.did, clientId: company.cid || "",
-    clientName: company.name, dealName: company.name + " — " + deal.did,
+    clientName: company.name,
+    // The register's Deal Name column earns its keep when a client has
+    // several: "Schneider Electric — EB-D-0008" twice tells nobody anything.
+    dealName: company.name + " — " + (dealProduct(deal) || deal.did),
     status: "Open", value: deal.value || 0, currency: "INR", owner: ownerName || "",
     dateOpened: String(deal.createdAt || nowTS()).slice(0, 10),
     notes: "Opened from the Sales OS",
@@ -631,7 +635,10 @@ function Modal({ title, onClose, children, wide, footer }) {
   );
 }
 
-function Field({ label, children, hint, req }) {
+/* `hint` and `req` are genuinely optional — defaulting them here rather than
+   leaving them in the destructure means callers that pass neither, or only
+   one, are not type errors. */
+function Field({ label, children, hint = "", req = false }) {
   return (
     <label className="block">
       <span className="block text-xs font-medium text-slate-600 mb-1">{label}{req && <span className="text-red-600"> *</span>}</span>
@@ -1199,7 +1206,7 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
     const isNew = !exists;
     // _-prefixed keys are instructions for the creation pipeline, not fields
     // of the record — keep them out of the stored company.
-    const { _dealValue, _existingFolder, _skipFolder, ...clean } = c;
+    const { _dealValue, _dealProduct, _existingFolder, _skipFolder, ...clean } = c;
     const next = exists ? companies.map((x) => (x.id === c.id ? clean : x)) : [clean, ...companies];
     saveCompanies(next);
     setEditing(null);
@@ -1252,6 +1259,7 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
       const d = {
         id: uid(), did: sopDealCode(latest, deals), companyId: clean.id, ownerId: clean.accountOwner || me.id,
         value: val, stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
+        product: _dealProduct || "",
         temperature: "cold", tempHistory: [], plan: [], planLog: [],
         history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created with the company." }],
       };
@@ -1480,8 +1488,9 @@ const SKIP_FOLDER_RE = /\b(no|don'?t|do not|skip|without|bypass)\b[^.]{0,30}\bfo
 const intakeExtractSystem = () => [
   "You extract structured client data for the Elecbits Sales OS client-intake chat. Today: " + todayStr() + ".",
   "From the user's message, pull whatever is actually present. Reply with ONLY one line, nothing else:",
-  'INTAKE_JSON {"name":"","city":"","website":"","industry":"","whatTheyDo":"","contactPerson":"","designation":"","email":"","phone":"","orgSize":"","potential":0,"source":"","notes":""}',
+  'INTAKE_JSON {"name":"","city":"","website":"","industry":"","whatTheyDo":"","contactPerson":"","designation":"","email":"","phone":"","orgSize":"","potential":0,"source":"","notes":"","product":""}',
   "Include ONLY the keys you found — omit anything not in the message. Never invent values.",
+  "product is the ONE thing this particular deal is for, in two or three words — \"patient monitor\", \"BLDC controller\", \"solar inverter\". Not what the company does in general (that is whatTheyDo), and omitted entirely unless they named something specific.",
   "industry, if present, must be the closest match from: " + INDUSTRIES.map(([, l]) => l).join(", ") + ".",
   "orgSize, if guessable, one of: PL (proto-level startup), ML (mid-level startup), EL (enterprise), EM (EMS), GO (government), UN (unknown/individual).",
   "potential is a plain number in ₹ (lakh→×100000, cr→×10000000).",
@@ -1673,6 +1682,8 @@ function ClientIntakeChat({ me, data, draft, onClose, onCreate, onUseForm }) {
       accountOwner: me.id, createdBy: me.id, createdAt: nowTS(), custom: [],
       activity: [{ at: nowTS(), by: me.id, text: "Client created through the intake chat." }],
       _dealValue: String(f.potential || ""),
+      // The first deal's label, if they named what it is for.
+      _dealProduct: String(f.product || "").slice(0, PRODUCT_MAX),
       // Filing instructions ride to the SOP pipeline, not to the DB: the
       // underscore keys are stripped by syncCompanies' explicit column list.
       _existingFolder: f._existingFolder || "", _skipFolder: !!f._skipFolder,
@@ -1784,9 +1795,10 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
     const next = companies.map((x) => x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text: note.trim() }] } : x);
     saveCompanies(next); setNote("");
   };
-  const createDeal = (value, ownerId) => {
+  const createDeal = (value, ownerId, _companyId, product) => {
     const d = {
       id: uid(), did: sopDealCode(c, deals), companyId: c.id, ownerId, value: Number(value || 0),
+      product: product || "",
       stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
       history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created." }],
     };
@@ -1916,6 +1928,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
                       <span className="font-mono text-xs text-slate-400">{d.did}</span>
                       {d.lost ? <Chip color="red">Lost</Chip> : <Chip color="blue">{stageName(d.stage)}</Chip>}
                     </div>
+                    <DealProduct deal={d} className="mt-0.5" />
                     <div className="flex items-center justify-between mt-1">
                       <span className="font-mono text-sm tabular-nums">{fmtINRc(d.value)}</span>
                       <span className="text-xs text-slate-500">{o ? o.name : ""}</span>
@@ -2210,13 +2223,14 @@ function NewDealModal({ me, data, fixedCompany, onClose, onCreate }) {
   const { users, companies } = data;
   const [companyId, setCompanyId] = useState(fixedCompany ? fixedCompany.id : (companies[0] ? companies[0].id : ""));
   const [value, setValue] = useState("");
+  const [product, setProduct] = useState("");
   const [ownerId, setOwnerId] = useState(me.role === "agent" ? me.id : (users.find((u) => u.role === "agent") || me).id);
   const canPickOwner = me.role !== "agent";
   return (
     <Modal title="New deal" onClose={onClose}
       footer={<>
         <Btn onClick={onClose}>Cancel</Btn>
-        <Btn kind="primary" disabled={!companyId} onClick={() => onCreate(value, ownerId, companyId)}><Check size={15} /> Create deal</Btn>
+        <Btn kind="primary" disabled={!companyId} onClick={() => onCreate(value, ownerId, companyId, product.trim())}><Check size={15} /> Create deal</Btn>
       </>}>
       <div className="space-y-3">
         <Field label="Company" req>
@@ -2224,6 +2238,9 @@ function NewDealModal({ me, data, fixedCompany, onClose, onCreate }) {
             : <Sel value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
                 {companies.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.cid})</option>)}
               </Sel>}
+        </Field>
+        <Field label="What are we building?" hint="Two or three words — it shows under the company name, so several deals on one account are told apart at a glance.">
+          <Input value={product} maxLength={PRODUCT_MAX} onChange={(e) => setProduct(e.target.value)} placeholder="e.g. patient monitor" />
         </Field>
         <Field label="Estimated value (₹)"><Input type="number" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 1500000" /></Field>
         <Field label="Deal owner">
@@ -2317,6 +2334,19 @@ function dealEvidence(deal, comp, tasks, touches, commits) {
   const hist = (deal.history || []).slice(-3);
   for (const h of hist) lines.push("stage " + (h.from ? stageName(h.from) + "→" : "") + stageName(h.to) + " " + fmtDate(h.at) + (h.summary ? ": " + String(h.summary).slice(0, 120) : ""));
   return lines.join("\n");
+}
+
+/* What a deal is FOR, in the two or three words a salesperson would say.
+   One company can have several deals running at once — without this the
+   cards read as the same company twice and only the deal code tells them
+   apart, which nobody scans as meaning. Kept short on purpose: a label for
+   a column, not a description. */
+const PRODUCT_MAX = 40;
+const dealProduct = (d) => String((d && d.product) || "").trim();
+function DealProduct({ deal, className = "" }) {
+  const p = dealProduct(deal);
+  if (!p) return null;
+  return <p className={cls("text-[11px] text-slate-500 truncate", className)} title={p}>{p}</p>;
 }
 
 /* Days spent in each temperature, from the append-only history. */
@@ -2508,6 +2538,7 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
           <div key={d.id} className="bg-white border border-slate-200 rounded-xl p-5">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="font-mono text-sm text-slate-500">{d.did}</span>
+              {dealProduct(d) && <span className="text-sm font-medium text-slate-800">{dealProduct(d)}</span>}
               <Chip color={ph === "won" ? "green" : ph === "lost" ? "slate" : tempColor(d.temperature)}>{ph === "won" ? "CLOSED WON" : ph === "lost" ? "CLOSED LOST" : ph.toUpperCase()}</Chip>
               <span className="font-mono text-sm tabular-nums text-slate-800">{fmtINRc(d.value)}</span>
               {rfqBadgeFor(d, data.rfq, data.deals) && <Chip color={rfqBadgeFor(d, data.rfq, data.deals).color}>{rfqBadgeFor(d, data.rfq, data.deals).label}</Chip>}
@@ -3537,6 +3568,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             </div>
             <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
               <span className="font-mono tabular-nums text-slate-600">{fmtINRc(d.value)}</span>
+              {/* what this deal is FOR — editable right here, because it is
+                  the only thing telling two live deals on one company apart */}
+              <input value={d.product || ""} maxLength={PRODUCT_MAX}
+                onChange={(e) => patchDeal({ product: e.target.value })}
+                placeholder="+ what we're building"
+                className="text-xs bg-transparent border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none text-slate-700 placeholder:text-slate-300 w-40 py-0.5" />
               {/* the owner is always editable, right here */}
               <Sel className="w-36 text-xs py-0.5" value={owner ? owner.id : ""}
                 onChange={(e) => e.target.value && patchDeal({ ownerId: e.target.value })}>
@@ -3730,10 +3767,11 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
     setGate(null);
   };
 
-  const createDeal = (value, ownerId, companyId) => {
+  const createDeal = (value, ownerId, companyId, product) => {
     const comp = companies.find((x) => x.id === companyId);
     const d = {
       id: uid(), did: comp ? sopDealCode(comp, deals) : nextSeq(deals, "did", "EB-D-"), companyId, ownerId, value: Number(value || 0),
+      product: product || "",
       stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
       history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created." }],
     };
@@ -3805,7 +3843,10 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                   return (
                     <tr key={d.id} onClick={() => setRoom(d.id)} className="border-b border-slate-100 last:border-0 hover:bg-blue-50/40 cursor-pointer">
                       <td className="py-2.5 px-4 font-mono text-xs text-slate-500">{d.did}</td>
-                      <td className="py-2.5 px-4 font-medium text-slate-900">{c ? c.name : "?"}</td>
+                      <td className="py-2.5 px-4 font-medium text-slate-900">
+                        {c ? c.name : "?"}
+                        <DealProduct deal={d} />
+                      </td>
                       <td className="py-2.5 px-4"><Chip color={pk === "won" ? "green" : pk === "lost" ? "slate" : tempColor(d.temperature)}>{pk === "won" ? "WON" : pk === "lost" ? "LOST" : pk.toUpperCase()}</Chip></td>
                       <td className="py-2.5 px-4 font-mono tabular-nums">{fmtINRc(d.value)}</td>
                       <td className="py-2.5 px-4">{o
@@ -3867,6 +3908,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                         <button onClick={(e) => { e.stopPropagation(); c && openCompany(c.id); }} className="font-medium text-sm text-slate-900 hover:text-blue-700 text-left truncate">{c ? c.name : "?"}</button>
                         <span className="font-mono text-xs text-slate-400 flex-none">{d.did}</span>
                       </div>
+                      <DealProduct deal={d} className="mt-0.5" />
                       <div className="flex items-center justify-between mt-1.5">
                         <span className="font-mono text-sm tabular-nums text-slate-800">{fmtINRc(d.value)}</span>
                         <span className="flex items-center gap-1.5">
