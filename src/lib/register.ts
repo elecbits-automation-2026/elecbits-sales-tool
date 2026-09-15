@@ -57,16 +57,24 @@ export async function registerPeek(family = "EB-C"): Promise<number | null> {
 }
 
 /** Client born: Clients-tab row, then the "<clientId> — <name>" folder,
-    then the folder link back into the row. */
+    then the folder link back into the row.
+
+    Migrating a client who already has filing? Pass `existingFolder` (a Drive
+    link, a folder id, or the folder's exact name) to ADOPT that folder
+    instead of creating one — or `skipFolder` to leave Drive alone entirely.
+    An adoption that cannot be resolved fails loudly rather than quietly
+    creating the duplicate you were trying to avoid. */
 export const registerClient = (p: {
   clientId: string; legacyId?: string; name: string; sector?: string;
   orgSize?: string; status?: string; addedBy?: string; poc?: string; notes?: string;
+  existingFolder?: string; skipFolder?: boolean;
 }) => post("client", p);
 
 /** Deal born: Deals-tab row, then the deal folder inside the client folder
-    (seeded with the brief), then the link back into the row. */
+    (seeded with the brief), then the link back into the row. `skipFolder`
+    files the row only — for migrations, where the filing already exists. */
 export const registerDeal = (p: {
   dealId: string; clientId?: string; clientName?: string; dealName?: string;
   status?: string; value?: number | string; currency?: string; owner?: string;
-  dateOpened?: string; notes?: string; brief?: string;
+  dateOpened?: string; notes?: string; brief?: string; skipFolder?: boolean;
 }) => post("deal", p);

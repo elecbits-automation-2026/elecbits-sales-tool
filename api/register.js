@@ -185,6 +185,30 @@ async function updateCell(token, sid, tab, cell, value) {
     { method: "PUT", body: JSON.stringify({ values: [[value]] }) });
 }
 
+// Migrating a client who already has a Drive folder: the caller names the
+// folder they want ADOPTED rather than one being created under the freshly
+// minted id. Accepts a folder id, a Drive URL, or the folder's exact name.
+const folderIdFrom = (s) => {
+  const t = S(s);
+  const m = t.match(/\/folders\/([A-Za-z0-9_-]{10,})/) || t.match(/[?&]id=([A-Za-z0-9_-]{10,})/);
+  if (m) return m[1];
+  return /^[A-Za-z0-9_-]{15,}$/.test(t) ? t : "";   // a bare id, not a name
+};
+
+async function adoptFolder(token, root, spec) {
+  const id = folderIdFrom(spec);
+  if (id) {
+    const f = await gdrive(token, "files/" + encodeURIComponent(id),
+      { fields: "id,name,mimeType,webViewLink,trashed", supportsAllDrives: "true" });
+    if (f.mimeType !== FOLDER_MIME) throw new Error("that Drive item is a file, not a folder");
+    if (f.trashed) throw new Error("that folder is in the trash");
+    return f;
+  }
+  const byName = await findFolder(token, root, S(spec));
+  if (!byName) throw new Error("no folder named “" + S(spec) + "” is shared with this tool");
+  return byName;
+}
+
 async function findFolder(token, root, name) {
   const byName = `name = '${esc(name)}' and mimeType = '${FOLDER_MIME}' and trashed = false`;
   const under = await gdrive(token, "files", {
@@ -328,17 +352,41 @@ export default async function handler(req, res) {
       }
 
       // …then the folder, and the link written back into the row.
-      let folder = null;
-      try {
-        folder = (await findClientFolder(token, root, clientId, name)) || (await createFolder(token, root, clientId + " — " + name));
-      } catch (e) { warnings.push("folder: " + String(e.message || e)); }
+      //
+      // Three ways this can go, because a client being MIGRATED already has
+      // a folder and must not get a second empty one:
+      //   skipFolder      — touch Drive not at all (the row is the point)
+      //   existingFolder  — adopt the one they name (id, URL or exact name)
+      //   neither         — the normal path: find-or-create under the new id
+      // An adoption that cannot be resolved is an error, never a silent
+      // fallback to creating: the whole reason they asked is to avoid that.
+      let folder = null, adopted = false;
+      if (b.skipFolder === true) {
+        warnings.push("Folder left alone as asked — the register row has no Drive link.");
+      } else if (S(b.existingFolder)) {
+        try {
+          folder = await adoptFolder(token, root, b.existingFolder);
+          adopted = true;
+        } catch (e) {
+          return res.status(400).json({
+            error: "Could not attach that folder: " + String(e.message || e)
+              + ". Nothing was created — check the link, or share the folder with " + sa.client_email + ".",
+            registered, duplicate, warnings,
+          });
+        }
+      } else {
+        try {
+          folder = (await findClientFolder(token, root, clientId, name)) || (await createFolder(token, root, clientId + " — " + name));
+        } catch (e) { warnings.push("folder: " + String(e.message || e)); }
+      }
       if (folder && reg && row) {
         try { await updateCell(token, reg.id, "Clients", "G" + row, linkOf(folder)); }
         catch (e) { warnings.push("link-back: " + String(e.message || e)); }
       }
       return res.status(200).json({
-        ok: true, registered, duplicate,
+        ok: true, registered, duplicate, adopted,
         folderId: folder ? folder.id : null, folderLink: folder ? linkOf(folder) : null,
+        folderName: folder ? folder.name : null,
         warnings,
       });
     }
@@ -375,12 +423,17 @@ export default async function handler(req, res) {
       }
 
       // The deal folder lives INSIDE the client folder; the brief file is
-      // "the information inside" the SOP asks for, seeded at birth.
+      // "the information inside" the SOP asks for, seeded at birth. During a
+      // migration the caller can ask for no Drive writes at all — the Deals
+      // row is the part that matters, and their filing already exists.
       let folder = null;
-      try {
-        const clientFolder = clientId
-          ? (await findClientFolder(token, root, clientId, S(b.clientName))) || (await createFolder(token, root, clientId + " — " + S(b.clientName)))
-          : null;
+      if (b.skipFolder === true) {
+        warnings.push("Deal folder left alone as asked — the register row has no Drive link.");
+      } else try {
+        // A client folder is ADOPTED here, never created: this endpoint's
+        // client action owns that decision, and creating one here would
+        // undo an adoption made moments earlier.
+        const clientFolder = clientId ? await findClientFolder(token, root, clientId, S(b.clientName)) : null;
         const parent = clientFolder ? clientFolder.id : root;
         folder = (await findFolder(token, parent, dealId));
         if (folder) {
