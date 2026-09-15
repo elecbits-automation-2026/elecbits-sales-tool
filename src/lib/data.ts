@@ -692,6 +692,20 @@ export async function setRequestOvertake(id: string, overtake: string): Promise<
   return ok(error, "setRequestOvertake");
 }
 
+// Remove a deal outright — for the duplicate that gets opened twice, or the
+// one a migration brought in by mistake. Deliberately an explicit act, never
+// part of a sync (syncDeals is upsert-only, so one stale browser array can
+// never wipe a teammate's deal).
+//
+// The FKs do the tidying: deal_moves, deal_stages and temperature_moves
+// cascade away with it, while tasks, RFQ links, touches, commitments and
+// meetings are `on delete set null` — they survive and simply stop pointing
+// at a deal. Nothing else has to be swept by hand.
+export async function deleteDeal(id: string): Promise<boolean> {
+  const { error } = await tbl(supabase, "deals").delete().eq("id", id);
+  return ok(error, "deleteDeal");
+}
+
 // Deleting a company: try the shared org first — every sales table cascades
 // from core.orgs, so a clean delete sweeps the whole footprint. When another
 // tool still references the org (a PMS project, say), fall back to removing
