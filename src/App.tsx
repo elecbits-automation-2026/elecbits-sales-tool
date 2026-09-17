@@ -18,10 +18,10 @@ import {
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
   mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession, sopMigrationPresent,
-  loadRfqLinks, loadRequests,
+  loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
-import { belongsToDeal } from "./lib/scope";
+import { belongsToDeal, dealContact, contactLine } from "./lib/scope";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
   askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
@@ -709,6 +709,7 @@ export default function App() {
   const [requests, setRequests] = useState([]);
   const [rfq, setRfq] = useState([]);
   const [corePeople, setCorePeople] = useState([]);
+  const [contacts, setContacts] = useState([]);   // core.contacts — a client's people
 
   // Theme: default light; persisted per browser and applied to <html>.
   const [theme, setTheme] = useState(() => {
@@ -766,6 +767,7 @@ export default function App() {
         setQuestionSets(ws.questionSets || {}); setRequests(ws.requests || []);
         setRfq(ws.rfq || []);
         setCorePeople(ws.corePeople || []);
+        setContacts(ws.contacts || []);
         setMemoryText(memoryTextFrom(ws.memory || []));
       } catch (e) { console.error("loadWorkspace failed", e); }
       if (alive) setLoading(false);
@@ -862,7 +864,7 @@ export default function App() {
   };
 
   const me = (authEmail && users.find((u) => (u.email || "").toLowerCase() === authEmail && u.active !== false)) || null;
-  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests, rfq, setRfq, refreshRfq, rfqCheckedAt, corePeople };
+  const data = { users, companies, deals, kpis, trainings, worklogs, knowledge, expenses, gates, scrums, memory, tasks, llds, questionSets, requests, rfq, setRfq, refreshRfq, rfqCheckedAt, corePeople, contacts, setContacts };
   const myHealth = useMemo(() => healthOf(me, data), [me, users, companies, deals, kpis, trainings, worklogs]);
   const fixNow = useMemo(() => (me ? fixNowItems(me, data) : []), [me, users, companies, deals, kpis, trainings, worklogs]);
 
@@ -1962,6 +1964,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
       </div>
 
       {/* ── RFQ links: requirement gathering, straight from the client ── */}
+      <ContactsCard me={me} company={c} data={data} />
       {(data.rfq || []).some((l) => l.companyId === c.id) && (
         <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
           <SectionTitle right={<Chip color="purple"><Send size={11} /> the client fills it, you read it</Chip>}>RFQ input status</SectionTitle>
@@ -2291,10 +2294,10 @@ function nextStepState(d) {
   return { key: "committed" };
 }
 
-const tempSystem = (deal, comp, evidence) => [
+const tempSystem = (deal, comp, evidence, contacts) => [
   "You judge the TEMPERATURE of a sales deal at Elecbits (electronics ODM/EMS). Temperature measures the CLIENT's live intent — not our effort, not how nice the notes sound.",
   "THE CRITERIA:\n" + TEMP_CRITERIA,
-  dealIdentity(deal, comp),
+  dealIdentity(deal, comp, contacts),
   "DEAL: " + (deal.did || "") + " · " + (comp ? comp.name : "unlinked") + " · stage " + stageName(deal.stage) + " · value ₹" + (deal.value || 0),
   "CURRENT READING: " + (deal.temperature || "cold") + (deal.temperatureWhy ? " (" + deal.temperatureWhy + ")" : ""),
   "THE EVIDENCE (recent touches, tasks, commitments — newest first):\n" + (evidence || "(nothing on record)"),
@@ -2323,11 +2326,21 @@ const reqSystem = (comp) => [
 /* Everything recent and factual about a deal, for the AI to judge from. */
 /* Which deal the AI is looking at. Without this every prompt about a
    Schneider Electric deal reads identically, and the model happily writes a
-   next step about the wrong product. */
-const dealIdentity = (d, comp) =>
-  "THIS DEAL: " + (d.did || "") + (dealProduct(d) ? " — " + dealProduct(d) : "")
-  + " · client " + ((comp && comp.name) || "unknown")
-  + ". This client may have other deals running; everything below is about THIS one only, and your answer must be about THIS one only.";
+   next step about the wrong product. The deal's own context and its own
+   contact are the grounding that makes the difference concrete. */
+const dealIdentity = (d, comp, contacts) => {
+  const poc = dealContact(d, comp, contacts);
+  return [
+    "THIS DEAL: " + (d.did || "") + (dealProduct(d) ? " — " + dealProduct(d) : "")
+      + " · client " + ((comp && comp.name) || "unknown") + ".",
+    d.context ? "WHAT THIS PROJECT IS: " + String(d.context).slice(0, 1200) : "",
+    poc ? "THIS PROJECT'S CONTACT: " + contactLine(poc)
+          + (poc.inherited ? " (the company's general contact — this project has no named person yet)" : "") : "",
+    "This client may have OTHER projects running with other contacts and other requirements."
+      + " Everything above and below is about THIS project only, and your answer must be about THIS project only —"
+      + " never name another product, another contact or another project's work unless the user raises it.",
+  ].filter(Boolean).join("\n");
+};
 
 function dealEvidence(deal, comp, tasks, touches, commits, deals) {
   const lines = [];
@@ -2357,6 +2370,125 @@ function DealProduct({ deal, className = "" }) {
   const p = dealProduct(deal);
   if (!p) return null;
   return <p className={cls("text-[11px] text-slate-500 truncate", className)} title={p}>{p}</p>;
+}
+
+/* The client's people. One company, several projects, a different person on
+   each — so the account keeps a list, and each deal points at whoever owns
+   that project. The primary is who you write to when it is not about one
+   project in particular. */
+function ContactsCard({ me, company: c, data }) {
+  const { contacts, setContacts, deals } = data;
+  const mine = (contacts || []).filter((x) => x.companyId === c.id);
+  const blank = { companyId: c.id, name: "", role: "", email: "", phone: "", isPrimary: false, notes: "" };
+  const [edit, setEdit] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const reload = async () => {
+    const fresh = await loadContacts();
+    if (fresh && setContacts) setContacts(fresh);
+  };
+  const save = async () => {
+    if (!String(edit.name || "").trim()) { setErr("A contact needs a name."); return; }
+    setBusy(true); setErr("");
+    const id = await saveContact(edit);
+    setBusy(false);
+    if (!id) { setErr("Could not save — run 32-deal-contacts.sql if it hasn't been, then try again."); return; }
+    await reload(); setEdit(null);
+  };
+  const remove = async (x) => {
+    const on = (deals || []).filter((d) => d.contactId === x.id).length;
+    if (!window.confirm("Remove " + x.name + " from " + c.name + "?"
+      + (on ? "\n\n" + on + " deal" + (on === 1 ? "" : "s") + " point at them; those fall back to the company contact." : ""))) return;
+    if (await deleteContact(x.id, c.id)) await reload();
+    else window.alert("Could not remove — check the connection and try again.");
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5 mt-4">
+      <SectionTitle right={<Btn size="sm" onClick={() => { setEdit({ ...blank, isPrimary: !mine.length }); setErr(""); }}><Plus size={13} /> Add contact</Btn>}>
+        People at {c.name}
+      </SectionTitle>
+      <p className="text-xs text-slate-500 mb-3">Each project can have its own person — pick them in that deal's room. The primary is the default for anything not about one project.</p>
+      {mine.length === 0 && !edit && (
+        <p className="text-sm text-slate-400">
+          {c.contactPerson
+            ? "Only the company-wide contact so far: " + c.contactPerson + (c.designation ? " (" + c.designation + ")" : "") + ". Add them here to attach them to a project."
+            : "Nobody on file yet."}
+        </p>
+      )}
+      <div className="space-y-2">
+        {mine.map((x) => {
+          const on = (deals || []).filter((d) => d.contactId === x.id);
+          return (
+            <div key={x.id} className="border border-slate-200 rounded-md px-3 py-2 flex items-center gap-2.5 flex-wrap">
+              <span className="font-medium text-sm text-slate-900">{x.name}</span>
+              {x.role && <span className="text-xs text-slate-500">{x.role}</span>}
+              {x.isPrimary && <Chip color="blue">primary</Chip>}
+              <span className="text-xs text-slate-500 font-mono">{[x.email, x.phone].filter(Boolean).join(" · ")}</span>
+              <span className="mr-auto" />
+              {on.length > 0 && <span className="text-[11px] text-slate-400">{on.map((d) => dealProduct(d) || d.did).join(", ")}</span>}
+              <button onClick={() => { setEdit(x); setErr(""); }} className="text-xs text-blue-600 hover:underline">edit</button>
+              <button onClick={() => remove(x)} className="text-slate-300 hover:text-red-600"><Trash2 size={13} /></button>
+            </div>
+          );
+        })}
+      </div>
+      {edit && (
+        <div className="border border-blue-200 bg-blue-50/40 rounded-lg p-3 mt-3 space-y-2.5">
+          <div className="grid sm:grid-cols-2 gap-2.5">
+            <Field label="Name" req><Input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></Field>
+            <Field label="Designation"><Input value={edit.role} placeholder="e.g. R&D lead" onChange={(e) => setEdit({ ...edit, role: e.target.value })} /></Field>
+            <Field label="Email"><Input value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} /></Field>
+            <Field label="Phone"><Input value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} /></Field>
+            <div className="sm:col-span-2">
+              <Field label="Notes"><Input value={edit.notes} placeholder="what they decide, how they like to be contacted…" onChange={(e) => setEdit({ ...edit, notes: e.target.value })} /></Field>
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-slate-600">
+            <input type="checkbox" checked={!!edit.isPrimary} onChange={(e) => setEdit({ ...edit, isPrimary: e.target.checked })} />
+            Primary contact for {c.name} — the default when a deal names nobody
+          </label>
+          {err && <p className="text-xs text-red-600">{err}</p>}
+          <div className="flex items-center gap-2">
+            <Btn size="sm" kind="primary" disabled={busy} onClick={save}>{busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Save</Btn>
+            <Btn size="sm" onClick={() => { setEdit(null); setErr(""); }}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* The deal's own background. Small and quiet when filled, an invitation when
+   empty — and the single highest-value thing anyone can type here, because
+   every AI prompt about this deal reads it. */
+function DealContext({ deal, onSave }) {
+  const [v, setV] = useState(deal.context || "");
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setV(deal.context || ""); }, [deal.id]);
+  const dirty = (deal.context || "") !== v;
+  if (!open && !v) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="w-full text-left text-xs text-amber-800 bg-amber-50/60 border border-amber-200 rounded-lg px-3 py-2 hover:border-amber-400">
+        + Say what this project is — one or two lines. The copilot reads it, and it is what stops it answering about this client's other projects.
+      </button>
+    );
+  }
+  return (
+    <div className="border border-slate-200 rounded-lg p-3">
+      <Lbl>What this project is</Lbl>
+      <TA value={v} onChange={(e) => setV(e.target.value)}
+        onBlur={() => { if (dirty) onSave(v.trim()); }}
+        className="min-h-16 mt-1 text-[13px]"
+        placeholder="e.g. Retrofit WiFi dongle for their existing UPS range — 5k units/yr, needs BIS. Different team from the DPB work." />
+      <p className="text-[11px] text-slate-400 mt-1">
+        Read by the copilot, the phase kickoff and the next-step suggestions — for this project only.
+        {dirty ? " Unsaved — click outside to save." : ""}
+      </p>
+    </div>
+  );
 }
 
 /* Days spent in each temperature, from the append-only history. */
@@ -2501,11 +2633,19 @@ function ResearchCard({ me, company: c, data, saveCompanies }) {
    step button, assistant: never file a near-duplicate of a task already open
    on the same company. Generation behaves the same everywhere. */
 const normTitle = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-function openTaskDupe(tasks, companyId, title) {
+function openTaskDupe(tasks, companyId, title, dealId) {
   const want = normTitle(title);
   if (!want) return true;
-  return (tasks || []).some((t) => t.status !== "done" && (t.companyId || "") === (companyId || "")
-    && (normTitle(t.title) === want || normTitle(t.title).includes(want) || want.includes(normTitle(t.title))));
+  return (tasks || []).some((t) => {
+    if (t.status === "done") return false;
+    if ((t.companyId || "") !== (companyId || "")) return false;
+    // Two projects at one client legitimately share a task title ("send the
+    // revised quote"). Only collide within the same deal — or, for a task
+    // belonging to no deal, with the other company-level ones.
+    if ((t.dealId || "") !== (dealId || "")) return false;
+    const have = normTitle(t.title);
+    return have === want || have.includes(want) || want.includes(have);
+  });
 }
 
 /* Every AI conversation about a client lands in ONE work chat log — per
@@ -2610,9 +2750,9 @@ const phaseMoveSystem = (d, comp, to, ev) => [
 /* When a deal REACHES a phase, the AI writes what happens next — the next
    step and the phase's first tasks — with no confirmation step. They land in
    the deal, the Scrum Master's book, and My Tasks, where they get completed. */
-const stageKickoffSystem = (d, comp, to, ev) => [
+const stageKickoffSystem = (d, comp, to, ev, contacts) => [
   "The deal with " + (comp ? comp.name : "a client") + " (₹" + (d.value || 0) + ") just reached " + to.toUpperCase() + " on the Elecbits Sales OS. Today: " + todayStr() + ".",
-  dealIdentity(d, comp),
+  dealIdentity(d, comp, contacts),
   "THE RECORD (newest first):\n" + (ev || "(thin)"),
   "Write what happens next in this phase. Reply with ONLY one line:",
   'KICKOFF_JSON {"next_step":{"what":"first person, concrete","due":"YYYY-MM-DD"},"tasks":[{"title":"action-first, specific","due":"YYYY-MM-DD"}]}',
@@ -2729,7 +2869,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
     // Reaching a phase writes its opening moves — no confirmation, chat-bot
     // style. The step and tasks land in the deal, the scrum book, My Tasks.
     if (saveTasks && ["cold", "warm", "rfq", "hot"].includes(move.to)) {
-      askClaude(stageKickoffSystem(d, comp, move.to, evRef.current + "\nJust moved because: " + summary),
+      askClaude(stageKickoffSystem(d, comp, move.to, evRef.current + "\nJust moved because: " + summary, data.contacts),
         [{ role: "user", content: "Write the kickoff." }], { maxTokens: 500 })
         .then((reply) => {
           const v = extractMarkedJSON(reply, "KICKOFF_JSON");
@@ -2742,14 +2882,14 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
             saveDeals(moved.map((x) => (x.id === d.id
               ? { ...x, nextStep: what, nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" } : x)));
             // the step's own task, always
-            if (!openTaskDupe(data.tasks, d.companyId, what)) rows.push({
+            if (!openTaskDupe(data.tasks, d.companyId, what, d.id)) rows.push({
               id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: what,
               details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
               due: v.next_step.due || "", status: "open", source: "step",
               createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" });
           }
           const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title)
-            .filter((t) => !openTaskDupe([...rows, ...(data.tasks || [])], d.companyId, t.title)).slice(0, 4);
+            .filter((t) => !openTaskDupe([...rows, ...(data.tasks || [])], d.companyId, t.title, d.id)).slice(0, 4);
           rows.push(...list.map((t) => ({
             id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
             title: String(t.title), details: "Raised when the deal reached " + move.to + ".", due: t.due || "",
@@ -2843,9 +2983,9 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
 /* ── THE DEAL COPILOT — the AI in the room. It has read everything: the
    record, the phases, the promises, the RFQ input, the research, and it can
    look in Drive. What gets agreed in chat is executed, not just said. ──── */
-const dealChatSystem = (d, comp, ev) => [
+const dealChatSystem = (d, comp, ev, contacts) => [
   "You are the DEAL COPILOT on the Elecbits Sales OS — the sharpest colleague on this one deal. Direct, specific, brief. Today: " + todayStr() + ".",
-  dealIdentity(d, comp),
+  dealIdentity(d, comp, contacts),
   "DEAL: " + d.did + " · " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
     + (d.nextStep && !d.nextStepDoneAt ? " · committed next step: '" + d.nextStep + "'" + (d.nextStepDue ? " by " + fmtDate(d.nextStepDue) : "") : " · NO committed next step"),
   "EVERYTHING ON THE RECORD (newest first):\n" + (ev || "(nothing yet)"),
@@ -2914,7 +3054,7 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
           nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
           done.push("✓ committed: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
           // every step carries its task
-          if (!openTaskDupe(nextTasks, d.companyId, a.what)) {
+          if (!openTaskDupe(nextTasks, d.companyId, a.what, d.id)) {
             nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: a.what,
               details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
               due: a.due || "", status: "open", source: "step",
@@ -2955,7 +3095,7 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
           if (hit) done.push("✓ rewrote the task: " + a.title);
         }
         if (a.type === "task" && a.title) {
-          if (openTaskDupe(nextTasks, d.companyId, a.title)) {
+          if (openTaskDupe(nextTasks, d.companyId, a.title, d.id)) {
             done.push("· already open, not duplicated: " + a.title);
           } else {
             nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
@@ -2998,7 +3138,8 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
         memCtx = (mj.hits || []).map((h) => "[" + h.folder_path + "/" + h.file_name + "] " + String(h.content).slice(0, 500)).join("\n");
       } catch (e) { /* the record alone still answers */ }
       const sys = dealChatSystem({ ...d, _openTasks: openTaskTitles }, comp,
-        evidence() + (memCtx ? "\n\nFROM THE DMP KNOWLEDGE BASE (Drive playbooks & processes — name the file when you use one):\n" + memCtx : ""));
+        evidence() + (memCtx ? "\n\nFROM THE DMP KNOWLEDGE BASE (Drive playbooks & processes — name the file when you use one):\n" + memCtx : ""),
+        data.contacts);
       let reply, notes;
       try {
         ({ reply, notes } = await withTimeout(askWithDrive(sys, convo), 40000));
@@ -3233,9 +3374,9 @@ function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose })
 /* NEXT PROSPECT STEPS — "change" opens this modal: the AI reads the record
    and lays out the distinct moves that take the deal forward; pick one and it
    commits (step + its task), or write your own at the bottom. */
-const stepOptionsSystem = (d, comp, ev) => [
+const stepOptionsSystem = (d, comp, ev, contacts) => [
   "You lay out the POSSIBLE NEXT STEPS for a sales deal at Elecbits (electronics design & manufacturing services). Today: " + todayStr() + ".",
-  dealIdentity(d, comp),
+  dealIdentity(d, comp, contacts),
   "DEAL: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
     + (d.nextStep && !d.nextStepDoneAt ? " · currently committed: '" + d.nextStep + "'" : ""),
   "THE RECORD (newest first):\n" + (ev || "(thin)"),
@@ -3251,7 +3392,7 @@ function NextStepModal({ me, d, comp, data, touches, commits, onCommit, onClose 
   const [due, setDue] = useState(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : "");
   useEffect(() => {
     let a = true;
-    withTimeout(askClaude(stepOptionsSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits, deals)),
+    withTimeout(askClaude(stepOptionsSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits, deals), data.contacts),
       [{ role: "user", content: "Lay out the possible next steps." }], { maxTokens: 800 }), 30000)
       .then((reply) => {
         if (!a) return;
@@ -3295,9 +3436,9 @@ function NextStepModal({ me, d, comp, data, touches, commits, onCommit, onClose 
 /* GENERATE TASKS — click as often as you like. It reads the step, every open
    task and the record, then realigns the whole set: merges duplicates, drops
    the obsolete, fixes titles and dates, adds what is missing. */
-const realignSystem = (d, comp, step, taskLines, ev) => [
+const realignSystem = (d, comp, step, taskLines, ev, contacts) => [
   "You are the TASK REALIGNER for one deal on the Elecbits Sales OS. Today: " + todayStr() + ".",
-  dealIdentity(d, comp),
+  dealIdentity(d, comp, contacts),
   "DEAL: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0),
   "COMMITTED NEXT STEP: " + (step || "(none committed)"),
   "OPEN TASKS ON THE DEAL:\n" + (taskLines || "(none)"),
@@ -3346,7 +3487,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     draftedRef.current = dealId;
     const cc = companies.find((x) => x.id === dd.companyId);
     setDrafting(true);
-    askClaude(stageKickoffSystem(dd, cc, dd.temperature || "cold", dealEvidence(dd, cc, tasks, touches, commits, deals)),
+    askClaude(stageKickoffSystem(dd, cc, dd.temperature || "cold", dealEvidence(dd, cc, tasks, touches, commits, deals), data.contacts),
       [{ role: "user", content: "Write the kickoff." }], { maxTokens: 500 })
       .then((reply) => {
         const v = extractMarkedJSON(reply, "KICKOFF_JSON");
@@ -3356,13 +3497,13 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
         saveNextStep(dd.id, { what, due, owner: dd.ownerId });
         saveDeals(deals.map((x) => (x.id === dd.id ? { ...x, nextStep: what, nextStepDue: due, nextStepOwner: dd.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x)));
         const rows = [];
-        if (!openTaskDupe(tasks, dd.companyId, what)) rows.push({
+        if (!openTaskDupe(tasks, dd.companyId, what, dd.id)) rows.push({
           id: uid(), companyId: dd.companyId, dealId: dd.id, assignee: dd.ownerId || me.id, author: me.id, title: what,
           details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
           due: v.next_step.due || "", status: "open", source: "step",
           createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" });
         const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title)
-          .filter((t) => !openTaskDupe([...rows, ...tasks], dd.companyId, t.title)).slice(0, 3);
+          .filter((t) => !openTaskDupe([...rows, ...tasks], dd.companyId, t.title, dd.id)).slice(0, 3);
         rows.push(...list.map((t) => ({
           id: uid(), companyId: dd.companyId, dealId: dd.id, assignee: dd.ownerId || me.id, author: me.id,
           title: String(t.title), details: "Planned for the " + (dd.temperature || "cold") + " phase.", due: t.due || "",
@@ -3447,9 +3588,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
       const items = [];
       if (s.phase === "cold" && comp && comp.plan && comp.plan.research && comp.plan.research.about)
         items.push("Research on file: " + String(comp.plan.research.about).slice(0, 130));
-      const tw = (touches || []).filter((t) => inWin(t.at, s));
+      const tw = (touches || []).filter((t) => belongsToDeal(t, d, deals) && inWin(t.at, s));
       if (tw.length) items.push(tw.length + " client touch" + (tw.length > 1 ? "es" : "") + " — latest: " + (tw[0].subject || tw[0].kind || "logged"));
-      for (const cm of (commits || []).filter((c) => inWin(c.createdAt, s)).slice(0, 2))
+      for (const cm of (commits || []).filter((c) => belongsToDeal(c, d, deals) && inWin(c.createdAt, s)).slice(0, 2))
         items.push((cm.side === "us" ? "We promised: " : "They promised: ") + cm.what + (cm.status !== "open" ? " (" + cm.status + ")" : ""));
       if (s.phase === "rfq" && rfqB && rfqB.link)
         items.push(rfqB.link.status === "submitted"
@@ -3464,7 +3605,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const reassess = async () => {
     setBusyTemp(true); setErr("");
     try {
-      const reply = await withTimeout(askClaude(tempSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits, deals)),
+      const reply = await withTimeout(askClaude(tempSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits, deals), data.contacts),
         [{ role: "user", content: "Judge the temperature now." }], { maxTokens: 400 }), 20000);
       const v = extractMarkedJSON(reply, "TEMP_JSON");
       if (!v || !["cold", "warm", "rfq", "hot"].includes(v.temperature)) throw new Error("unparseable");
@@ -3487,7 +3628,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     const due = due0 || "";
     saveNextStep(d.id, { what, due, owner: d.ownerId });
     patchDeal({ nextStep: what, nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
-    if (!openTaskDupe(tasks, d.companyId, what)) {
+    if (!openTaskDupe(tasks, d.companyId, what, d.id)) {
       saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: what,
         details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
         due: due ? String(due).slice(0, 10) : "", status: "open", source: "step",
@@ -3516,7 +3657,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
       const stepLine = d.nextStep && !d.nextStepDoneAt ? d.nextStep + (d.nextStepDue ? " (by " + fmtDate(d.nextStepDue) + ")" : "") : "";
       // A long task list needs a long answer — a tight budget truncated the
       // JSON mid-op and looked like "no brain". Budget scales, timeout too.
-      const reply = await withTimeout(askClaude(realignSystem(d, comp, stepLine, lines, dealEvidence(d, comp, tasks, touches, commits, deals)),
+      const reply = await withTimeout(askClaude(realignSystem(d, comp, stepLine, lines, dealEvidence(d, comp, tasks, touches, commits, deals), data.contacts),
         [{ role: "user", content: "Realign the tasks." }], { maxTokens: 2000 }), 45000);
       const v = extractMarkedJSON(reply, "REALIGN_JSON");
       if (!v || !Array.isArray(v.ops)) throw new Error("no ops");
@@ -3537,7 +3678,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             const t0 = matchIn(next, op.task);
             if (t0) { next = next.map((x) => (x.id === t0.id ? { ...x, due: String(op.due) } : x)); edited++; }
           }
-          if (op.op === "add" && op.title && !openTaskDupe(next, d.companyId, op.title)) {
+          if (op.op === "add" && op.title && !openTaskDupe(next, d.companyId, op.title, d.id)) {
             next = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
               title: String(op.title), details: "From Generate tasks — aligned to the step and the record.", due: op.due || "",
               status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...next];
@@ -3598,6 +3739,25 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
               {comp && comp.city ? <span>· {comp.city}</span> : null}
               {d.createdAt ? <span>· started {fmtDate(d.createdAt)}</span> : null}
             </p>
+            {/* This project's own person. A company can have several projects
+                with a different POC on each; unset falls back to the company
+                contact and says so, so nobody mistakes it for a real answer. */}
+            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
+              <Users size={12} className="text-slate-400" />
+              <Sel className="w-48 text-xs py-0.5" value={d.contactId || ""}
+                onChange={(e) => patchDeal({ contactId: e.target.value })}>
+                <option value="">— company contact —</option>
+                {(data.contacts || []).filter((x) => x.companyId === d.companyId)
+                  .map((x) => <option key={x.id} value={x.id}>{x.name}{x.role ? " · " + x.role : ""}</option>)}
+              </Sel>
+              {(() => {
+                const poc = dealContact(d, comp, data.contacts);
+                if (!poc) return <span className="text-amber-700">no contact on file — add one on the company page</span>;
+                return <span className={poc.inherited ? "text-slate-400" : "text-slate-600"}>
+                  {contactLine(poc)}{poc.inherited ? " · inherited from the company" : ""}
+                </span>;
+              })()}
+            </p>
           </div>
           {comp && <button onClick={() => { onClose(); openCompany(comp.id); }} className="text-xs text-blue-600 hover:underline">open the company →</button>}
           {(me.role === "admin" || d.ownerId === me.id) && (
@@ -3609,6 +3769,11 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 
         <div className="p-6 grid lg:grid-cols-[1fr,21rem] gap-5 items-start">
         <div className="space-y-5 min-w-0">
+          {/* 0 · WHAT THIS PROJECT IS — the deal's own background, in the
+              salesperson's words. Every deal-level prompt reads it, so a
+              company with three projects stops getting answers about the
+              wrong one. Saved on blur; nothing else to press. */}
+          <DealContext deal={d} onSave={(v) => patchDeal({ context: v })} />
           {/* 1 · WHAT HAPPENED — and, on the last row, what is going on now */}
           <div>
             <div className="flex items-center gap-3 mb-2">
@@ -8880,7 +9045,7 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
           saveNextStep(deal.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: me.id });
           nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
           // every step carries its task
-          if (!openTaskDupe(nextTasks, comp.id, a.what)) {
+          if (!openTaskDupe(nextTasks, comp.id, a.what, deal ? deal.id : "")) {
             nextTasks = [{ id: uid(), companyId: comp.id, dealId: deal.id, assignee: me.id, author: me.id, title: a.what,
               details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
               due: a.due || "", status: "open", source: "step",
@@ -8907,7 +9072,7 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
             return x;
           });
         }
-        if (a.type === "task" && a.title && !openTaskDupe(nextTasks, comp ? comp.id : "", a.title)) {
+        if (a.type === "task" && a.title && !openTaskDupe(nextTasks, comp ? comp.id : "", a.title, deal ? deal.id : "")) {
           nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: deal ? deal.id : "", assignee: me.id, author: me.id,
             title: a.title, details: "From the Scrum Master check-in", due: a.due || today, status: "open", source: "scrum",
             createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "", scrumNoteId: sess.scrumNoteId || "" }, ...nextTasks];

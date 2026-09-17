@@ -30,6 +30,7 @@ const WHERE = {
   // ── core: what the whole company shares ─────────────────────────────
   people:    ["core", "people"],
   orgs:      ["core", "orgs"],
+  contacts:  ["core", "contacts"],
   trainings: ["core", "trainings"],
 
   // ── sales: this tool's own ──────────────────────────────────────────
@@ -72,6 +73,9 @@ export const RPC = {
   nextNumber: "next_number",
   /** SOP v2.0 mint: EB-<family>-YY-nnnn, floored at the master register. */
   nextSopId: "next_sop_id",
+  /** Client contacts. core.contacts is SELECT-only to us; these own the writes. */
+  upsertContact: "upsert_contact",
+  deleteContact: "delete_contact",
 } as const;
 
 /* The client's default schema, set in supabase.ts. A table in this schema is
