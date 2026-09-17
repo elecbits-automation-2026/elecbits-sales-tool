@@ -18,7 +18,7 @@ import {
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
   mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession, sopMigrationPresent,
-  loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact,
+  loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact, schemaGaps,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
 import { belongsToDeal, dealContact, contactLine } from "./lib/scope";
@@ -690,6 +690,16 @@ function SectionTitle({ children, right }) {
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [saveErr, setSaveErr] = useState(false);
+  // Columns the database does not have yet. Filled by the data layer when a
+  // save falls back to dropping them; polled because that happens inside a
+  // sync nothing here awaits.
+  const [gaps, setGaps] = useState([]);
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (schemaGaps.size && gaps.length !== schemaGaps.size) setGaps([...schemaGaps]);
+    }, 3000);
+    return () => clearInterval(t);
+  }, [gaps.length]);
   const [tab, setTab] = useState("pipeline");
 
   const [users, setUsers] = useState([]);
@@ -925,6 +935,16 @@ export default function App() {
           <div className="fixed bottom-3 left-3 z-50 bg-red-600 text-white text-xs px-3 py-2 rounded-md shadow-lg flex items-center gap-2">
             <AlertCircle size={14} /> A save failed — check connection, then retry your last change.
             <button onClick={() => setSaveErr(false)} className="ml-1 opacity-80 hover:opacity-100"><X size={12} /></button>
+          </div>
+        )}
+        {gaps.length > 0 && (
+          <div className="fixed bottom-3 left-3 z-50 max-w-sm bg-amber-600 text-white text-xs px-3 py-2 rounded-md shadow-lg flex items-start gap-2">
+            <AlertTriangle size={14} className="mt-px flex-none" />
+            <span>
+              <b>Saved, but not everything.</b> The database is missing columns this version writes, so those fields are being dropped:
+              <span className="block mt-1 opacity-90">{gaps.join(" · ")}</span>
+            </span>
+            <button onClick={() => setGaps([])} className="ml-1 opacity-80 hover:opacity-100"><X size={12} /></button>
           </div>
         )}
         {rfqNews && (
@@ -1347,7 +1367,8 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
             const comp = completeness(c);
             const cc = comp >= 90 ? "green" : comp >= 70 ? "amber" : "red";
             const owner = users.find((u) => u.id === c.accountOwner);
-            const activeDeals = deals.filter((d) => d.companyId === c.id && !d.lost).length;
+            const liveDeals = deals.filter((d) => d.companyId === c.id && !d.lost);
+            const activeDeals = liveDeals.length;
             return (
               <button key={c.id} onClick={() => setFocusCompanyId(c.id)}
                 className="text-left bg-white border border-slate-200 rounded-xl p-4 hover:border-blue-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
@@ -1359,6 +1380,14 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
                   <Dot color={cc} />
                 </div>
                 <p className="text-xs text-slate-500 mt-2 truncate">{[c.city, c.industry].filter(Boolean).join(" · ") || "—"}</p>
+                {/* What is actually running here. A client with three projects
+                    read as one row of "3 deals" — the names are the point. */}
+                {liveDeals.some((d) => dealProduct(d)) && (
+                  <p className="text-[11px] text-slate-600 mt-1.5 truncate"
+                     title={liveDeals.map((d) => dealProduct(d) || d.did).join(", ")}>
+                    {liveDeals.map((d) => dealProduct(d) || d.did).join(" · ")}
+                  </p>
+                )}
                 <div className="mt-3">
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-slate-500">Data</span>
@@ -2026,7 +2055,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
         </div>
       )}
 
-      {ctab === "deals" && <CompanyDealsTab me={me} company={c} data={data} saveDeals={saveDeals} saveTasks={saveTasks} />}
+      {ctab === "deals" && <CompanyDealsTab me={me} company={c} data={data} saveDeals={saveDeals} saveTasks={saveTasks} onNew={() => setNewDeal(true)} />}
 
       {/* RFQ — shared or not; opened or not; filled how much; the answers */}
       {ctab === "rfq" && (() => {
@@ -2231,7 +2260,7 @@ function NewDealModal({ me, data, fixedCompany, onClose, onCreate }) {
   const [ownerId, setOwnerId] = useState(me.role === "agent" ? me.id : (users.find((u) => u.role === "agent") || me).id);
   const canPickOwner = me.role !== "agent";
   return (
-    <Modal title="New deal" onClose={onClose}
+    <Modal title={fixedCompany ? "New project · " + fixedCompany.name : "New deal"} onClose={onClose}
       footer={<>
         <Btn onClick={onClose}>Cancel</Btn>
         <Btn kind="primary" disabled={!companyId} onClick={() => onCreate(value, ownerId, companyId, product.trim())}><Check size={15} /> Create deal</Btn>
@@ -2243,7 +2272,7 @@ function NewDealModal({ me, data, fixedCompany, onClose, onCreate }) {
                 {companies.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.cid})</option>)}
               </Sel>}
         </Field>
-        <Field label="What are we building?" hint="Two or three words — it shows under the company name, so several deals on one account are told apart at a glance.">
+        <Field label="What are we building?" req hint="Two or three words — it shows under the company name on every board, and it is how several projects on one client are told apart.">
           <Input value={product} maxLength={PRODUCT_MAX} onChange={(e) => setProduct(e.target.value)} placeholder="e.g. patient monitor" />
         </Field>
         <Field label="Estimated value (₹)"><Input type="number" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 1500000" /></Field>
@@ -2672,7 +2701,7 @@ function logClientChat(meId, orgId, kind, entries) {
   }).catch(() => { /* the log is best-effort; the conversation itself is not */ });
 }
 
-function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
+function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks, onNew }) {
   const { deals } = data;
   const [room, setRoom] = useState(null);
   const mine = deals.filter((d) => d.companyId === c.id)
@@ -2680,7 +2709,18 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks }) {
   const phaseOf = (d) => d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
   return (
     <div className="mt-4 space-y-3">
-      {mine.length === 0 && <Empty icon={Columns} title="No deals yet" sub="Create one from the Overview — it lands on the pipeline in Cold." />}
+      <div className="flex items-center gap-2 flex-wrap">
+        <p className="text-sm font-semibold text-slate-800 mr-auto">
+          Projects with {c.name}
+          <span className="font-mono text-xs text-slate-400 ml-2">{mine.length}</span>
+        </p>
+        {onNew && <Btn size="sm" kind="primary" onClick={onNew}><Plus size={13} /> Add project</Btn>}
+      </div>
+      {mine.length === 0 && (
+        <Empty icon={Columns} title="No projects yet"
+          sub="One client can run several at once — name what each one is for and the board tells them apart."
+          action={onNew ? <Btn kind="primary" onClick={onNew}><Plus size={14} /> Add project</Btn> : null} />
+      )}
       {mine.map((d) => {
         const ph = phaseOf(d);
         const ns = nextStepState(d);

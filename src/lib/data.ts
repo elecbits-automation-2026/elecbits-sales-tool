@@ -54,6 +54,13 @@ let rosterIds: string[] = [];
 // is empty because the LOAD failed, not because the rows are gone.
 const degraded = new Set<string>();
 
+// Columns this build writes that the database does not have yet. A sync that
+// falls back to "save it without those columns" keeps the row but quietly
+// throws away what the user typed — so it is recorded here and the app shows
+// a banner naming the migration to run, rather than looking like a tool that
+// forgets what you enter.
+export const schemaGaps = new Set<string>();
+
 /* ---------- load ---------- */
 
 // Everything the app needs, in its existing shapes. One round of parallel
@@ -552,6 +559,11 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
   // run it, retry without the column rather than failing every deal save.
   let r1 = await tbl(supabase, "deals").upsert(dealRows, { onConflict: "id" });
   if (r1.error && /product|contact_id|context|column/i.test(r1.error.message || "")) {
+    // The migration has not been run. Saving the rest beats losing the deal —
+    // but the product, contact and context the user just typed ARE being
+    // dropped, and a silent drop reads as "the tool doesn't store it". Record
+    // it so the app can say so out loud.
+    schemaGaps.add("deals.product / contact / context — run RUN-THIS-phase4.sql (steps 23–32)");
     r1 = await tbl(supabase, "deals")
       .upsert(dealRows.map(({ product, contact_id, context, ...rest }) => rest), { onConflict: "id" });
   }
