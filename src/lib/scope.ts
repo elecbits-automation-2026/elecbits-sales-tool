@@ -30,3 +30,38 @@ export function belongsToDeal(item: Scoped | null | undefined,
   const live = (deals || []).filter((x) => x.companyId === deal.companyId && !x.lost);
   return live.length <= 1;
 }
+
+/* ─── WHO TO CALL ABOUT THIS PROJECT ───────────────────────────────────────
+   The same shape of question, for people. A company's contacts live in
+   core.contacts; a deal points at one of them. A deal naming nobody inherits
+   the company's primary — right for an account with a single project — and
+   the result says `inherited` so the UI can admit it is a fallback rather
+   than presenting it as this project's real answer.                       */
+
+export type Contact = {
+  id: string; companyId?: string; name?: string; role?: string;
+  email?: string; phone?: string; isPrimary?: boolean;
+};
+
+export function dealContact(
+  deal: (DealLike & { contactId?: string }) | null | undefined,
+  comp: { contactPerson?: string; designation?: string; email?: string; phone?: string } | null | undefined,
+  contacts?: Contact[] | null,
+): (Contact & { inherited: boolean }) | null {
+  const list = (contacts || []).filter((c) => c.companyId === (deal ? deal.companyId : ""));
+  const own = deal && deal.contactId ? list.find((c) => c.id === deal.contactId) : null;
+  if (own) return { ...own, inherited: false };
+  const primary = list.find((c) => c.isPrimary) || list[0];
+  if (primary) return { ...primary, inherited: true };
+  // Nothing in core.contacts yet (migration 32 not run, or a bare company):
+  // the company's own denormalised fields still answer the question.
+  if (comp && comp.contactPerson) {
+    return { id: "", name: comp.contactPerson, role: comp.designation || "",
+             email: comp.email || "", phone: comp.phone || "", inherited: true };
+  }
+  return null;
+}
+
+export const contactLine = (c: Contact | null | undefined): string => !c ? "" :
+  (c.name || "") + (c.role ? " (" + c.role + ")" : "")
+  + (c.email ? " · " + c.email : "") + (c.phone ? " · " + c.phone : "");

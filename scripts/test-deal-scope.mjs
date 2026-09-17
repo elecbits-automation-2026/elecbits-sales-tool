@@ -9,7 +9,7 @@
 // Two live deals on one company is the case to hold onto. Everything here
 // is that case.
 
-import { belongsToDeal } from "../src/lib/scope.ts";
+import { belongsToDeal, dealContact } from "../src/lib/scope.ts";
 
 let pass = 0, fail = 0;
 const results = [];
@@ -71,6 +71,29 @@ const both = [dpb, ups, dead, solo];
   check("no deal → false", !belongsToDeal({ dealId: "x" }, null, both), true);
   check("no deals list → lone-deal fallback, never a crash", belongsToDeal({ dealId: "" }, dpb, undefined), true);
   check("a record with no company still matches its own deal", belongsToDeal({ dealId: "deal-dpb" }, dpb, both), true);
+}
+
+/* 8 — the same rule decides a project's POC: the deal's own person wins,
+       and only a company with one project inherits the company contact */
+{
+  const rakesh = { id: "c-rakesh", companyId: SCHNEIDER, name: "Rakesh", role: "R&D lead", isPrimary: false };
+  const priya  = { id: "c-priya",  companyId: SCHNEIDER, name: "Priya",  role: "Procurement", isPrimary: true };
+  const people = [rakesh, priya];
+  const comp = { id: SCHNEIDER, contactPerson: "Reception", designation: "" };
+  const pick = (deal) => dealContact(deal, comp, people);
+
+  check("a deal with its own POC gets that person",
+    pick({ ...dpb, contactId: "c-rakesh" }).name === "Rakesh", pick({ ...dpb, contactId: "c-rakesh" }));
+  check("…and its sibling gets ITS person, not Rakesh",
+    pick({ ...ups, contactId: "c-priya" }).name === "Priya", pick({ ...ups, contactId: "c-priya" }));
+  check("a deal naming nobody falls back to the company primary",
+    pick(dpb).name === "Priya" && pick(dpb).inherited === true, pick(dpb));
+  check("the fallback is flagged inherited, so the UI can say so",
+    pick(dpb).inherited === true, pick(dpb));
+  check("with no contacts at all, the company's own field answers",
+    dealContact(dpb, comp, []).name === "Reception", dealContact(dpb, comp, []));
+  check("a contact from another company is never picked",
+    dealContact(solo, { id: HONEYWELL }, people) === null, dealContact(solo, { id: HONEYWELL }, people));
 }
 
 for (const [state, name, got] of results) {

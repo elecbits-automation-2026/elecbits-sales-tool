@@ -60,7 +60,7 @@ const degraded = new Set<string>();
 // selects; RLS decides what the signed-in person may see.
 export async function loadWorkspace() {
   const [
-    people, details, orgs, orgDetails, activities,
+    people, details, orgs, contacts, orgDetails, activities,
     deals, moves, targets, trainings, worklogs,
     knowledge, expenses, scrums, memory, gates,
     tasks, llds, questionSets, requests, dealStages, tempMoves, rfqLinks,
@@ -68,6 +68,7 @@ export async function loadWorkspace() {
     rows(tbl(supabase, "people").select("*"), "people"),
     rows(tbl(supabase, "people_detail").select("*"), "people_detail"),
     rows(tbl(supabase, "orgs").select("*"), "orgs"),
+    tbl(supabase, "contacts").select("*").then((r: any) => r.data || []),
     rows(tbl(supabase, "org_detail").select("*"), "org_detail"),
     rows(tbl(supabase, "org_activities").select("*").order("at"), "org_activities"),
     rows(tbl(supabase, "deals").select("*"), "deals"),
@@ -190,6 +191,8 @@ export async function loadWorkspace() {
     value: Number(d.value || 0), stage: d.stage,
     // 31-deal-product.sql — "" not null, so the input binds to a string.
     product: d.product || "",
+    // 32-deal-contacts.sql — this project's own person and its own background.
+    contactId: d.contact_id || "", context: d.context || "",
     createdAt: d.created_at, updatedAt: d.updated_at,
     lost: d.lost, lostInfo: d.lost ? { summary: d.lost_note || "" } : undefined,
     history: movesByDeal.get(d.id) || [],
@@ -302,12 +305,16 @@ export async function loadWorkspace() {
 
   const rfqOut = rfqLinks.map(rfqLinkOut);
 
+  // Client-side people. core.contacts is shared and SELECT-only to this tool;
+  // writes go through sales.upsert_contact (32-deal-contacts.sql).
+  const contactsOut = contacts.map(contactOut);
+
   return {
     users, companies, deals: dealsOut, kpis, trainings: trainingsOut,
     worklogs: worklogsOut, knowledge: knowledgeOut, expenses: expensesOut,
     scrums: scrumsOut, memory: memoryOut, gates: gatesOut,
     tasks: tasksOut, llds: lldsOut, questionSets: qsetsOut, requests: requestsOut,
-    rfq: rfqOut, corePeople,
+    rfq: rfqOut, corePeople, contacts: contactsOut,
   };
 }
 
@@ -538,14 +545,15 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
     value: Number(d.value || 0), stage: d.stage, lost: !!d.lost,
     lost_note: (d.lostInfo && d.lostInfo.summary) || null,
     product: d.product || null,
+    contact_id: d.contactId || null, context: d.context || null,
     created_at: d.createdAt, updated_at: d.updatedAt,
   }));
   // `product` arrives with 31-deal-product.sql — on a database that hasn't
   // run it, retry without the column rather than failing every deal save.
   let r1 = await tbl(supabase, "deals").upsert(dealRows, { onConflict: "id" });
-  if (r1.error && /product|column/i.test(r1.error.message || "")) {
+  if (r1.error && /product|contact_id|context|column/i.test(r1.error.message || "")) {
     r1 = await tbl(supabase, "deals")
-      .upsert(dealRows.map(({ product, ...rest }) => rest), { onConflict: "id" });
+      .upsert(dealRows.map(({ product, contact_id, context, ...rest }) => rest), { onConflict: "id" });
   }
   let allOk = ok(r1.error, "syncDeals.deals");
 
@@ -699,6 +707,44 @@ export async function removeFromRoster(personId: string): Promise<boolean> {
 export async function setRequestOvertake(id: string, overtake: string): Promise<boolean> {
   const { error } = await tbl(supabase, "requests").update({ overtake }).eq("id", id);
   return ok(error, "setRequestOvertake");
+}
+
+/* ---------- client contacts (32-deal-contacts.sql) ----------
+   One company, several projects, different people on each. core.contacts is
+   the shared home for them — SELECT-only to this tool, so every write goes
+   through the SECURITY DEFINER RPCs, exactly like the roster. */
+
+const contactOut = (c: any) => ({
+  id: c.id, companyId: c.org_id || "", name: c.name || "",
+  role: c.role || "", email: c.email || "", phone: c.phone || "",
+  isPrimary: !!c.is_primary, notes: c.notes || "",
+  createdAt: c.created_at,
+});
+
+/** Re-read a company's people (after adding or editing one). */
+export async function loadContacts(orgId?: string): Promise<any[] | null> {
+  let q = tbl(supabase, "contacts").select("*");
+  if (orgId) q = q.eq("org_id", orgId);
+  const { data, error } = await q;
+  if (error) { console.error("loadContacts", error.message); return null; }
+  return (data || []).map(contactOut);
+}
+
+/** Add or edit a client contact. Returns its id, or null. */
+export async function saveContact(c: any): Promise<string | null> {
+  const { data, error } = await supabase.rpc(RPC.upsertContact, {
+    p_id: c.id || null, p_org: c.companyId, p_name: c.name || "",
+    p_role: c.role || null, p_email: c.email || null, p_phone: c.phone || null,
+    p_primary: !!c.isPrimary, p_notes: c.notes || null,
+  });
+  if (error) { console.error("saveContact", error.message); return null; }
+  return (data as string) || c.id || null;
+}
+
+/** Remove a contact. Deals pointing at it fall back to the company primary. */
+export async function deleteContact(id: string, orgId: string): Promise<boolean> {
+  const { error } = await supabase.rpc(RPC.deleteContact, { p_id: id, p_org: orgId });
+  return ok(error, "deleteContact");
 }
 
 // Remove a deal outright — for the duplicate that gets opened twice, or the

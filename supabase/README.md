@@ -46,8 +46,9 @@ whole thing rolls back and the database is untouched.
 | 16 | **`29-memory-vectors.sql`** | the DMP brain: `vector` extension, `sales.memory_chunks` (pgvector 512), `match_memory` + full-text fallback — fed by /api/memory from the Drive DMP folder |
 | 17 | **`30-sop-ids.sql`** | SOP v2.0 IDs: `sales.sop_counters` + `next_sop_id()` (EB-C-YY-nnnn, January reset, floored at the master register) and `sales.intake_sessions` — the save-progress store for the chat that creates a client |
 | 18 | **`31-deal-product.sql`** | `product` on `sales.deals` — the two or three words naming what a deal is for, so several live deals on one company are told apart on the board |
+| 19 | **`32-deal-contacts.sql`** | `contact_id` + `context` on `sales.deals`, `sales.upsert_contact`/`delete_contact` (SECURITY DEFINER, the sanctioned way into shared `core.contacts`), and a backfill of each company's single contact into `core.contacts` as its primary |
 
-Steps 10–18 are also bundled as **`RUN-THIS-phase4.sql`** (23 through 31, one
+Steps 10–19 are also bundled as **`RUN-THIS-phase4.sql`** (23 through 32, one
 paste, same idempotence rules).
 
 ### Step 5 is a real trap
