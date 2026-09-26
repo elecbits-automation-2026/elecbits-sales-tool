@@ -3495,6 +3495,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   // steps" modal, the "Suggest tasks" button); they are just never taken on
   // the user's behalf. Your list is yours until you ask for help with it.
   const [newTask, setNewTask] = useState({ title: "", due: "", assignee: "" });
+  // Deleting arms first and deletes second, and looking away disarms it —
+  // the same two-step My Tasks uses, because deleteTask hits the database
+  // with no undo. Completing a task is NOT here: that needs evidence, and
+  // evidence is checked in My Tasks.
+  const [armDel, setArmDel] = useState(null);
+  useEffect(() => { if (!armDel) return; const h = setTimeout(() => setArmDel(null), 4000); return () => clearTimeout(h); }, [armDel]);
 
   // When the step's task closes in My Tasks (evidence checked there), the
   // committed step marks itself done here — one loop, no second click.
@@ -3889,6 +3895,15 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                       onChange={(e) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, due: e.target.value } : x)))}
                       className={cls("text-[10px] font-mono border border-transparent hover:border-slate-300 focus:border-blue-400 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem] cursor-pointer",
                         late ? "text-red-600 font-semibold" : "text-slate-500")} />
+                    {/* remove a task that should not exist. Not "done" —
+                        done is claimed in My Tasks, against evidence. */}
+                    {(me.role === "admin" || t.assignee === me.id || t.author === me.id || d.ownerId === me.id) && (
+                      armDel === t.id
+                        ? <button onClick={() => { deleteTask(t.id); saveTasks(tasks.filter((x) => x.id !== t.id)); setArmDel(null); }}
+                            className="text-[10px] font-semibold text-red-600 hover:underline flex-none">delete?</button>
+                        : <button onClick={() => setArmDel(t.id)} title="Remove this task"
+                            className="text-slate-300 hover:text-red-600 flex-none"><X size={11} /></button>
+                    )}
                   </div>
                 );
               })}
@@ -3917,7 +3932,10 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 <Btn size="sm" disabled={!newTask.title.trim()} onClick={addTask}>Add</Btn>
               </div>
 
-              <p className="text-[10.5px] text-slate-400 pt-1">Completed only from My Tasks — the AI checks the evidence there, and this list updates itself.</p>
+              <p className="text-[10.5px] text-slate-400 pt-1">
+                Tick them off in <b>My Tasks</b> — that is where the evidence is checked, and this list updates itself.
+                The × here removes a task that should never have existed; it does not mark it done.
+              </p>
             </div>
             </div>
           </div>
