@@ -2906,38 +2906,12 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
       : x));
     saveDeals(moved);
     onClose();
-    // Reaching a phase writes its opening moves — no confirmation, chat-bot
-    // style. The step and tasks land in the deal, the scrum book, My Tasks.
-    if (saveTasks && ["cold", "warm", "rfq", "hot"].includes(move.to)) {
-      askClaude(stageKickoffSystem(d, comp, move.to, evRef.current + "\nJust moved because: " + summary, data.contacts),
-        [{ role: "user", content: "Write the kickoff." }], { maxTokens: 500 })
-        .then((reply) => {
-          const v = extractMarkedJSON(reply, "KICKOFF_JSON");
-          if (!v) return;
-          const rows = [];
-          if (v.next_step && v.next_step.what && !(d.nextStep && !d.nextStepDoneAt)) {
-            const what = String(v.next_step.what);
-            const due = v.next_step.due ? v.next_step.due + "T18:30" : "";
-            saveNextStep(d.id, { what, due, owner: d.ownerId });
-            saveDeals(moved.map((x) => (x.id === d.id
-              ? { ...x, nextStep: what, nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" } : x)));
-            // the step's own task, always
-            if (!openTaskDupe(data.tasks, d.companyId, what, d.id)) rows.push({
-              id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: what,
-              details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-              due: v.next_step.due || "", status: "open", source: "step",
-              createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" });
-          }
-          const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title)
-            .filter((t) => !openTaskDupe([...rows, ...(data.tasks || [])], d.companyId, t.title, d.id)).slice(0, 4);
-          rows.push(...list.map((t) => ({
-            id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
-            title: String(t.title), details: "Raised when the deal reached " + move.to + ".", due: t.due || "",
-            status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "",
-          })));
-          if (rows.length) saveTasks([...rows, ...(data.tasks || [])]);
-        }).catch(() => { /* the move itself already stands */ });
-    }
+    // Reaching a phase used to make the AI write an opening step and up to
+    // four tasks here, unasked. That is where most of the noise came from —
+    // a move to Cold quietly produced "Research X's current project needs"
+    // and three neighbours of it. The move is the move; what to do about it
+    // is the salesperson's call, with "Suggest tasks" in the deal room when
+    // they want a second opinion.
   };
 
   return (
@@ -3484,7 +3458,7 @@ const realignSystem = (d, comp, step, taskLines, ev, contacts) => [
   "OPEN TASKS ON THE DEAL:\n" + (taskLines || "(none)"),
   "THE RECORD (newest first):\n" + (ev || "(thin)"),
   "Rebuild the list into the SHARPEST minimal set that carries the step and this phase:",
-  "• merge duplicates and near-duplicates (drop the extras) • drop obsolete or irrelevant ones • fix vague titles to action-first and specific • fix dues into a realistic order • add what is missing (max 3). Never drop a task marked [in progress].",
+  "• merge duplicates and near-duplicates (drop the extras) • drop obsolete or irrelevant ones • fix vague titles to action-first and specific • fix dues into a realistic order • add what is missing (max 3). NEVER drop a task marked [in progress] or [written by the user] — those are theirs, not yours to tidy; you may retitle or re-date them, nothing more.",
   'Reply with ONE short line of reasoning, then exactly: REALIGN_JSON {"summary":"what changed, one line","ops":[{"op":"drop","task":"title, close to verbatim"} | {"op":"retitle","task":"old title","title":"new title"} | {"op":"due","task":"title","due":"YYYY-MM-DD"} | {"op":"add","title":"...","due":"YYYY-MM-DD"}]}',
   "Emit ops ONLY for changes — untouched tasks need no op. An already-clean list gets an empty ops array.",
 ].join("\n");
@@ -3514,45 +3488,13 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  // The AI thinks the step itself: opening a deal that has NO committed next
-  // step makes it write one from the record — with its task — and the chat on
-  // the right is where you improvise it. Once per open, silent on failure.
-  const [drafting, setDrafting] = useState(false);
-  const draftedRef = useRef("");
-  useEffect(() => {
-    const dd = deals.find((x) => x.id === dealId);
-    if (!dd || dd.lost || dd.stage === "po") return;
-    if (dd.nextStep && !dd.nextStepDoneAt) return;
-    if (draftedRef.current === dealId) return;
-    draftedRef.current = dealId;
-    const cc = companies.find((x) => x.id === dd.companyId);
-    setDrafting(true);
-    askClaude(stageKickoffSystem(dd, cc, dd.temperature || "cold", dealEvidence(dd, cc, tasks, touches, commits, deals), data.contacts),
-      [{ role: "user", content: "Write the kickoff." }], { maxTokens: 500 })
-      .then((reply) => {
-        const v = extractMarkedJSON(reply, "KICKOFF_JSON");
-        if (!v || !v.next_step || !v.next_step.what) return;
-        const what = String(v.next_step.what);
-        const due = v.next_step.due ? v.next_step.due + "T18:30" : "";
-        saveNextStep(dd.id, { what, due, owner: dd.ownerId });
-        saveDeals(deals.map((x) => (x.id === dd.id ? { ...x, nextStep: what, nextStepDue: due, nextStepOwner: dd.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x)));
-        const rows = [];
-        if (!openTaskDupe(tasks, dd.companyId, what, dd.id)) rows.push({
-          id: uid(), companyId: dd.companyId, dealId: dd.id, assignee: dd.ownerId || me.id, author: me.id, title: what,
-          details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-          due: v.next_step.due || "", status: "open", source: "step",
-          createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" });
-        const list = (Array.isArray(v.tasks) ? v.tasks : []).filter((t) => t && t.title)
-          .filter((t) => !openTaskDupe([...rows, ...tasks], dd.companyId, t.title, dd.id)).slice(0, 3);
-        rows.push(...list.map((t) => ({
-          id: uid(), companyId: dd.companyId, dealId: dd.id, assignee: dd.ownerId || me.id, author: me.id,
-          title: String(t.title), details: "Planned for the " + (dd.temperature || "cold") + " phase.", due: t.due || "",
-          status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" })));
-        if (rows.length) saveTasks([...rows, ...tasks]);
-      })
-      .catch(() => { /* the chat on the right can still write it */ })
-      .finally(() => setDrafting(false));
-  }, [deals, dealId]);
+  // NOTHING IS WRITTEN UNASKED. Opening a deal used to make the AI invent a
+  // next step and three or four tasks from the record — which is where
+  // "Research Tesla's current project needs" and its near-duplicates came
+  // from. The suggestions are still one click away (the "next prospect
+  // steps" modal, the "Suggest tasks" button); they are just never taken on
+  // the user's behalf. Your list is yours until you ask for help with it.
+  const [newTask, setNewTask] = useState({ title: "", due: "", assignee: "" });
 
   // When the step's task closes in My Tasks (evidence checked there), the
   // committed step marks itself done here — one loop, no second click.
@@ -3570,6 +3512,25 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
+
+  // A task the user wrote, for whoever they chose. source:"manual" keeps it
+  // visibly distinct from anything the AI proposed.
+  const addTask = () => {
+    const title = newTask.title.trim();
+    if (!title) return;
+    const assignee = newTask.assignee || d.ownerId || me.id;
+    if (openTaskDupe(tasks, d.companyId, title, d.id)) {
+      setNewTask({ title: "", due: "", assignee });
+      return;                       // already on this deal — nothing to add
+    }
+    saveTasks([{
+      id: uid(), companyId: d.companyId, dealId: d.id, assignee, author: me.id,
+      title, details: "", due: newTask.due || "", status: "open", source: "manual",
+      createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {},
+      escalated: false, branchedFrom: "",
+    }, ...tasks]);
+    setNewTask({ title: "", due: "", assignee });
+  };
 
   // The duplicate deal — opened twice, or brought in twice by a migration.
   // Typing the code is the guard: this cannot be undone, and the deal's own
@@ -3693,7 +3654,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     setRealigning(true); setRealignNote("");
     try {
       const open = tasks.filter((t) => t.status !== "done" && (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId)));
-      const lines = open.map((t) => "• " + t.title + (t.due ? " (due " + fmtDate(t.due) + ")" : " (no date)") + (t.status === "doing" ? " [in progress]" : "")).join("\n");
+      const lines = open.map((t) => "• " + t.title + (t.due ? " (due " + fmtDate(t.due) + ")" : " (no date)")
+        + (t.status === "doing" ? " [in progress]" : "")
+        + (t.source === "manual" ? " [written by the user]" : "")).join("\n");
       const stepLine = d.nextStep && !d.nextStepDoneAt ? d.nextStep + (d.nextStepDue ? " (by " + fmtDate(d.nextStepDue) + ")" : "") : "";
       // A long task list needs a long answer — a tight budget truncated the
       // JSON mid-op and looked like "no brain". Budget scales, timeout too.
@@ -3708,7 +3671,11 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
         try {
           if (op.op === "drop" && op.task) {
             const t0 = matchIn(next, op.task);
-            if (t0 && t0.status !== "doing") { deleteTask(t0.id); next = next.filter((x) => x.id !== t0.id); dropped++; }
+            // Never delete a task a person wrote, and never one already
+            // started. The realigner exists to tidy its own suggestions.
+            if (t0 && t0.status !== "doing" && t0.source !== "manual") {
+              deleteTask(t0.id); next = next.filter((x) => x.id !== t0.id); dropped++;
+            }
           }
           if (op.op === "retitle" && op.task && op.title) {
             const t0 = matchIn(next, op.task);
@@ -3720,7 +3687,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
           }
           if (op.op === "add" && op.title && !openTaskDupe(next, d.companyId, op.title, d.id)) {
             next = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
-              title: String(op.title), details: "From Generate tasks — aligned to the step and the record.", due: op.due || "",
+              title: String(op.title), details: "Suggested by the AI — aligned to the step and the record.", due: op.due || "",
               status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...next];
             added++;
           }
@@ -3873,7 +3840,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
               </div>
             </div>
             {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
-            {ns.key === "none" && (drafting
+            {ns.key === "none" && (false
               ? <p className="text-xs text-blue-700 mt-2 leading-relaxed flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> The AI is reading the record and writing the next step — improvise it in the chat on the right.</p>
               : <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed — tell the chat on the right where this stands and it writes the step itself.</p>)}
             {d.nextStep && !d.nextStepDoneAt && (
@@ -3886,10 +3853,11 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             <div className="mt-3 pt-2.5 border-t border-slate-200/70">
             <div className="flex items-center gap-2">
               <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mr-auto">Tasks under this step{dealTasks.length ? " · " + dealTasks.length : ""}</p>
-              {/* repeatable: every click audits the whole set and realigns it */}
+              {/* The ONLY way the AI adds tasks: asked for, by this button. It
+                  audits what is already here and fills the gaps. */}
               <button onClick={realignTasks} disabled={realigning}
                 className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                {realigning ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} Generate tasks
+                {realigning ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} Suggest tasks
               </button>
             </div>
             {realignNote && <p className="text-[10.5px] text-slate-500 mt-1">{realignNote}</p>}
@@ -3904,7 +3872,17 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                       {t.source === "stage" && <span className="ml-1.5 text-[9.5px] uppercase text-blue-500">stage</span>}
                       {t.source === "scrum" && <span className="ml-1.5 text-[9.5px] uppercase text-purple-500">scrum</span>}
                     </span>
-                    {who && who.id !== me.id && <span className="text-[10px] text-slate-400 flex-none">{who.name}</span>}
+                    {/* who is doing it — several people work one project, so
+                        this is a picker, not a label */}
+                    <select value={t.assignee || ""} title={"Assigned to " + (who ? who.name : "nobody")}
+                      onChange={(e) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, assignee: e.target.value } : x)))}
+                      className={cls("text-[10px] border border-transparent hover:border-slate-300 focus:border-blue-400 rounded px-0.5 py-0 bg-transparent flex-none max-w-[7rem] cursor-pointer truncate",
+                        who ? "text-slate-500" : "text-amber-600")}>
+                      {!who && <option value="">unassigned</option>}
+                      {users.filter((u) => u.active !== false).map((u) => (
+                        <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>
+                      ))}
+                    </select>
                     {late && <span className="text-[10px] font-mono font-semibold text-red-600 flex-none">overdue</span>}
                     {/* the date is editable right here */}
                     <input type="date" value={t.due || ""} title="Edit the due date"
@@ -3914,7 +3892,31 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                   </div>
                 );
               })}
-              {!dealTasks.length && <p className="text-xs text-slate-400">Nothing open — the next scrum, the next stage change, or the copilot on the right writes them.</p>}
+              {!dealTasks.length && <p className="text-xs text-slate-400">No tasks yet — add what you actually plan to do. “Suggest tasks” is there if you want the AI's view.</p>}
+
+              {/* ADD YOUR OWN — the default way tasks get here. Title, when,
+                  and who: a project runs on several people, so the assignee
+                  is chosen at the moment the task is written. */}
+              <div className="flex items-center gap-1.5 pt-1.5">
+                <Plus size={12} className="text-slate-300 flex-none" />
+                <input value={newTask.title} placeholder="Add a task…"
+                  onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === "Enter") addTask(); }}
+                  className="text-[12.5px] flex-1 min-w-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent placeholder:text-slate-300 py-0.5" />
+                <select value={newTask.assignee || d.ownerId || me.id}
+                  onChange={(e) => setNewTask({ ...newTask, assignee: e.target.value })}
+                  title="Who does it"
+                  className="text-[10px] text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none max-w-[7rem] truncate">
+                  {users.filter((u) => u.active !== false).map((u) => (
+                    <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>
+                  ))}
+                </select>
+                <input type="date" value={newTask.due} title="Due"
+                  onChange={(e) => setNewTask({ ...newTask, due: e.target.value })}
+                  className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
+                <Btn size="sm" disabled={!newTask.title.trim()} onClick={addTask}>Add</Btn>
+              </div>
+
               <p className="text-[10.5px] text-slate-400 pt-1">Completed only from My Tasks — the AI checks the evidence there, and this list updates itself.</p>
             </div>
             </div>
