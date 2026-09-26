@@ -42,9 +42,15 @@
 // row-level policy in the database; in a browser bundle it is a total breach.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const URL_ = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+// Vercel hands every environment variable to a serverless function, prefix
+// or not — VITE_ only controls what Vite inlines into the BROWSER bundle.
+// So the deployment's existing VITE_SUPABASE_* pair answers here too, and
+// nobody has to add a second copy of the same two values under a second
+// name. The service-role key is deliberately NOT read this way: it has no
+// VITE_ twin, and must never acquire one.
+const URL_ = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
+const ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
 
 const svc = { apikey: SERVICE_KEY, authorization: "Bearer " + SERVICE_KEY };
 const jsonHeaders = { ...svc, "content-type": "application/json" };

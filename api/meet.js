@@ -56,8 +56,14 @@ const IMPERSONATE = (process.env.GOOGLE_IMPERSONATE_USER || "").trim().toLowerCa
 const WORKSPACE_DOMAIN = ((process.env.GOOGLE_WORKSPACE_DOMAIN || "").trim()
   || IMPERSONATE.split("@")[1] || "").toLowerCase();
 const NOTETAKER = (process.env.FIREFLIES_NOTETAKER_EMAIL || "fred@fireflies.ai").trim().toLowerCase();
-const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
-const SUPABASE_ANON = process.env.SUPABASE_ANON_KEY || "";
+// Vercel hands every environment variable to a serverless function, prefix
+// or not — VITE_ only controls what Vite inlines into the BROWSER bundle.
+// So the deployment's existing VITE_SUPABASE_* pair answers here too, and
+// nobody has to add a second copy of the same two values under a second
+// name. The service-role key is deliberately NOT read this way: it has no
+// VITE_ twin, and must never acquire one.
+const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
+const SUPABASE_ANON = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
 
 /* ── service account: the same parsing api/drive.js uses ──────────────────
    Kept as its own copy rather than shared, because a serverless function that
