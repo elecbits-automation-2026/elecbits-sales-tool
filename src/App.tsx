@@ -22,7 +22,7 @@ import {
   loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact, schemaGaps,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
-import { belongsToDeal, dealContact, contactLine, nextStepState } from "./lib/scope";
+import { belongsToDeal, soleDealId, dealContact, contactLine, nextStepState } from "./lib/scope";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
   askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
@@ -298,6 +298,37 @@ const nowHM = () => new Date().toTimeString().slice(0, 5);
 const tsDaysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
 const dateDaysAgo = (n) => localISO(new Date(Date.now() - n * 86400000));
 const fmtINR = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+/* ─── ONE DEFINITION OF A TASK ─────────────────────────────────────────────
+   Fourteen places built this row by hand, each repeating the same nine
+   housekeeping fields, and they had already drifted: the ones raised from a
+   company — the New task dialog, the company chat, the account plan, email
+   intake — hard-coded `dealId: ""`. Harmless on a client with one project;
+   on Schneider with six, belongsToDeal correctly attaches such a task to
+   none of them, so it lives in My Tasks and appears in no deal room at all.
+
+   Every creator now comes through here. A task that means to be
+   company-wide still passes no dealId — the difference is that it is now a
+   choice someone made rather than a default nobody saw.                  */
+function makeTask(t) {
+  return {
+    id: t.id || uid(),
+    companyId: t.companyId || "",
+    dealId: t.dealId || "",          // "" = company-wide, on purpose
+    assignee: t.assignee || "",
+    author: t.author || "",
+    title: String(t.title || "").trim(),
+    details: t.details || "",
+    due: t.due ? String(t.due).slice(0, 10) : "",
+    status: t.status || "open",
+    source: t.source || "manual",
+    createdAt: t.createdAt || nowTS(),
+    windowStart: "", windowEnd: "", work: {}, ai: {},
+    escalated: false,
+    branchedFrom: t.branchedFrom || "",
+    ...(t.scrumNoteId ? { scrumNoteId: t.scrumNoteId } : {}),
+  };
+}
+
 /* A deal is worth nothing or something; it is never worth less than
    nothing. Negatives only ever arrive by accident — a number input takes a
    stray ↓ or a scroll and turns blank into -1 — and one of them poisons
@@ -2417,6 +2448,87 @@ function dealEvidence(deal, comp, tasks, touches, commits, deals) {
 const PRODUCT_MAX = 40;
 const dealProduct = (d) => String((d && d.product) || "").trim();
 
+/* ─── THE ONE FORM FOR WRITING A TASK ──────────────────────────────────────
+   There were two, and that was the real duplication — not the two buttons.
+   The deal room's asked for a title, a person and a date; My Tasks' asked
+   for a title, a COMPANY, a date and a person, and had no way to name a
+   project at all. Two forms disagreeing about what a task is, drifting
+   apart every time one of them was touched.
+
+   One component, two shapes:
+
+     stacked  the New task dialog — company and project are asked for
+     compact  one line inside a deal room, where both are already known,
+              so it asks only what is left
+
+   `scope` carries {companyId, dealId}: pass it and the two selects vanish
+   because the answer is not in doubt.                                     */
+function TaskFields({ f, setF, users, companies, deals, me, scope, compact, onSubmit }) {
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  // Only live projects: nobody assigns work to a deal that is closed or lost.
+  const live = (deals || []).filter((x) => x.companyId === f.companyId && !x.lost && x.stage !== "po");
+  const people = (users || []).filter((u) => u.active !== false);
+  const canPick = me.role !== "agent";
+
+  if (compact) {
+    return (
+      <div className="flex items-center gap-1.5 pt-1.5">
+        <Plus size={12} className="text-slate-300 flex-none" />
+        <input value={f.title} placeholder="Add a task… (+ on a task adds a sub-task under it)"
+          onChange={set("title")} onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
+          className="text-[12.5px] flex-1 min-w-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent placeholder:text-slate-300 py-0.5" />
+        <select value={f.assignee || (scope && scope.ownerId) || me.id} onChange={set("assignee")} title="Who does it"
+          className="text-[10px] text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none max-w-[7rem] truncate">
+          {people.map((u) => <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>)}
+        </select>
+        <input type="date" value={f.due} onChange={set("due")} title="Due"
+          className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
+        <Btn size="sm" disabled={!f.title.trim()} onClick={onSubmit}>Add</Btn>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <Field label="Task" req>
+        <Input value={f.title} onChange={set("title")} placeholder="Call Rahul about the pilot PO" />
+      </Field>
+      {!scope && (<>
+        <Field label="Company">
+          <Sel value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value, dealId: "" })}>
+            <option value="">— none —</option>
+            {(companies || []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Sel>
+        </Field>
+        {/* The field that was missing. A client with several live projects
+            needs to be asked which one, or the task lands on the company
+            and shows in none of their deal rooms. */}
+        {!!f.companyId && (
+          <Field label="Project"
+            hint={live.length > 1
+              ? "This client has " + live.length + " live projects. Pick one, or leave it company-wide if the task really spans all of them."
+              : live.length === 1 ? "The client's only live project — it will be filed there." : ""}>
+            {live.length
+              ? <Sel value={f.dealId} onChange={set("dealId")}>
+                  <option value="">{live.length === 1 ? live[0].did + (dealProduct(live[0]) ? " · " + dealProduct(live[0]) : "") : "— company-wide (all projects) —"}</option>
+                  {live.map((x) => <option key={x.id} value={x.id}>{x.did}{dealProduct(x) ? " · " + dealProduct(x) : ""}</option>)}
+                </Sel>
+              : <p className="text-xs text-slate-400">No live project on this client — the task stays company-wide.</p>}
+          </Field>
+        )}
+      </>)}
+      <Field label="Due"><Input type="date" value={f.due} onChange={set("due")} /></Field>
+      {canPick && (
+        <Field label="Assignee">
+          <Sel value={f.assignee} onChange={set("assignee")}>
+            {people.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </Sel>
+        </Field>
+      )}
+    </div>
+  );
+}
+
 /* EXPLORATORY is not a phase — it is something people write in "What are we
    building?", as in "Exploratory Stage (SE France)". No column, no schema:
    the board just needs a way to show only those, so the test reads the same
@@ -3097,10 +3209,9 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
           done.push("✓ committed: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
           // every step carries its task
           if (!openTaskDupe(nextTasks, d.companyId, a.what, d.id)) {
-            nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: a.what,
+            nextTasks = [makeTask({ companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: a.what,
               details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-              due: a.due || "", status: "open", source: "step",
-              createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
+              due: a.due, source: "step" }), ...nextTasks];
           }
         }
         if ((a.type === "task_done" || a.type === "activity_done") && (a.task || a.activity)) {
@@ -3140,9 +3251,8 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
           if (openTaskDupe(nextTasks, d.companyId, a.title, d.id)) {
             done.push("· already open, not duplicated: " + a.title);
           } else {
-            nextTasks = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
-              title: a.title, details: "From the Deal Room", due: a.due || todayStr(), status: "open", source: "chat",
-              createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
+            nextTasks = [makeTask({ companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
+              title: a.title, details: "From the Deal Room", due: a.due || todayStr(), source: "chat" }), ...nextTasks];
             done.push("✓ task: " + a.title);
           }
         }
@@ -3529,14 +3639,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     const title = subTitle.trim();
     if (!title) return;
     if (!openTaskDupe(tasks, d.companyId, title, d.id)) {
-      saveTasks([{
-        id: uid(), companyId: d.companyId, dealId: d.id,
+      saveTasks([makeTask({
+        companyId: d.companyId, dealId: d.id,
         assignee: parent.assignee || d.ownerId || me.id, author: me.id,
-        title, details: "Sub-task of: " + parent.title, due: parent.due || "",
-        status: "open", source: "manual", createdAt: nowTS(),
-        windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false,
+        title, details: "Sub-task of: " + parent.title, due: parent.due,
         branchedFrom: parent.id,
-      }, ...tasks]);
+      }), ...tasks]);
     }
     setSubTitle(""); setSubFor(null);
   };
@@ -3551,12 +3659,8 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
       setNewTask({ title: "", due: "", assignee });
       return;                       // already on this deal — nothing to add
     }
-    saveTasks([{
-      id: uid(), companyId: d.companyId, dealId: d.id, assignee, author: me.id,
-      title, details: "", due: newTask.due || "", status: "open", source: "manual",
-      createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {},
-      escalated: false, branchedFrom: "",
-    }, ...tasks]);
+    saveTasks([makeTask({ companyId: d.companyId, dealId: d.id, assignee, author: me.id,
+      title, due: newTask.due }), ...tasks]);
     setNewTask({ title: "", due: "", assignee });
   };
 
@@ -3705,19 +3809,18 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             if (t0) { next = next.map((x) => (x.id === t0.id ? { ...x, due: String(op.due) } : x)); edited++; }
           }
           if (op.op === "add" && op.title && !openTaskDupe(next, d.companyId, op.title, d.id)) {
-            next = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
-              title: String(op.title), details: "Suggested by the AI — aligned to the step and the record.", due: op.due || "",
-              status: "open", source: "stage", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...next];
+            next = [makeTask({ companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
+              title: String(op.title), details: "Suggested by the AI — aligned to the step and the record.",
+              due: op.due, source: "stage" }), ...next];
             added++;
           }
         } catch (e) { /* one bad op never sinks the pass */ }
       }
       // the committed step must exist as a task, always
       if (d.nextStep && !d.nextStepDoneAt && !matchIn(next, d.nextStep)) {
-        next = [{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.nextStepOwner || d.ownerId || me.id, author: me.id,
+        next = [makeTask({ companyId: d.companyId, dealId: d.id, assignee: d.nextStepOwner || d.ownerId || me.id, author: me.id,
           title: d.nextStep, details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-          due: d.nextStepDue ? String(d.nextStepDue).slice(0, 10) : "", status: "open", source: "step",
-          createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...next];
+          due: d.nextStepDue, source: "step" }), ...next];
         added++;
       }
       if (dropped + edited + added > 0) saveTasks(next);
@@ -3742,6 +3845,11 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const subsOf = (id) => dealOpen.filter((t) => t.branchedFrom === id);
   const roots = dealOpen.filter((t) => !t.branchedFrom || !openIds.has(t.branchedFrom)).slice(0, 8);
   const dealTasks = roots.flatMap((r) => [r, ...subsOf(r.id)]);
+  // Company-level tasks that reach no deal room because this client runs
+  // more than one project. Empty by definition on a single-project client:
+  // there, belongsToDeal already shows them in the list above.
+  const orphans = tasks.filter((t) => t.status !== "done" && !t.dealId
+    && t.companyId && t.companyId === d.companyId && !belongsToDeal(t, d, deals));
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 overflow-y-auto" onClick={onClose}>
       <div className="max-w-5xl mx-auto my-4 md:my-8 bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -3945,28 +4053,37 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
               ))}
               {!dealTasks.length && <p className="text-xs text-slate-400">No tasks yet — add what you actually plan to do, and break any of them into sub-tasks with the +. “Suggest tasks” is there if you want the AI's view.</p>}
 
-              {/* ADD YOUR OWN — the default way tasks get here. Title, when,
-                  and who: a project runs on several people, so the assignee
-                  is chosen at the moment the task is written. */}
-              <div className="flex items-center gap-1.5 pt-1.5">
-                <Plus size={12} className="text-slate-300 flex-none" />
-                <input value={newTask.title} placeholder="Add a task… (+ on a task adds a sub-task under it)"
-                  onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
-                  onKeyDown={(e) => { if (e.key === "Enter") addTask(); }}
-                  className="text-[12.5px] flex-1 min-w-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent placeholder:text-slate-300 py-0.5" />
-                <select value={newTask.assignee || d.ownerId || me.id}
-                  onChange={(e) => setNewTask({ ...newTask, assignee: e.target.value })}
-                  title="Who does it"
-                  className="text-[10px] text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none max-w-[7rem] truncate">
-                  {users.filter((u) => u.active !== false).map((u) => (
-                    <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>
+              {/* STRANDED WORK. Tasks raised against the company with no
+                  project on them. On a client with one live deal they
+                  already show above, via the lone-deal fallback; with
+                  several, they belong to none and are invisible in every
+                  deal room. Rather than guess, show them here and let one
+                  click claim them — and never presume they are all ours. */}
+              {orphans.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-dashed border-amber-200">
+                  <p className="text-[10.5px] font-bold uppercase tracking-wide text-amber-600">
+                    {orphans.length} task{orphans.length === 1 ? "" : "s"} on {comp ? comp.name : "this client"} with no project
+                  </p>
+                  <p className="text-[10.5px] text-slate-400 mb-1">
+                    This client has several live projects, so these sit on none of them. Claim any that belong here.
+                  </p>
+                  {orphans.slice(0, 5).map((t) => (
+                    <div key={t.id} className="flex items-center gap-2 py-0.5">
+                      <span className="text-[12px] text-slate-600 mr-auto truncate">{t.title}</span>
+                      {t.due && <span className="text-[10px] font-mono text-slate-400 flex-none">{fmtDate(t.due)}</span>}
+                      <button onClick={() => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, dealId: d.id } : x)))}
+                        className="text-[11px] text-blue-600 hover:underline flex-none">→ this project</button>
+                    </div>
                   ))}
-                </select>
-                <input type="date" value={newTask.due} title="Due"
-                  onChange={(e) => setNewTask({ ...newTask, due: e.target.value })}
-                  className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
-                <Btn size="sm" disabled={!newTask.title.trim()} onClick={addTask}>Add</Btn>
-              </div>
+                  {orphans.length > 5 && <p className="text-[10.5px] text-slate-400">…and {orphans.length - 5} more.</p>}
+                </div>
+              )}
+
+              {/* ADD YOUR OWN — the same TaskFields the New task dialog uses,
+                  in its one-line shape. Company and project are not asked
+                  because this room IS the answer to both. */}
+              <TaskFields compact f={newTask} setF={setNewTask} users={users} me={me}
+                scope={{ companyId: d.companyId, dealId: d.id, ownerId: d.ownerId }} onSubmit={addTask} />
 
               <p className="text-[10.5px] text-slate-400 pt-1">
                 Completed — and removed — from <b>My Tasks</b>: that is where the evidence is checked, and this list updates itself.
@@ -6082,7 +6199,7 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
               const comp = byName(a.company, nextCompanies) || matchCompany(a.title, nextCompanies);
               const who = byName(a.assignee, users) || me;
               if (!openTaskDupe(nextTasks, comp ? comp.id : "", a.title))
-                nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: "", assignee: who.id, author: me.id, title: a.title, details: "Via Assistant", due: a.due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...nextTasks];
+                nextTasks = [makeTask({ companyId: comp ? comp.id : "", dealId: soleDealId(comp ? comp.id : "", deals), assignee: who.id, author: me.id, title: a.title, details: "Via Assistant", due: a.due || localISO(new Date(Date.now() + 86400000)), source: "chat" }), ...nextTasks];
               results.push("✓ task: " + a.title + (who ? " → " + who.name : ""));
             } else if (a.type === "company" && a.name && !byName(a.name, nextCompanies)) {
               // The Assistant path runs the SAME SOP pipeline as the other
@@ -6583,7 +6700,7 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
   };
   const addTask = (title, due) => {
     if (openTaskDupe(tasks, c.id, title)) return;
-    saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title, details: "", due: due || localISO(new Date(Date.now() + 86400000)), status: "open", source: "chat", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+    saveTasks([makeTask({ companyId: c.id, dealId: soleDealId(c.id, data.deals), assignee: me.id, author: me.id, title, due: due || localISO(new Date(Date.now() + 86400000)), source: "chat" }), ...tasks]);
   };
 
   const [atts, setAtts] = useState([]);
@@ -6728,7 +6845,7 @@ function PlanTab({ me, company: c, data, saveCompanies, saveTasks }) {
   };
 
   const addAction = (title) => {
-    saveTasks([{ id: uid(), companyId: c.id, dealId: "", assignee: me.id, author: me.id, title, details: "From the account plan", due: localISO(new Date(Date.now() + 86400000)), status: "open", source: "system", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+    saveTasks([makeTask({ companyId: c.id, dealId: soleDealId(c.id, data.deals), assignee: me.id, author: me.id, title, details: "From the account plan", due: localISO(new Date(Date.now() + 86400000)), source: "system" }), ...tasks]);
   };
 
   return (
@@ -6867,9 +6984,8 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
           author: me.id, link: "", driveFile: "", source: "inbox", ai: { summary: t.summary || "", gmailId: t.gmailId || "" } });
       }
       if ((v.todos || []).length) {
-        saveTasks([...(v.todos || []).map((td) => ({ id: uid(), companyId: c.id, dealId: "", assignee: c.accountOwner || me.id, author: me.id,
-          title: td.title, details: "From the client's email", due: td.due || todayStr(), status: "open", source: "comms",
-          createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" })), ...tasks]);
+        saveTasks([...(v.todos || []).map((td) => makeTask({ companyId: c.id, dealId: soleDealId(c.id, data.deals), assignee: c.accountOwner || me.id, author: me.id,
+          title: td.title, details: "From the client's email", due: td.due || todayStr(), source: "comms" })), ...tasks]);
       }
       setFetchMsg("Filed " + (v.touches || []).length + " email(s) on the record" + ((v.todos || []).length ? ", raised " + v.todos.length + " to-do(s)" : "") + (v.dropped ? " · " + v.dropped + " unrelated dropped." : "."));
       reload();
@@ -6969,10 +7085,9 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
 
   const commitToTask = async (cm) => {
     const tid = uid();
-    saveTasks([{ id: tid, companyId: c.id, dealId: "", assignee: cm.ownerId || me.id, author: me.id,
+    saveTasks([makeTask({ id: tid, companyId: c.id, dealId: cm.dealId || soleDealId(c.id, data.deals), assignee: cm.ownerId || me.id, author: me.id,
       title: cm.what, details: "Promised to " + (cm.toWhom || c.name), due: cm.due || todayStr(),
-      status: "open", source: "commitment", createdAt: nowTS(), windowStart: "", windowEnd: "",
-      work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+      source: "commitment" }), ...tasks]);
     // Stamp the link back, or the button stays and every click duplicates.
     const linked = { ...cm, taskId: tid };
     setCommits(commits.map((x) => (x.id === cm.id ? linked : x)));
@@ -8239,13 +8354,12 @@ function TaskCloseFlow({ me, data, task: t, onClose, saveTasks }) {
   };
 
   const createSubs = () => {
-    const fresh = subs.filter((s) => s.title.trim()).map((s) => ({
-      id: uid(), companyId: t.companyId || (matchCompany(s.title + " " + t.title + " " + blocker, companies) || {}).id || "",
+    const fresh = subs.filter((s) => s.title.trim()).map((s) => (makeTask({
+      companyId: t.companyId || (matchCompany(s.title + " " + t.title + " " + blocker, companies) || {}).id || "",
       dealId: t.dealId, assignee: s.assignee || t.assignee, author: me.id,
-      title: s.title.trim(), details: blocker ? "From blocker: " + blocker : "", due: todayStr(),
-      status: "open", source: "system", createdAt: nowTS(), windowStart: "", windowEnd: "",
-      work: {}, ai: {}, escalated: false, branchedFrom: t.id,
-    }));
+      title: s.title, details: blocker ? "From blocker: " + blocker : "", due: todayStr(),
+      source: "system", branchedFrom: t.id,
+    })));
     const closed = { ...t, status: "done", doneAt: nowTS(), escalated: escalate,
       work: { ...W, blocker }, ai: { ...A, brief, verdict: "branched", reasons: blocker } };
     saveTasks([...fresh, ...tasks.map((x) => (x.id === t.id ? closed : x))]);
@@ -8847,11 +8961,14 @@ function WorkWindow({ task: t, data, saveTasks, saveCompanies, onClose, onComple
    tasks), and the live task list on the right, where anything can also be
    finished by plain clicking. Same data, two doors. */
 function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies, openCompany }) {
-  const { users, companies, tasks } = data;
+  // `deals` is here so a task raised from this side can name its project —
+  // without it every task written here was company-wide, which on a client
+  // with several live projects means it reaches none of their deal rooms.
+  const { users, companies, tasks, deals } = data;
   const [scope, setScope] = useState("mine");
   const [showDone, setShowDone] = useState(false);
   const [adding, setAdding] = useState(false);
-  const [f, setF] = useState({ title: "", companyId: "", due: localISO(new Date(Date.now() + 86400000)), assignee: me.id });
+  const [f, setF] = useState({ title: "", companyId: "", dealId: "", due: localISO(new Date(Date.now() + 86400000)), assignee: me.id });
   const today = todayStr();
   const tomorrow = localISO(new Date(Date.now() + 86400000));
 
@@ -8892,7 +9009,11 @@ function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies
   useEffect(() => { if (!armDel) return; const h = setTimeout(() => setArmDel(null), 4000); return () => clearTimeout(h); }, [armDel]);
   const add = () => {
     if (!f.title.trim()) return;
-    saveTasks([{ id: uid(), companyId: f.companyId || "", dealId: "", assignee: f.assignee, author: me.id, title: f.title.trim(), details: "", due: f.due || "", status: "open", source: "manual", createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
+    // A project was pickable here; if one was not picked, the lone-deal
+    // fallback still files it correctly on a single-project client.
+    const dealId = f.dealId || soleDealId(f.companyId, deals);
+    saveTasks([makeTask({ companyId: f.companyId, dealId, assignee: f.assignee,
+      author: me.id, title: f.title, due: f.due }), ...tasks]);
     setAdding(false); setF({ ...f, title: "" });
   };
 
@@ -9043,12 +9164,7 @@ function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies
       {adding && (
         <Modal title="New task" onClose={() => setAdding(false)}
           footer={<><Btn onClick={() => setAdding(false)}>Cancel</Btn><Btn kind="primary" disabled={!f.title.trim()} onClick={add}><Check size={14} /> Add</Btn></>}>
-          <div className="space-y-3">
-            <Field label="Task" req><Input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="Call Rahul about the pilot PO" /></Field>
-            <Field label="Company"><Sel value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}><option value="">— none —</option>{companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Sel></Field>
-            <Field label="Due"><Input type="date" value={f.due} onChange={(e) => setF({ ...f, due: e.target.value })} /></Field>
-            {me.role !== "agent" && <Field label="Assignee"><Sel value={f.assignee} onChange={(e) => setF({ ...f, assignee: e.target.value })}>{users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Sel></Field>}
-          </div>
+          <TaskFields f={f} setF={setF} users={users} companies={companies} deals={deals} me={me} />
         </Modal>
       )}
       </div>
@@ -9171,10 +9287,9 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
           nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
           // every step carries its task
           if (!openTaskDupe(nextTasks, comp.id, a.what, deal ? deal.id : "")) {
-            nextTasks = [{ id: uid(), companyId: comp.id, dealId: deal.id, assignee: me.id, author: me.id, title: a.what,
+            nextTasks = [makeTask({ companyId: comp.id, dealId: deal.id, assignee: me.id, author: me.id, title: a.what,
               details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-              due: a.due || "", status: "open", source: "step",
-              createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "", scrumNoteId: sess.scrumNoteId || "" }, ...nextTasks];
+              due: a.due, source: "step", scrumNoteId: sess.scrumNoteId }), ...nextTasks];
           }
         }
         if ((a.type === "task_done" || a.type === "activity_done") && comp && (a.task || a.activity)) {
@@ -9198,9 +9313,9 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
           });
         }
         if (a.type === "task" && a.title && !openTaskDupe(nextTasks, comp ? comp.id : "", a.title, deal ? deal.id : "")) {
-          nextTasks = [{ id: uid(), companyId: comp ? comp.id : "", dealId: deal ? deal.id : "", assignee: me.id, author: me.id,
-            title: a.title, details: "From the Scrum Master check-in", due: a.due || today, status: "open", source: "scrum",
-            createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "", scrumNoteId: sess.scrumNoteId || "" }, ...nextTasks];
+          nextTasks = [makeTask({ companyId: comp ? comp.id : "", dealId: deal ? deal.id : soleDealId(comp ? comp.id : "", deals), assignee: me.id, author: me.id,
+            title: a.title, details: "From the Scrum Master check-in", due: a.due || today, source: "scrum",
+            scrumNoteId: sess.scrumNoteId }), ...nextTasks];
         }
       } catch (e) { /* one bad action never sinks the chat */ }
     }
