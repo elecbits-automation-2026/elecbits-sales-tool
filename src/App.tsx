@@ -3495,6 +3495,8 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   // steps" modal, the "Suggest tasks" button); they are just never taken on
   // the user's behalf. Your list is yours until you ask for help with it.
   const [newTask, setNewTask] = useState({ title: "", due: "", assignee: "" });
+  const [subFor, setSubFor] = useState(null);     // task id taking a sub-task
+  const [subTitle, setSubTitle] = useState("");
 
   // When the step's task closes in My Tasks (evidence checked there), the
   // committed step marks itself done here — one loop, no second click.
@@ -3512,6 +3514,67 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
+
+  // One row, drawn the same at either level — depth only shifts it right and
+  // shrinks the marker, so a sub-task is visibly subordinate without becoming
+  // a different kind of thing. Everything on it is editable in place.
+  const taskRow = (t, depth) => {
+    const who = users.find((u) => u.id === t.assignee);
+    const late = t.due && t.due < todayStr();
+    return (
+      <div key={t.id} className={cls("flex items-center gap-2", depth ? "pl-6" : "")}>
+        {depth
+          ? <span className="text-slate-300 text-[11px] flex-none leading-none">↳</span>
+          : <span className={cls("w-1.5 h-1.5 rounded-full flex-none", late ? "bg-red-500" : t.status === "doing" ? "bg-blue-500" : "bg-slate-300")} />}
+        <span className={cls("leading-snug mr-auto", depth ? "text-[12px] text-slate-600" : "text-[12.5px] text-slate-700")}>{t.title}
+          {t.source === "stage" && <span className="ml-1.5 text-[9.5px] uppercase text-blue-500">stage</span>}
+          {t.source === "scrum" && <span className="ml-1.5 text-[9.5px] uppercase text-purple-500">scrum</span>}
+        </span>
+        {/* only a top-level task can take sub-tasks — two levels, not a tree */}
+        {!depth && (
+          <button onClick={() => { setSubFor(subFor === t.id ? null : t.id); setSubTitle(""); }}
+            title="Add a sub-task under this" className="text-slate-300 hover:text-blue-600 flex-none">
+            <Plus size={11} />
+          </button>
+        )}
+        {/* who is doing it — several people work one project, so this is a
+            picker, not a label */}
+        <select value={t.assignee || ""} title={"Assigned to " + (who ? who.name : "nobody")}
+          onChange={(e) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, assignee: e.target.value } : x)))}
+          className={cls("text-[10px] border border-transparent hover:border-slate-300 focus:border-blue-400 rounded px-0.5 py-0 bg-transparent flex-none max-w-[7rem] cursor-pointer truncate",
+            who ? "text-slate-500" : "text-amber-600")}>
+          {!who && <option value="">unassigned</option>}
+          {users.filter((u) => u.active !== false).map((u) => (
+            <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>
+          ))}
+        </select>
+        {late && <span className="text-[10px] font-mono font-semibold text-red-600 flex-none">overdue</span>}
+        <input type="date" value={t.due || ""} title="Edit the due date"
+          onChange={(e) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, due: e.target.value } : x)))}
+          className={cls("text-[10px] font-mono border border-transparent hover:border-slate-300 focus:border-blue-400 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem] cursor-pointer",
+            late ? "text-red-600 font-semibold" : "text-slate-500")} />
+      </div>
+    );
+  };
+
+  // A sub-task hangs off its parent and inherits the parent's assignee and
+  // date unless the user says otherwise — the common case is "part of that,
+  // same person, same deadline".
+  const addSub = (parent) => {
+    const title = subTitle.trim();
+    if (!title) return;
+    if (!openTaskDupe(tasks, d.companyId, title, d.id)) {
+      saveTasks([{
+        id: uid(), companyId: d.companyId, dealId: d.id,
+        assignee: parent.assignee || d.ownerId || me.id, author: me.id,
+        title, details: "Sub-task of: " + parent.title, due: parent.due || "",
+        status: "open", source: "manual", createdAt: nowTS(),
+        windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false,
+        branchedFrom: parent.id,
+      }, ...tasks]);
+    }
+    setSubTitle(""); setSubFor(null);
+  };
 
   // A task the user wrote, for whoever they chose. source:"manual" keeps it
   // visibly distinct from anything the AI proposed.
@@ -3711,9 +3774,18 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   // stage. They are completed in My Tasks (where the AI checks the evidence),
   // never ticked off here. Scoped to THIS deal — a company-level task only
   // appears when there is one live deal it could belong to.
-  const dealTasks = tasks
+  // Two levels, no third. A task belongs to the deal; a sub-task belongs to
+  // a task, via the self-referencing branched_from that sales.tasks has
+  // carried since 13-task-gate.sql — so this needs no migration. An orphan
+  // (its parent closed or was deleted) is shown at the top level rather
+  // than hidden.
+  const dealOpen = tasks
     .filter((t) => t.status !== "done" && belongsToDeal(t, d, deals))
-    .sort((a, b) => ((a.due || "9999") < (b.due || "9999") ? -1 : 1)).slice(0, 8);
+    .sort((a, b) => ((a.due || "9999") < (b.due || "9999") ? -1 : 1));
+  const openIds = new Set(dealOpen.map((t) => t.id));
+  const subsOf = (id) => dealOpen.filter((t) => t.branchedFrom === id);
+  const roots = dealOpen.filter((t) => !t.branchedFrom || !openIds.has(t.branchedFrom)).slice(0, 8);
+  const dealTasks = roots.flatMap((r) => [r, ...subsOf(r.id)]);
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 overflow-y-auto" onClick={onClose}>
       <div className="max-w-5xl mx-auto my-4 md:my-8 bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -3852,7 +3924,13 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                scrums or by reaching this stage; completed only in My Tasks. */}
             <div className="mt-3 pt-2.5 border-t border-slate-200/70">
             <div className="flex items-center gap-2">
-              <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mr-auto">Tasks under this step{dealTasks.length ? " · " + dealTasks.length : ""}</p>
+              {/* Only call them "under this step" when a step is actually
+                  committed — with nothing committed the heading was naming a
+                  parent that did not exist. */}
+              <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mr-auto">
+                {ns.key === "none" || ns.key === "closed" ? "Tasks on this deal" : "Tasks under this step"}
+                {dealTasks.length ? " · " + dealTasks.length : ""}
+              </p>
               {/* The ONLY way the AI adds tasks: asked for, by this button. It
                   audits what is already here and fills the gaps. */}
               <button onClick={realignTasks} disabled={realigning}
@@ -3862,44 +3940,31 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             </div>
             {realignNote && <p className="text-[10.5px] text-slate-500 mt-1">{realignNote}</p>}
             <div className="mt-1.5 space-y-1">
-              {dealTasks.map((t) => {
-                const who = users.find((u) => u.id === t.assignee);
-                const late = t.due && t.due < todayStr();
-                return (
-                  <div key={t.id} className="flex items-center gap-2">
-                    <span className={cls("w-1.5 h-1.5 rounded-full flex-none", late ? "bg-red-500" : t.status === "doing" ? "bg-blue-500" : "bg-slate-300")} />
-                    <span className="text-[12.5px] text-slate-700 leading-snug mr-auto">{t.title}
-                      {t.source === "stage" && <span className="ml-1.5 text-[9.5px] uppercase text-blue-500">stage</span>}
-                      {t.source === "scrum" && <span className="ml-1.5 text-[9.5px] uppercase text-purple-500">scrum</span>}
-                    </span>
-                    {/* who is doing it — several people work one project, so
-                        this is a picker, not a label */}
-                    <select value={t.assignee || ""} title={"Assigned to " + (who ? who.name : "nobody")}
-                      onChange={(e) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, assignee: e.target.value } : x)))}
-                      className={cls("text-[10px] border border-transparent hover:border-slate-300 focus:border-blue-400 rounded px-0.5 py-0 bg-transparent flex-none max-w-[7rem] cursor-pointer truncate",
-                        who ? "text-slate-500" : "text-amber-600")}>
-                      {!who && <option value="">unassigned</option>}
-                      {users.filter((u) => u.active !== false).map((u) => (
-                        <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>
-                      ))}
-                    </select>
-                    {late && <span className="text-[10px] font-mono font-semibold text-red-600 flex-none">overdue</span>}
-                    {/* the date is editable right here */}
-                    <input type="date" value={t.due || ""} title="Edit the due date"
-                      onChange={(e) => saveTasks(tasks.map((x) => (x.id === t.id ? { ...x, due: e.target.value } : x)))}
-                      className={cls("text-[10px] font-mono border border-transparent hover:border-slate-300 focus:border-blue-400 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem] cursor-pointer",
-                        late ? "text-red-600 font-semibold" : "text-slate-500")} />
-                  </div>
-                );
-              })}
-              {!dealTasks.length && <p className="text-xs text-slate-400">No tasks yet — add what you actually plan to do. “Suggest tasks” is there if you want the AI's view.</p>}
+              {roots.map((r) => (
+                <React.Fragment key={r.id}>
+                  {taskRow(r, 0)}
+                  {subsOf(r.id).map((k) => taskRow(k, 1))}
+                  {subFor === r.id && (
+                    <div className="flex items-center gap-1.5 pl-6">
+                      <span className="text-slate-300 text-[11px] flex-none">↳</span>
+                      <input autoFocus value={subTitle} placeholder={"Sub-task of “" + r.title.slice(0, 32) + "”…"}
+                        onChange={(e) => setSubTitle(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") addSub(r); if (e.key === "Escape") { setSubFor(null); setSubTitle(""); } }}
+                        className="text-[12px] flex-1 min-w-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent placeholder:text-slate-300 py-0.5" />
+                      <Btn size="sm" disabled={!subTitle.trim()} onClick={() => addSub(r)}>Add</Btn>
+                      <button onClick={() => { setSubFor(null); setSubTitle(""); }} className="text-slate-300 hover:text-slate-600"><X size={11} /></button>
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
+              {!dealTasks.length && <p className="text-xs text-slate-400">No tasks yet — add what you actually plan to do, and break any of them into sub-tasks with the +. “Suggest tasks” is there if you want the AI's view.</p>}
 
               {/* ADD YOUR OWN — the default way tasks get here. Title, when,
                   and who: a project runs on several people, so the assignee
                   is chosen at the moment the task is written. */}
               <div className="flex items-center gap-1.5 pt-1.5">
                 <Plus size={12} className="text-slate-300 flex-none" />
-                <input value={newTask.title} placeholder="Add a task…"
+                <input value={newTask.title} placeholder="Add a task… (+ on a task adds a sub-task under it)"
                   onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
                   onKeyDown={(e) => { if (e.key === "Enter") addTask(); }}
                   className="text-[12.5px] flex-1 min-w-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent placeholder:text-slate-300 py-0.5" />
@@ -8854,7 +8919,15 @@ function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies
           <div className="min-w-0 mr-auto">
             <p className={cls("text-sm", t.status === "done" ? "line-through text-slate-400" : "text-slate-800")}>{t.title}
               {t.status === "doing" && <span className="ml-1.5 text-[10px] text-blue-600 uppercase">in progress</span>}
-              {t.branchedFrom && <span className="ml-1.5 text-[10px] text-purple-600 uppercase">branch</span>}
+              {/* branched_from carries two meanings now: the child a blocked
+                  task spawned, and a sub-task written under a parent. Both
+                  are "part of something bigger", which is what to show. */}
+              {t.branchedFrom && (
+                <span className="ml-1.5 text-[10px] text-purple-600 uppercase"
+                  title={(() => { const p0 = tasks.find((x) => x.id === t.branchedFrom); return p0 ? "Part of: " + p0.title : "Part of another task"; })()}>
+                  sub-task
+                </span>
+              )}
               {t.escalated && <span className="ml-1.5 text-[10px] text-red-600 uppercase">escalated</span>}</p>
             <p className="text-xs text-slate-400 flex items-center gap-1.5 flex-wrap">
               {comp && <button className="text-blue-600 hover:underline" onClick={() => openCompany(comp.id)}>{comp.name}</button>}
