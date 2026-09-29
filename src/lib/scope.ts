@@ -65,3 +65,81 @@ export function dealContact(
 export const contactLine = (c: Contact | null | undefined): string => !c ? "" :
   (c.name || "") + (c.role ? " (" + c.role + ")" : "")
   + (c.email ? " · " + c.email : "") + (c.phone ? " · " + c.phone : "");
+
+/* ─── IS THIS DEAL COMMITTED? ──────────────────────────────────────────────
+   "Committed" is not a field somebody remembers to fill in. It is what the
+   board already shows: somebody's name against live work, with a date.
+
+     • a live task with an assignee            → committed
+     • live tasks, but nobody assigned to any  → NOT committed
+     • no live tasks at all                    → NOT committed
+     • any promised date already past          → overdue
+
+   What is outstanding on a committed deal is the UPDATE — whether the work
+   got done — and that closes in My Tasks, where the evidence is checked.
+
+   The older free-text `nextStep` still counts when it is set: it is the
+   same promise written another way, and deals from before tasks carried
+   assignees lean on it. It is simply no longer the only thing that counts,
+   which is what made a deal with two assigned tasks report "nothing
+   committed" directly above the list of them.
+
+   Scoping is belongsToDeal's, so a sibling project's tasks never make this
+   deal look committed.                                                    */
+
+export type CommitTask = Scoped & { status?: string; assignee?: string; due?: string };
+export type CommitDeal = DealLike & {
+  stage?: string; nextStep?: string; nextStepDue?: string; nextStepDoneAt?: string;
+};
+export type CommitState = {
+  key: "closed" | "committed" | "overdue" | "none";
+  step: boolean;      // is the written next step part of this commitment?
+  tasks: number;      // assigned, still-live tasks carrying it
+  late: number;       // promised dates already past
+  unowned: number;    // live tasks with nobody on them
+  due: string;        // the date that governs — the earliest late one, else the nearest
+  closedOut?: boolean; // every task done, nothing owed next
+};
+
+const isoToday = (): string => {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
+
+export function nextStepState(
+  d: CommitDeal | null | undefined,
+  tasks?: CommitTask[] | null,
+  deals?: DealLike[] | null,
+  today?: string,
+): CommitState {
+  const base: CommitState = { key: "none", step: false, tasks: 0, late: 0, unowned: 0, due: "" };
+  if (!d) return base;
+  if (d.lost || d.stage === "po") return { ...base, key: "closed" };
+
+  const now   = today || isoToday();
+  const mine  = (tasks || []).filter((t) => belongsToDeal(t, d, deals));
+  const live  = mine.filter((t) => t.status !== "done");
+  const owned = live.filter((t) => !!t.assignee);
+
+  const hasStep = !!d.nextStep && !d.nextStepDoneAt;
+  const stepDue = hasStep && d.nextStepDue ? String(d.nextStepDue).slice(0, 10) : "";
+
+  // Every date promised, task-side and step-side alike.
+  const dates = owned.map((t) => t.due).filter(Boolean).concat(stepDue ? [stepDue] : []).sort() as string[];
+  const late  = dates.filter((x) => x < now);
+
+  if (owned.length || hasStep) {
+    return {
+      key: late.length ? "overdue" : "committed",
+      step: hasStep,
+      tasks: owned.length,
+      late: late.length,
+      unowned: live.length - owned.length,
+      due: late.length ? late[0] : dates[0] || "",
+    };
+  }
+  // Work on the board that nobody owns is the commonest reason a deal is
+  // not committed, and a different problem from an empty board — so the
+  // caller can say which.
+  return { ...base, unowned: live.length, closedOut: live.length === 0 && mine.length > 0 };
+}
