@@ -3391,68 +3391,6 @@ function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose })
   );
 }
 
-/* NEXT PROSPECT STEPS — "change" opens this modal: the AI reads the record
-   and lays out the distinct moves that take the deal forward; pick one and it
-   commits (step + its task), or write your own at the bottom. */
-const stepOptionsSystem = (d, comp, ev, contacts) => [
-  "You lay out the POSSIBLE NEXT STEPS for a sales deal at Elecbits (electronics design & manufacturing services). Today: " + todayStr() + ".",
-  dealIdentity(d, comp, contacts),
-  "DEAL: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
-    + (d.nextStep && !d.nextStepDoneAt ? " · currently committed: '" + d.nextStep + "'" : ""),
-  "THE RECORD (newest first):\n" + (ev || "(thin)"),
-  "Write 3 DISTINCT candidate next steps that would actually take this deal forward — different angles (clear the blocker, widen the contact, force the commercial question), ordered by leverage. First person, concrete, each with a realistic due date within 10 days.",
-  'Reply ONLY: STEP_OPTIONS_JSON {"options":[{"what":"...","due":"YYYY-MM-DD","why":"one factual line on why this is the move"}]}',
-].join("\n");
-
-function NextStepModal({ me, d, comp, data, touches, commits, onCommit, onClose }) {
-  const { tasks, deals } = data;
-  const [opts, setOpts] = useState(null);
-  const [err, setErr] = useState("");
-  const [what, setWhat] = useState(d.nextStep && !d.nextStepDoneAt ? d.nextStep : "");
-  const [due, setDue] = useState(d.nextStepDue ? String(d.nextStepDue).slice(0, 16) : "");
-  useEffect(() => {
-    let a = true;
-    withTimeout(askClaude(stepOptionsSystem(d, comp, dealEvidence(d, comp, tasks, touches, commits, deals), data.contacts),
-      [{ role: "user", content: "Lay out the possible next steps." }], { maxTokens: 800 }), 30000)
-      .then((reply) => {
-        if (!a) return;
-        const v = extractMarkedJSON(reply, "STEP_OPTIONS_JSON");
-        setOpts(v && Array.isArray(v.options) ? v.options.filter((o) => o && o.what).slice(0, 4) : []);
-      })
-      .catch(() => { if (a) { setOpts([]); setErr("Couldn't draft the options — write your own below, or ask the copilot."); } });
-    return () => { a = false; };
-  }, []);
-  return (
-    <Modal title="Next prospect steps" onClose={onClose}
-      footer={<><span className="mr-auto text-[11px] text-slate-400">Committing writes the step AND its task — one unit.</span><Btn onClick={onClose}>Cancel</Btn></>}>
-      <div className="space-y-3">
-        <p className="text-xs text-slate-500 -mt-1">The AI reads the record and lays out the moves that take {comp ? comp.name : "this deal"} forward — pick one, or write your own.</p>
-        {opts === null && <p className="text-sm text-slate-400 flex items-center gap-2 py-3"><Loader2 size={14} className="animate-spin" /> reading the record…</p>}
-        {err && <p className="text-xs text-red-600">{err}</p>}
-        {(opts || []).map((o, i) => (
-          <button key={i} onClick={() => onCommit(o.what, o.due ? o.due + "T18:30" : "")}
-            className="w-full text-left border border-slate-200 hover:border-blue-400 hover:bg-blue-50/40 rounded-xl p-3.5 group transition-colors">
-            <p className="text-sm text-slate-800 leading-snug group-hover:text-slate-900">{o.what}</p>
-            {o.due && <p className="text-[11px] font-mono text-slate-400 mt-1">by {fmtDate(o.due)}</p>}
-            {o.why && <p className="text-xs text-slate-500 mt-1 leading-snug">{o.why}</p>}
-            <p className="text-[11px] text-blue-600 font-medium mt-1.5 opacity-0 group-hover:opacity-100">Commit this →</p>
-          </button>
-        ))}
-        <div className="border-t border-slate-100 pt-3">
-          <Lbl>Write my own</Lbl>
-          <div className="mt-1.5 space-y-1.5">
-            <Input value={what} onChange={(e) => setWhat(e.target.value)} placeholder="what happens next — your words" />
-            <div className="flex gap-1.5">
-              <Input type="datetime-local" className="flex-1 text-xs" value={due} onChange={(e) => setDue(e.target.value)} />
-              <Btn kind="primary" size="sm" disabled={!what.trim()} onClick={() => onCommit(what.trim(), due || "")}><Check size={12} /> Commit</Btn>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
 /* GENERATE TASKS — click as often as you like. It reads the step, every open
    task and the record, then realigns the whole set: merges duplicates, drops
    the obsolete, fixes titles and dates, adds what is missing. */
@@ -3478,7 +3416,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const [commits, setCommits] = useState([]);
   const [busyTemp, setBusyTemp] = useState(false);
   const [err, setErr] = useState("");
-  const [editStep, setEditStep] = useState(false); // the Next prospect steps modal
   const [realigning, setRealigning] = useState(false);
   const [realignNote, setRealignNote] = useState("");
 
@@ -3501,7 +3438,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   // steps" modal, the "Suggest tasks" button); they are just never taken on
   // the user's behalf. Your list is yours until you ask for help with it.
   const [newTask, setNewTask] = useState({ title: "", due: "", assignee: "" });
-  const [stepDraft, setStepDraft] = useState({ what: "", due: "" });
   const [subFor, setSubFor] = useState(null);     // task id taking a sub-task
   const [subTitle, setSubTitle] = useState("");
 
@@ -3691,22 +3627,13 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     setBusyTemp(false);
   };
 
-  // One committer for every door — the modal's picked option, the manual
-  // write-my-own — and the step's task comes with it.
-  const commitStepWith = (what0, due0) => {
-    const what = String(what0 || "").trim();
-    if (!what) return;
-    const due = due0 || "";
-    saveNextStep(d.id, { what, due, owner: d.ownerId });
-    patchDeal({ nextStep: what, nextStepDue: due, nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
-    if (!openTaskDupe(tasks, d.companyId, what, d.id)) {
-      saveTasks([{ id: uid(), companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: what,
-        details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-        due: due ? String(due).slice(0, 10) : "", status: "open", source: "step",
-        createdAt: nowTS(), windowStart: "", windowEnd: "", work: {}, ai: {}, escalated: false, branchedFrom: "" }, ...tasks]);
-    }
-    setEditStep(false);
-  };
+  /* commitStepWith and NextStepModal are gone with the "next prospect
+     steps" button that was their only door. A next step was never a
+     different object from a task — committing one already raised a task
+     assigned to the deal owner, which is precisely why the room showed
+     the same promise twice. Adding a task below IS committing now.
+     deals.next_step still gets written by the copilot and the Scrum
+     Master, and the header shows it; nothing here writes it. */
   // The step becomes a TASK — the evidence check lives in the task's closure
   // (My Tasks), not here. The card shows the task's live status, and the step
   // marks itself done when its task closes. ANY same-titled task on this deal
@@ -3896,22 +3823,27 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             </div>
           </div>
 
-          {/* 2 · THE COMMITMENT. An assigned task IS a commitment — this
-             panel reads the task list rather than sitting beside it
-             contradicting it. Committed = somebody's name is on live work.
-             Not committed = the work has nobody on it, or there is none. */}
+          {/* 2 · THE WORK — ONE section, not two. "Commitment" and "Tasks"
+             were separate boxes saying the same thing in different words,
+             and the top one wrote into the bottom one: committing a step
+             raised a task, so the same promise appeared twice. Committed is
+             a verdict about this list — somebody's name on live work, with a
+             date — so it is a chip on the list's header, and adding a task
+             here IS committing. */}
           <div className={cls("border rounded-xl p-4",
             ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="flex items-center gap-2">
-                <Lbl>Commitment</Lbl>
+                <Lbl>Tasks on this deal{dealTasks.length ? " · " + dealTasks.length : ""}</Lbl>
+                {/* Committed is not a thing beside the list, it is a verdict
+                    ABOUT the list — so it is a chip on the list's own header. */}
                 {ns.key !== "closed" && (
                   <Chip color={ns.key === "overdue" ? "red" : ns.key === "committed" ? "green" : "amber"}>
                     {ns.key === "overdue" ? "overdue" : ns.key === "committed" ? "committed" : "not committed"}
                   </Chip>
                 )}
-                {/* the step's task carries the status — and the evidence check
-                   happens when THAT closes in My Tasks */}
+                {/* a written step's own task carries its status — the evidence
+                   check happens when THAT closes in My Tasks */}
                 {stepTask && (
                   <Chip color={stepTask.status === "done" ? "green" : stepTask.status === "doing" ? "blue" : "slate"}>
                     {stepTask.status === "done" ? "task done" : stepTask.status === "doing" ? "task in progress" : "task open"}
@@ -3919,73 +3851,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                   </Chip>
                 )}
               </span>
-              <div className="flex items-center gap-3">
-                <button onClick={() => setEditStep(true)}
-                  className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Sparkles size={11} /> next prospect steps</button>
-              </div>
-            </div>
-            {ns.key === "overdue" && (
-              <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1">
-                <AlertTriangle size={12} /> OVERDUE since {fmtDate(ns.due)}
-                {ns.late > 1 ? " · " + ns.late + " dates missed" : ""}
-              </p>
-            )}
-            {/* Committed on the strength of the tasks: say who owes what by
-                when, and name the one thing still outstanding — the update. */}
-            {(ns.key === "committed" || ns.key === "overdue") && ns.tasks > 0 && (
-              <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
-                {ns.tasks} task{ns.tasks === 1 ? " is" : "s are"} assigned below
-                {ns.due && ns.key !== "overdue" ? ", next due " + fmtDate(ns.due) : ""} — that is the commitment.
-                {" Still owed: whether "}{ns.tasks === 1 ? "it is" : "they are"} done. Close them in <strong>My Tasks</strong>, where the evidence is checked.
-                {ns.unowned > 0 && (
-                  <span className="text-amber-700"> {ns.unowned} more {ns.unowned === 1 ? "task has" : "tasks have"} nobody on {ns.unowned === 1 ? "it" : "them"}.</span>
-                )}
-              </p>
-            )}
-            {ns.key === "none" && (
-              <div className="mt-2">
-                {/* This used to say "nothing committed" directly above a list
-                    of assigned tasks, which is simply false: naming a person
-                    and a date IS the commitment. Now it only says so when
-                    nobody is on the work. */}
-                <p className="text-xs text-amber-800 leading-relaxed">
-                  {ns.unowned > 0
-                    ? "Not committed — " + ns.unowned + " task" + (ns.unowned === 1 ? "" : "s") + " below with nobody on " + (ns.unowned === 1 ? "it" : "them") + ". Put a name and a date on " + (ns.unowned === 1 ? "it" : "them") + " and this deal is committed."
-                    : ns.closedOut
-                      ? "Every task on this deal is done and nothing is owed next. Assign the next one below, or write the step here."
-                      : "Nothing owed on this deal yet — no assigned task, no committed step. Add a task below with a name and a date, or write the move here."}
-                </p>
-                <div className="flex items-center gap-1.5 mt-1.5">
-                  <input value={stepDraft.what} placeholder="e.g. Call Gopinath to walk through the LLD and agree a date"
-                    onChange={(e) => setStepDraft({ ...stepDraft, what: e.target.value })}
-                    onKeyDown={(e) => { if (e.key === "Enter" && stepDraft.what.trim()) { commitStepWith(stepDraft.what, stepDraft.due); setStepDraft({ what: "", due: "" }); } }}
-                    className="text-[13px] flex-1 min-w-0 border-b border-dashed border-amber-300 focus:border-blue-500 focus:outline-none bg-transparent placeholder:text-amber-700/40 py-0.5" />
-                  <input type="date" value={stepDraft.due} title="By when"
-                    onChange={(e) => setStepDraft({ ...stepDraft, due: e.target.value })}
-                    className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
-                  <Btn size="sm" kind="primary" disabled={!stepDraft.what.trim()}
-                    onClick={() => { commitStepWith(stepDraft.what, stepDraft.due); setStepDraft({ what: "", due: "" }); }}>Commit</Btn>
-                </div>
-                <p className="text-[10.5px] text-slate-400 mt-1">Or press “next prospect steps” for three suggestions drawn from this deal's record.</p>
-              </div>
-            )}
-            {d.nextStep && !d.nextStepDoneAt && (
-              <p className="text-sm text-slate-800 mt-1.5 leading-snug">{d.nextStep}
-                {d.nextStepDue && ns.key !== "overdue" && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(d.nextStepDue)}</span>}
-              </p>
-            )}
-            {/* the step's tasks live UNDER the step — one unit. Raised by
-               scrums or by reaching this stage; completed only in My Tasks. */}
-            <div className="mt-3 pt-2.5 border-t border-slate-200/70">
-            <div className="flex items-center gap-2">
-              {/* Only call them "under this step" when a written step is
-                  actually there to be under. A deal committed through its
-                  tasks alone has no such parent, and saying otherwise was
-                  what made the heading name something that did not exist. */}
-              <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mr-auto">
-                {ns.step ? "Tasks under this step" : "Tasks on this deal"}
-                {dealTasks.length ? " · " + dealTasks.length : ""}
-              </p>
               {/* The ONLY way the AI adds tasks: asked for, by this button. It
                   audits what is already here and fills the gaps. */}
               <button onClick={realignTasks} disabled={realigning}
@@ -3993,8 +3858,43 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 {realigning ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />} Suggest tasks
               </button>
             </div>
+            {ns.key === "overdue" && (
+              <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1">
+                <AlertTriangle size={12} /> OVERDUE since {fmtDate(ns.due)}
+                {ns.late > 1 ? " · " + ns.late + " dates missed" : ""}
+              </p>
+            )}
+            {/* Committed on the strength of the tasks: what is still owed is
+                the update, and that is the only thing worth saying here. */}
+            {(ns.key === "committed" || ns.key === "overdue") && ns.tasks > 0 && (
+              <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
+                {ns.tasks} assigned{ns.due && ns.key !== "overdue" ? ", next due " + fmtDate(ns.due) : ""} — still owed: whether {ns.tasks === 1 ? "it is" : "they are"} done.
+                {ns.unowned > 0 && (
+                  <span className="text-amber-700"> {ns.unowned} more {ns.unowned === 1 ? "has" : "have"} nobody on {ns.unowned === 1 ? "it" : "them"}.</span>
+                )}
+              </p>
+            )}
+            {ns.key === "none" && (
+              <p className="text-xs text-amber-800 leading-relaxed mt-1.5">
+                {ns.unowned > 0
+                  ? "Not committed — " + ns.unowned + " task" + (ns.unowned === 1 ? "" : "s") + " with nobody on " + (ns.unowned === 1 ? "it" : "them") + ". Put a name and a date on " + (ns.unowned === 1 ? "it" : "them") + " and this deal is committed."
+                  : ns.closedOut
+                    ? "Every task here is done and nothing is owed next. Add the next one below."
+                    : "Nothing owed on this deal yet. Add a task below with a name and a date — that is the commitment."}
+              </p>
+            )}
+            {/* A step the AI or the Scrum Master wrote still lands in
+                deals.next_step. Committing one has always also raised a task,
+                so it is normally the line below as well — shown compactly
+                rather than as a second box competing with this one. */}
+            {d.nextStep && !d.nextStepDoneAt && (
+              <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
+                <span className="uppercase tracking-wide text-[9.5px] font-bold text-slate-400 mr-1">step</span>
+                {d.nextStep}{d.nextStepDue ? " · by " + fmtDate(d.nextStepDue) : ""}
+              </p>
+            )}
             {realignNote && <p className="text-[10.5px] text-slate-500 mt-1">{realignNote}</p>}
-            <div className="mt-1.5 space-y-1">
+            <div className="mt-2.5 pt-2.5 border-t border-slate-200/70 space-y-1">
               {roots.map((r) => (
                 <React.Fragment key={r.id}>
                   {taskRow(r, 0)}
@@ -4041,7 +3941,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 Completed — and removed — from <b>My Tasks</b>: that is where the evidence is checked, and this list updates itself.
               </p>
             </div>
-            </div>
           </div>
 
           {err && <p className="text-xs text-red-600">{err}</p>}
@@ -4050,9 +3949,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
         {/* the AI in the room */}
         <DealChat me={me} d={d} comp={comp} data={data} touches={touches} commits={commits} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} />
         </div>
-
-        {editStep && <NextStepModal me={me} d={d} comp={comp} data={data} touches={touches} commits={commits}
-          onCommit={(w, dd2) => commitStepWith(w, dd2)} onClose={() => setEditStep(false)} />}
 
       </div>
     </div>
