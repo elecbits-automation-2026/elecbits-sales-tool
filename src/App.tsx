@@ -298,6 +298,12 @@ const nowHM = () => new Date().toTimeString().slice(0, 5);
 const tsDaysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
 const dateDaysAgo = (n) => localISO(new Date(Date.now() - n * 86400000));
 const fmtINR = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+/* A deal is worth nothing or something; it is never worth less than
+   nothing. Negatives only ever arrive by accident — a number input takes a
+   stray ↓ or a scroll and turns blank into -1 — and one of them poisons
+   every pipeline total it is summed into. Clamped at every write. */
+const dealValue = (v) => Math.max(0, Number(v) || 0);
+
 const fmtINRc = (n) => {
   const v = Number(n || 0);
   if (v >= 10000000) return "₹" + (v / 10000000).toFixed(1).replace(/\.0$/, "") + "Cr";
@@ -1830,7 +1836,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
   };
   const createDeal = (value, ownerId, _companyId, product) => {
     const d = {
-      id: uid(), did: sopDealCode(c, deals), companyId: c.id, ownerId, value: Number(value || 0),
+      id: uid(), did: sopDealCode(c, deals), companyId: c.id, ownerId, value: dealValue(value),
       product: product || "",
       stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
       history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created." }],
@@ -2276,7 +2282,15 @@ function NewDealModal({ me, data, fixedCompany, onClose, onCreate }) {
         <Field label="What are we building?" req hint="Two or three words — it shows under the company name on every board, and it is how several projects on one client are told apart.">
           <Input value={product} maxLength={PRODUCT_MAX} onChange={(e) => setProduct(e.target.value)} placeholder="e.g. patient monitor" />
         </Field>
-        <Field label="Estimated value (₹)"><Input type="number" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 1500000" /></Field>
+        {/* min=0 and the wheel guard are both load-bearing: an empty number
+            input takes one ↓ or one scroll of the page while the cursor is
+            over it and silently becomes -1. That is where EB-D-0024's ₹-1
+            came from — nobody typed it. */}
+        <Field label="Estimated value (₹)" hint="Leave it blank if you do not know yet — blank means zero, not unknown-and-guessed.">
+          <Input type="number" min="0" step="10000" value={value} placeholder="e.g. 1500000"
+            onChange={(e) => setValue(e.target.value)}
+            onWheel={(e) => e.currentTarget.blur()} />
+        </Field>
         <Field label="Deal owner">
           <Sel value={ownerId} onChange={(e) => setOwnerId(e.target.value)} disabled={!canPickOwner}>
             {users.filter((u) => u.role === "agent" || u.role === "dept_head").map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
@@ -3744,7 +3758,16 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
               {rfqB && <Chip color={rfqB.color}>{rfqB.label}</Chip>}
             </div>
             <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
-              <span className="font-mono tabular-nums text-slate-600">{fmtINRc(d.value)}</span>
+              {/* The value was write-once: set at creation and then nowhere
+                  to correct it, so a stray arrow key that turned 0 into -1
+                  was permanent. Editable here, and it cannot go negative. */}
+              <span className="flex items-center text-slate-600" title="Estimated value — edit it here">
+                ₹<input type="number" min="0" step="10000" value={d.value || 0}
+                  onChange={(e) => patchDeal({ value: Math.max(0, Number(e.target.value) || 0) })}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  className="font-mono tabular-nums text-xs bg-transparent border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none text-slate-600 w-24 py-0.5" />
+                <span className="text-slate-400 ml-1">{d.value ? "· " + fmtINRc(d.value) : ""}</span>
+              </span>
               {/* what this deal is FOR — editable right here, because it is
                   the only thing telling two live deals on one company apart */}
               <input value={d.product || ""} maxLength={PRODUCT_MAX}
@@ -4029,7 +4052,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
   const createDeal = (value, ownerId, companyId, product) => {
     const comp = companies.find((x) => x.id === companyId);
     const d = {
-      id: uid(), did: comp ? sopDealCode(comp, deals) : nextSeq(deals, "did", "EB-D-"), companyId, ownerId, value: Number(value || 0),
+      id: uid(), did: comp ? sopDealCode(comp, deals) : nextSeq(deals, "did", "EB-D-"), companyId, ownerId, value: dealValue(value),
       product: product || "",
       stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false,
       history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created." }],
@@ -6078,7 +6101,7 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
               const comp = byName(a.company, nextCompanies);
               if (comp) {
                 const owner = byName(a.owner, users) || me;
-                const nd = { id: uid(), did: sopDealCode(comp, nextDeals), companyId: comp.id, ownerId: owner.id, value: Number(a.value || 0), stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false, history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created via Assistant." }] };
+                const nd = { id: uid(), did: sopDealCode(comp, nextDeals), companyId: comp.id, ownerId: owner.id, value: dealValue(a.value), stage: "lead", createdAt: nowTS(), updatedAt: nowTS(), lost: false, history: [{ from: null, to: "lead", at: nowTS(), by: me.id, summary: "Deal created via Assistant." }] };
                 nextDeals = [nd, ...nextDeals];
                 fileDealFootprint(comp, nd, owner.name, null);
                 results.push("✓ deal on " + comp.name + " (" + nd.did + ")");
