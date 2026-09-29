@@ -3495,6 +3495,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   // steps" modal, the "Suggest tasks" button); they are just never taken on
   // the user's behalf. Your list is yours until you ask for help with it.
   const [newTask, setNewTask] = useState({ title: "", due: "", assignee: "" });
+  const [stepDraft, setStepDraft] = useState({ what: "", due: "" });
   const [subFor, setSubFor] = useState(null);     // task id taking a sub-task
   const [subTitle, setSubTitle] = useState("");
 
@@ -3912,9 +3913,30 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
               </div>
             </div>
             {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
-            {ns.key === "none" && (false
-              ? <p className="text-xs text-blue-700 mt-2 leading-relaxed flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> The AI is reading the record and writing the next step — improvise it in the chat on the right.</p>
-              : <p className="text-xs text-amber-800 mt-2 leading-relaxed">Nothing committed — tell the chat on the right where this stands and it writes the step itself.</p>)}
+            {ns.key === "none" && (
+              <div className="mt-2">
+                {/* "Nothing committed" used to sit directly above a list of
+                    tasks and read as "no tasks". The next step is a different
+                    thing — ONE action, with a date, that moves the deal — so
+                    say which, and let it be written right here. */}
+                <p className="text-xs text-amber-800 leading-relaxed">
+                  No next step committed yet — the one move, with a date, that takes this deal forward.
+                  {dealTasks.length ? " (The " + dealTasks.length + " task" + (dealTasks.length === 1 ? "" : "s") + " below are the work; this is the commitment.)" : ""}
+                </p>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <input value={stepDraft.what} placeholder="e.g. Call Gopinath to walk through the LLD and agree a date"
+                    onChange={(e) => setStepDraft({ ...stepDraft, what: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === "Enter" && stepDraft.what.trim()) { commitStepWith(stepDraft.what, stepDraft.due); setStepDraft({ what: "", due: "" }); } }}
+                    className="text-[13px] flex-1 min-w-0 border-b border-dashed border-amber-300 focus:border-blue-500 focus:outline-none bg-transparent placeholder:text-amber-700/40 py-0.5" />
+                  <input type="date" value={stepDraft.due} title="By when"
+                    onChange={(e) => setStepDraft({ ...stepDraft, due: e.target.value })}
+                    className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
+                  <Btn size="sm" kind="primary" disabled={!stepDraft.what.trim()}
+                    onClick={() => { commitStepWith(stepDraft.what, stepDraft.due); setStepDraft({ what: "", due: "" }); }}>Commit</Btn>
+                </div>
+                <p className="text-[10.5px] text-slate-400 mt-1">Or press “next prospect steps” for three suggestions drawn from this deal's record.</p>
+              </div>
+            )}
             {d.nextStep && !d.nextStepDoneAt && (
               <p className="text-sm text-slate-800 mt-1.5 leading-snug">{d.nextStep}
                 {d.nextStepDue && ns.key !== "overdue" && <span className="block text-[11px] font-mono text-slate-500 mt-0.5">by {fmtDate(d.nextStepDue)}</span>}
