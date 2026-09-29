@@ -9,7 +9,7 @@
 // Two live deals on one company is the case to hold onto. Everything here
 // is that case.
 
-import { belongsToDeal, dealContact, nextStepState } from "../src/lib/scope.ts";
+import { belongsToDeal, dealContact, nextStepState, soleDealId, liveDeals } from "../src/lib/scope.ts";
 
 let pass = 0, fail = 0;
 const results = [];
@@ -176,6 +176,44 @@ const both = [dpb, ups, dead, solo];
   check("…but on a two-deal company it commits neither",
     st(dpb, [{ id: "t8", companyId: SCHNEIDER, status: "open", assignee: "u-varun", due: SOON }]).key === "none",
     st(dpb, [{ id: "t8", companyId: SCHNEIDER, status: "open", assignee: "u-varun", due: SOON }]));
+}
+
+/* 10 — WHICH PROJECT DOES A NEW TASK MEAN? soleDealId is belongsToDeal asked
+        forwards, at write time. The two MUST agree, or the tool writes a
+        deal that reading then refuses to show. */
+{
+  // A company whose only other deal is CLOSED WON: one live project, so
+  // there is nothing to be ambiguous about — this is the case that caught
+  // the two functions disagreeing.
+  const wonOld = { id: "deal-won", companyId: HONEYWELL, lost: false, stage: "po" };
+  const withWon = [...both, wonOld];
+
+  check("two live deals → refuses to guess",
+    soleDealId(SCHNEIDER, both) === "", soleDealId(SCHNEIDER, both));
+  check("one live deal → that deal, no question asked",
+    soleDealId(HONEYWELL, both) === "deal-solo", soleDealId(HONEYWELL, both));
+  check("a CLOSED WON deal is not a second live project",
+    soleDealId(HONEYWELL, withWon) === "deal-solo", soleDealId(HONEYWELL, withWon));
+  check("…and reading agrees — the orphan still shows on the live one",
+    belongsToDeal({ companyId: HONEYWELL }, solo, withWon), withWon.length);
+  check("a LOST deal is not a second live project either",
+    soleDealId(SCHNEIDER, [dpb, dead]) === "deal-dpb", soleDealId(SCHNEIDER, [dpb, dead]));
+  check("no company named → no deal guessed",
+    soleDealId("", both) === "", soleDealId("", both));
+  check("a company with no deals at all → no deal guessed",
+    soleDealId("org-nobody", both) === "", soleDealId("org-nobody", both));
+  check("no deals list → no crash",
+    soleDealId(SCHNEIDER, null) === "", soleDealId(SCHNEIDER, null));
+  check("liveDeals excludes won and lost together",
+    liveDeals(SCHNEIDER, [dpb, ups, dead, { id: "w", companyId: SCHNEIDER, stage: "po" }]).length === 2,
+    liveDeals(SCHNEIDER, [dpb, ups, dead]).length);
+
+  // The reported case: a task written in My Tasks against Schneider.
+  check("a task raised on a six-project client stays company-wide",
+    soleDealId(SCHNEIDER, both) === "", soleDealId(SCHNEIDER, both));
+  check("…and is correctly invisible in each deal room until claimed",
+    !belongsToDeal({ companyId: SCHNEIDER }, dpb, both) && !belongsToDeal({ companyId: SCHNEIDER }, ups, both),
+    "both false");
 }
 
 for (const [state, name, got] of results) {

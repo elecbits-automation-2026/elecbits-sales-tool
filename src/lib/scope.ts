@@ -19,7 +19,15 @@
    anything bleed sideways the moment a second deal opens.               */
 
 export type Scoped = { dealId?: string; companyId?: string };
-export type DealLike = { id: string; companyId?: string; lost?: boolean };
+export type DealLike = { id: string; companyId?: string; lost?: boolean; stage?: string };
+
+/* LIVE means still being worked: not lost, and not already won. A finished
+   deal is not a candidate for anything new, so it must not make a company
+   look ambiguous — one open project beside three closed-won ones is still
+   one project as far as "which could this mean?" is concerned. */
+export const liveDeals = (companyId: string | undefined,
+                          deals?: DealLike[] | null): DealLike[] =>
+  (deals || []).filter((x) => x.companyId === companyId && !x.lost && x.stage !== "po");
 
 export function belongsToDeal(item: Scoped | null | undefined,
                               deal: DealLike | null | undefined,
@@ -27,9 +35,23 @@ export function belongsToDeal(item: Scoped | null | undefined,
   if (!item || !deal) return false;
   if (item.dealId) return item.dealId === deal.id;
   if (item.companyId && item.companyId !== deal.companyId) return false;
-  const live = (deals || []).filter((x) => x.companyId === deal.companyId && !x.lost);
-  return live.length <= 1;
+  return liveDeals(deal.companyId, deals).length <= 1;
 }
+
+/* The same question asked forwards, at WRITE time: a task is being raised
+   against a company — which project does it obviously mean? Exactly one
+   live project, and there is no guessing involved. Two or more and we must
+   not choose; "" files it company-wide and the deal room asks.
+
+   This has to agree with belongsToDeal or the tool contradicts itself:
+   writing would pick a deal that reading then refuses to show. Hence one
+   definition of live, used by both. */
+export const soleDealId = (companyId: string | undefined,
+                           deals?: DealLike[] | null): string => {
+  if (!companyId) return "";
+  const live = liveDeals(companyId, deals);
+  return live.length === 1 ? live[0].id : "";
+};
 
 /* ─── WHO TO CALL ABOUT THIS PROJECT ───────────────────────────────────────
    The same shape of question, for people. A company's contacts live in
