@@ -51,6 +51,11 @@ whole thing rolls back and the database is untouched.
 Steps 10–19 are also bundled as **`RUN-THIS-phase4.sql`** (23 through 32, one
 paste, same idempotence rules).
 
+**`VERIFY-phase4.sql`** answers the question the editor does not: did it
+commit? It is read-only, it names every object steps 23–32 create, and it
+marks each ✓ or ✗. A bundle that errored anywhere rolls back entirely, so
+"I ran it" and "it is there" are separate facts — this checks the second.
+
 ### Step 5 is a real trap
 
 `17-task-states.sql` appears in **no** `RUN-THIS-*` file. `phase2` bundles
