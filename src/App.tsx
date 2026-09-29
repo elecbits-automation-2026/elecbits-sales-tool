@@ -5,7 +5,8 @@ import {
   Clock, Flame, LogOut, Pencil, Trash2, Sparkles, Loader2, Copy, ChevronRight,
   ArrowRight, Users, GraduationCap, ClipboardList, Phone, FileText,
   Bot, Database, CalendarCheck2, Sun, Moon, ListTodo, FolderOpen, PencilRuler,
-  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play, GitBranch, Video
+  ExternalLink, BadgeCheck, Rocket, Gauge, Lightbulb, Paperclip, Play, GitBranch, Video,
+  Compass
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import {
@@ -2401,6 +2402,13 @@ function dealEvidence(deal, comp, tasks, touches, commits, deals) {
    a column, not a description. */
 const PRODUCT_MAX = 40;
 const dealProduct = (d) => String((d && d.product) || "").trim();
+
+/* EXPLORATORY is not a phase — it is something people write in "What are we
+   building?", as in "Exploratory Stage (SE France)". No column, no schema:
+   the board just needs a way to show only those, so the test reads the same
+   field the card prints. "Explore", "exploring" and "exploratory" all count,
+   because nobody types one spelling forever. */
+const isExploratory = (d) => /\bexplorat|\bexplorin|\bexplore\b/i.test(dealProduct(d));
 function DealProduct({ deal, className = "" }) {
   const p = dealProduct(deal);
   if (!p) return null;
@@ -3971,6 +3979,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
   const [view, setView] = useState("board");      // board | list
   const [personF, setPersonF] = useState("all");
   const [companyF, setCompanyF] = useState("all");
+  const [expOnly, setExpOnly] = useState(false);  // only exploratory projects
   const scopeIds = scope === "mine" ? [me.id]
     : me.role === "dept_head" ? [me.id, ...teamOf(me, users).map((u) => u.id)]
     : users.map((u) => u.id);
@@ -3980,7 +3989,15 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
   const visible = deals.filter((d) =>
     (scopeIds.includes(d.ownerId) || (scope !== "mine" && !rosterIds.has(d.ownerId)))
     && (personF === "all" || d.ownerId === personF)
-    && (companyF === "all" || d.companyId === companyF));
+    && (companyF === "all" || d.companyId === companyF)
+    && (!expOnly || isExploratory(d)));
+  // How many there are to find, computed BEFORE the filter — otherwise the
+  // button's own count drops to itself the moment it is pressed.
+  const expCount = deals.filter((d) =>
+    (scopeIds.includes(d.ownerId) || (scope !== "mine" && !rosterIds.has(d.ownerId)))
+    && (personF === "all" || d.ownerId === personF)
+    && (companyF === "all" || d.companyId === companyF)
+    && isExploratory(d)).length;
   const phaseOf = (d) => d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
 
   const onDrop = (toKey) => {
@@ -4060,7 +4077,22 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
           <option value="all">All companies</option>
           {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </Sel>
-        <span className="ml-auto text-xs text-slate-500"><b className="text-slate-800 font-mono tabular-nums">{visible.length}</b> deal{visible.length !== 1 ? "s" : ""}</span>
+        {/* Exploratory: a toggle, not a column. It narrows every phase at
+            once, so an exploratory deal that has gone warm still shows.
+            Disabled rather than hidden when there are none — "no exploratory
+            deals" is an answer, and a button that vanishes gives no answer. */}
+        <button onClick={() => setExpOnly(!expOnly)} disabled={!expCount && !expOnly}
+          title={expCount ? "Show only projects whose “What are we building?” says exploratory"
+            : "No deal currently says exploratory in “What are we building?”"}
+          className={cls("px-3 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5",
+            expOnly ? "bg-blue-600 border-blue-600 text-white"
+              : expCount ? "bg-white border-slate-300 text-slate-600 hover:bg-slate-50"
+                : "bg-white border-slate-200 text-slate-300 cursor-not-allowed")}>
+          <Compass size={12} /> Exploratory
+          <span className="font-mono tabular-nums opacity-70">{expCount}</span>
+          {expOnly && <X size={11} />}
+        </button>
+        <span className="ml-auto text-xs text-slate-500"><b className="text-slate-800 font-mono tabular-nums">{visible.length}</b> deal{visible.length !== 1 ? "s" : ""}{expOnly ? " · exploratory only" : ""}</span>
       </div>
 
       {view === "list" && (
