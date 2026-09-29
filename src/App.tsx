@@ -21,7 +21,7 @@ import {
   loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact, schemaGaps,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
-import { belongsToDeal, dealContact, contactLine } from "./lib/scope";
+import { belongsToDeal, dealContact, contactLine, nextStepState } from "./lib/scope";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
   askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
@@ -2314,13 +2314,19 @@ const PHASES = [
 ];
 const tempColor = (t) => (t === "hot" ? "red" : t === "rfq" ? "purple" : t === "warm" ? "amber" : "blue");
 
-/* The commitment alarm: RED is "your own committed date passed", never a
-   generic clock. No commitment on record is its own (amber) state. */
-function nextStepState(d) {
-  if (d.lost || d.stage === "po") return { key: "closed" };
-  if (!d.nextStep || d.nextStepDoneAt) return { key: "none" };
-  if (d.nextStepDue && new Date(d.nextStepDue).getTime() < Date.now()) return { key: "overdue" };
-  return { key: "committed" };
+/* WHAT "COMMITTED" MEANS now lives in src/lib/scope.ts beside the rest of
+   the per-deal scoping rules, where it is unit-tested: an assigned task IS
+   the commitment, so the panel reads the task list instead of sitting next
+   to it contradicting it. The alarm stays RED only for "a date you
+   committed to has passed", never a generic clock.                        */
+
+/* The commitment in one line, for a table cell or a board card. A deal
+   committed only through its tasks has no nextStep sentence to print, so
+   name the tasks instead rather than showing an empty cell. */
+function commitLine(d, ns) {
+  if (d.nextStep && !d.nextStepDoneAt) return d.nextStep + (ns.due ? " · " + fmtDate(ns.due) : "");
+  if (ns.tasks) return ns.tasks + " task" + (ns.tasks === 1 ? "" : "s") + " assigned" + (ns.due ? " · by " + fmtDate(ns.due) : "");
+  return "";
 }
 
 const tempSystem = (deal, comp, evidence, contacts) => [
@@ -2723,7 +2729,7 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks, onNew }) 
       )}
       {mine.map((d) => {
         const ph = phaseOf(d);
-        const ns = nextStepState(d);
+        const ns = nextStepState(d, data.tasks, data.deals);
         return (
           <div key={d.id} className="bg-white border border-slate-200 rounded-xl p-5">
             <div className="flex items-center gap-2.5 flex-wrap">
@@ -2738,10 +2744,10 @@ function CompanyDealsTab({ me, company: c, data, saveDeals, saveTasks, onNew }) 
             {d.temperatureWhy && <p className="text-xs text-slate-500 mt-1.5">{d.temperatureWhy}</p>}
             {!d.lost && d.stage !== "po" && (
               ns.key === "overdue"
-                ? <p className="text-xs font-semibold text-red-600 mt-1.5 flex items-center gap-1"><AlertTriangle size={12} /> committed step overdue since {fmtDate(d.nextStepDue)}: {d.nextStep}</p>
+                ? <p className="text-xs font-semibold text-red-600 mt-1.5 flex items-center gap-1"><AlertTriangle size={12} /> overdue since {fmtDate(ns.due)}: {commitLine(d, ns)}</p>
                 : ns.key === "none"
-                ? <p className="text-xs text-amber-700 mt-1.5">no committed next step</p>
-                : <p className="text-xs text-slate-600 mt-1.5">next: {d.nextStep}{d.nextStepDue ? " · by " + fmtDate(d.nextStepDue) : ""}</p>
+                ? <p className="text-xs text-amber-700 mt-1.5">{ns.unowned ? ns.unowned + " task" + (ns.unowned === 1 ? "" : "s") + " with nobody assigned — not committed" : "nothing committed"}</p>
+                : <p className="text-xs text-slate-600 mt-1.5">next: {commitLine(d, ns)}</p>
             )}
             {/* the deal's next tasks — raised by scrums or stage changes,
                completed only from My Tasks */}
@@ -3629,7 +3635,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     saveDeals(deals.filter((x) => x.id !== d.id));
     onClose();
   };
-  const ns = nextStepState(d);
+  const ns = nextStepState(d, tasks, deals);
   const ph = d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
   const rfqB = rfqBadgeFor(d, data.rfq, data.deals);
 
@@ -3890,14 +3896,20 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             </div>
           </div>
 
-          {/* 2 · WHAT IS NEXT — the committed step. The chat on the right
-             writes and commits steps itself; here it just shows, gets marked
-             done with evidence, or edited by hand. */}
+          {/* 2 · THE COMMITMENT. An assigned task IS a commitment — this
+             panel reads the task list rather than sitting beside it
+             contradicting it. Committed = somebody's name is on live work.
+             Not committed = the work has nobody on it, or there is none. */}
           <div className={cls("border rounded-xl p-4",
             ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="flex items-center gap-2">
-                <Lbl>Next step</Lbl>
+                <Lbl>Commitment</Lbl>
+                {ns.key !== "closed" && (
+                  <Chip color={ns.key === "overdue" ? "red" : ns.key === "committed" ? "green" : "amber"}>
+                    {ns.key === "overdue" ? "overdue" : ns.key === "committed" ? "committed" : "not committed"}
+                  </Chip>
+                )}
                 {/* the step's task carries the status — and the evidence check
                    happens when THAT closes in My Tasks */}
                 {stepTask && (
@@ -3912,16 +3924,36 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                   className="text-xs text-blue-600 hover:underline flex items-center gap-1"><Sparkles size={11} /> next prospect steps</button>
               </div>
             </div>
-            {ns.key === "overdue" && <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1"><AlertTriangle size={12} /> OVERDUE since {fmtDate(d.nextStepDue)}</p>}
+            {ns.key === "overdue" && (
+              <p className="text-xs font-bold text-red-700 mt-2 flex items-center gap-1">
+                <AlertTriangle size={12} /> OVERDUE since {fmtDate(ns.due)}
+                {ns.late > 1 ? " · " + ns.late + " dates missed" : ""}
+              </p>
+            )}
+            {/* Committed on the strength of the tasks: say who owes what by
+                when, and name the one thing still outstanding — the update. */}
+            {(ns.key === "committed" || ns.key === "overdue") && ns.tasks > 0 && (
+              <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
+                {ns.tasks} task{ns.tasks === 1 ? " is" : "s are"} assigned below
+                {ns.due && ns.key !== "overdue" ? ", next due " + fmtDate(ns.due) : ""} — that is the commitment.
+                {" Still owed: whether "}{ns.tasks === 1 ? "it is" : "they are"} done. Close them in <strong>My Tasks</strong>, where the evidence is checked.
+                {ns.unowned > 0 && (
+                  <span className="text-amber-700"> {ns.unowned} more {ns.unowned === 1 ? "task has" : "tasks have"} nobody on {ns.unowned === 1 ? "it" : "them"}.</span>
+                )}
+              </p>
+            )}
             {ns.key === "none" && (
               <div className="mt-2">
-                {/* "Nothing committed" used to sit directly above a list of
-                    tasks and read as "no tasks". The next step is a different
-                    thing — ONE action, with a date, that moves the deal — so
-                    say which, and let it be written right here. */}
+                {/* This used to say "nothing committed" directly above a list
+                    of assigned tasks, which is simply false: naming a person
+                    and a date IS the commitment. Now it only says so when
+                    nobody is on the work. */}
                 <p className="text-xs text-amber-800 leading-relaxed">
-                  No next step committed yet — the one move, with a date, that takes this deal forward.
-                  {dealTasks.length ? " (The " + dealTasks.length + " task" + (dealTasks.length === 1 ? "" : "s") + " below are the work; this is the commitment.)" : ""}
+                  {ns.unowned > 0
+                    ? "Not committed — " + ns.unowned + " task" + (ns.unowned === 1 ? "" : "s") + " below with nobody on " + (ns.unowned === 1 ? "it" : "them") + ". Put a name and a date on " + (ns.unowned === 1 ? "it" : "them") + " and this deal is committed."
+                    : ns.closedOut
+                      ? "Every task on this deal is done and nothing is owed next. Assign the next one below, or write the step here."
+                      : "Nothing owed on this deal yet — no assigned task, no committed step. Add a task below with a name and a date, or write the move here."}
                 </p>
                 <div className="flex items-center gap-1.5 mt-1.5">
                   <input value={stepDraft.what} placeholder="e.g. Call Gopinath to walk through the LLD and agree a date"
@@ -3946,11 +3978,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                scrums or by reaching this stage; completed only in My Tasks. */}
             <div className="mt-3 pt-2.5 border-t border-slate-200/70">
             <div className="flex items-center gap-2">
-              {/* Only call them "under this step" when a step is actually
-                  committed — with nothing committed the heading was naming a
-                  parent that did not exist. */}
+              {/* Only call them "under this step" when a written step is
+                  actually there to be under. A deal committed through its
+                  tasks alone has no such parent, and saying otherwise was
+                  what made the heading name something that did not exist. */}
               <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mr-auto">
-                {ns.key === "none" || ns.key === "closed" ? "Tasks on this deal" : "Tasks under this step"}
+                {ns.step ? "Tasks under this step" : "Tasks on this deal"}
                 {dealTasks.length ? " · " + dealTasks.length : ""}
               </p>
               {/* The ONLY way the AI adds tasks: asked for, by this button. It
@@ -4027,7 +4060,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 }
 
 function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompany }) {
-  const { users, companies, deals, gates, rfq } = data;
+  // `tasks` is here because the board's commitment state reads them — an
+  // assigned task is what makes a deal committed, on the card as in the room.
+  const { users, companies, deals, gates, rfq, tasks } = data;
   const rfqBadge = (d) => { const b = rfqBadgeFor(d, rfq, deals); return b ? <Chip color={b.color}>{b.label}</Chip> : null; };
   const [scope, setScope] = useState(me.role === "agent" ? "mine" : "team");
   const [gate, setGate] = useState(null); // {deal, from, to, mode} — the lost post-mortem
@@ -4149,7 +4184,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                 }).map((d) => {
                   const c = companies.find((x) => x.id === d.companyId);
                   const o = users.find((u) => u.id === d.ownerId);
-                  const ns = nextStepState(d);
+                  const ns = nextStepState(d, tasks, deals);
                   const pk = phaseOf(d);
                   return (
                     <tr key={d.id} onClick={() => setRoom(d.id)} className="border-b border-slate-100 last:border-0 hover:bg-blue-50/40 cursor-pointer">
@@ -4165,9 +4200,9 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                         : <span className="text-xs font-semibold text-red-600">unassigned</span>}</td>
                       <td className="py-2.5 px-4 max-w-56">
                         {d.lost || d.stage === "po" ? <span className="text-slate-300 text-xs">—</span>
-                          : ns.key === "overdue" ? <span className="text-xs font-semibold text-red-600 flex items-center gap-1"><AlertTriangle size={11} /> overdue {fmtDate(d.nextStepDue)}</span>
-                          : ns.key === "none" ? <span className="text-xs text-amber-700">none committed</span>
-                          : <span className="text-xs text-slate-600 truncate block">{d.nextStep}{d.nextStepDue ? " · " + fmtDate(d.nextStepDue) : ""}</span>}
+                          : ns.key === "overdue" ? <span className="text-xs font-semibold text-red-600 flex items-center gap-1"><AlertTriangle size={11} /> overdue {fmtDate(ns.due)}</span>
+                          : ns.key === "none" ? <span className="text-xs text-amber-700">{ns.unowned ? ns.unowned + " unassigned" : "not committed"}</span>
+                          : <span className="text-xs text-slate-600 truncate block">{commitLine(d, ns)}</span>}
                       </td>
                       <td className="py-2.5 px-4">{rfqBadge(d) || <span className="text-slate-300 text-xs">—</span>}</td>
                       <td className="py-2.5 px-4 font-mono text-xs text-slate-500 tabular-nums">{d.createdAt ? fmtDate(d.createdAt) : "—"}</td>
@@ -4205,7 +4240,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                   const c = companies.find((x) => x.id === d.companyId);
                   const o = users.find((u) => u.id === d.ownerId);
                   const stale = dealStaleDays(d);
-                  const ns = nextStepState(d);
+                  const ns = nextStepState(d, tasks, deals);
                   // RED is the broken commitment first; the stale clock is the fallback signal.
                   const sc = d.lost || ns.key === "overdue" ? "red"
                     : ns.key === "none" || stale >= STALE_AMBER ? "amber" : "green";
@@ -4230,11 +4265,11 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                         </span>
                       </div>
                       {!d.lost && (ns.key === "overdue"
-                        ? <p className="mt-1.5 text-[11px] font-semibold text-red-600 flex items-center gap-1"><AlertTriangle size={11} /> committed {fmtDate(d.nextStepDue)} — overdue</p>
+                        ? <p className="mt-1.5 text-[11px] font-semibold text-red-600 flex items-center gap-1"><AlertTriangle size={11} /> committed {fmtDate(ns.due)} — overdue</p>
                         : ns.key === "none"
-                        ? <p className="mt-1.5 text-[11px] text-amber-700">no committed next step</p>
+                        ? <p className="mt-1.5 text-[11px] text-amber-700">{ns.unowned ? ns.unowned + " task" + (ns.unowned === 1 ? "" : "s") + " with nobody on " + (ns.unowned === 1 ? "it" : "them") : "nothing committed"}</p>
                         : ns.key === "committed"
-                        ? <p className="mt-1.5 text-[11px] text-slate-500 truncate">next: {d.nextStep}{d.nextStepDue ? " · " + fmtDate(d.nextStepDue) : ""}</p>
+                        ? <p className="mt-1.5 text-[11px] text-slate-500 truncate">next: {commitLine(d, ns)}</p>
                         : null)}
                       <div className="flex items-center justify-between mt-2">
                         <span className="flex items-center gap-1 text-xs text-slate-500">{o ? <Avatar name={o.name} size="sm" /> : <span className="text-[10px] font-semibold text-red-600 uppercase">unassigned</span>}</span>
@@ -8795,7 +8830,7 @@ function DealPosition({ data, companyId }) {
   const phase = deal.temperature || "cold";
   const idx = ["cold", "warm", "rfq", "hot"].indexOf(phase);
   const vel = tempVelocity(deal);
-  const ns = nextStepState(deal);
+  const ns = nextStepState(deal, data.tasks, data.deals);
   return (
     <div className="mt-3 pt-3 border-t border-dashed border-slate-200">
       <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">Where the deal is · <span className="font-mono">{deal.did}</span></p>
@@ -8808,9 +8843,9 @@ function DealPosition({ data, companyId }) {
         ))}
       </div>
       {deal.temperatureWhy && <p className="text-[11.5px] text-slate-600 mt-2 leading-snug">{deal.temperatureWhy}</p>}
-      {ns.key === "overdue" ? <p className="text-[11.5px] font-semibold text-red-600 mt-1.5">Committed step OVERDUE since {fmtDate(deal.nextStepDue)}: {deal.nextStep}</p>
-        : ns.key === "committed" ? <p className="text-[11.5px] text-slate-600 mt-1.5">next: {deal.nextStep}{deal.nextStepDue ? " · by " + fmtDate(deal.nextStepDue) : ""}</p>
-        : <p className="text-[11.5px] text-amber-700 mt-1.5">no committed next step</p>}
+      {ns.key === "overdue" ? <p className="text-[11.5px] font-semibold text-red-600 mt-1.5">OVERDUE since {fmtDate(ns.due)}: {commitLine(deal, ns)}</p>
+        : ns.key === "committed" ? <p className="text-[11.5px] text-slate-600 mt-1.5">next: {commitLine(deal, ns)}</p>
+        : <p className="text-[11.5px] text-amber-700 mt-1.5">{ns.unowned ? ns.unowned + " task" + (ns.unowned === 1 ? "" : "s") + " with nobody assigned" : "nothing committed"}</p>}
     </div>
   );
 }
@@ -9153,12 +9188,12 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
   });
   const bookCtx = myBook.length ? myBook.map(({ c, d }) => {
     if (!d) return "• " + c.name + " — no open deal.";
-    const ns = nextStepState(d);
+    const ns = nextStepState(d, tasks, deals);
     const pend = tasks.filter((t) => t.companyId === c.id && t.status !== "done").map((t) => t.title).slice(0, 6);
     return "• " + c.name + " — " + (d.temperature || "cold") + ", ₹" + (d.value || 0)
-      + (ns.key === "overdue" ? "; COMMITTED STEP OVERDUE since " + fmtDate(d.nextStepDue) + " ('" + d.nextStep + "')"
-        : ns.key === "none" ? "; no committed next step"
-        : "; next: '" + d.nextStep + "'" + (d.nextStepDue ? " by " + fmtDate(d.nextStepDue) : ""))
+      + (ns.key === "overdue" ? "; COMMITMENT OVERDUE since " + fmtDate(ns.due) + " (" + commitLine(d, ns) + ")"
+        : ns.key === "none" ? (ns.unowned ? "; NOT COMMITTED — " + ns.unowned + " task(s) with nobody assigned" : "; nothing committed")
+        : "; committed: " + commitLine(d, ns))
       + (pend.length ? "; open tasks: " + pend.join(" | ") : "; no open tasks");
   }).join("\n") : "(no companies assigned)";
 
@@ -9396,7 +9431,10 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
     const comps = companies.filter((c) => c.accountOwner === u.id);
     const openDeals = deals.filter((d) => d.ownerId === u.id && !d.lost && d.stage !== "po");
     const openTasks = tasks.filter((t) => t.assignee === u.id && t.status !== "done");
-    const overdue = openDeals.filter((d) => nextStepState(d).key === "overdue").length
+    // Step-side only — the [] is deliberate. The task half of the overdue
+    // count is the line below it; passing tasks in here would count the
+    // same late task twice.
+    const overdue = openDeals.filter((d) => nextStepState(d, [], deals).key === "overdue").length
       + openTasks.filter((t) => t.due && t.due < todayStr()).length;
     return { comps, openDeals: openDeals.length, openTasks: openTasks.length, overdue };
   };
@@ -9416,7 +9454,9 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
     const day = (x) => String(x || "").slice(0, 10);
     const stepsIn = openDeals.filter(({ d }) => d.nextStep && !d.nextStepDoneAt && d.nextStepDue && day(d.nextStepDue) >= pFrom && day(d.nextStepDue) <= pTo);
     const tasksIn = tasks.filter((t) => t.assignee === u.id && t.status !== "done" && t.due && t.due >= pFrom && t.due <= pTo);
-    const overdue = openDeals.filter(({ d }) => nextStepState(d).key === "overdue").length
+    // Step-side only, for the same reason as loadOf above: the late tasks
+    // are added on the next line.
+    const overdue = openDeals.filter(({ d }) => nextStepState(d, [], deals).key === "overdue").length
       + tasks.filter((t) => t.assignee === u.id && t.status !== "done" && t.due && t.due < todayStr()).length;
     return { openDeals, stepsIn, tasksIn, load: stepsIn.length + tasksIn.length, overdue };
   };
