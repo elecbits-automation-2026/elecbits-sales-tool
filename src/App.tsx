@@ -7113,26 +7113,41 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
      without anything being retyped. */
   const buildReview = (touch, w) => {
     const byName = (n) => (users.find((u) => u.name === n) || me).id;
+    const plus = (n) => localISO(new Date(Date.now() + n * 86400000));
     const ours = (w.ourCommitments || []).filter((x) => x && x.what);
-    const proposed = ours.slice(0, 5).map((x, i) => ({
-      key: "c" + i, title: x.what, due: x.due || "",
-      assignee: byName(x.owner), on: !!x.due && (x.certainty || "promised") === "promised",
-      from: i,
-    }));
+    const theirs = (w.theirCommitments || []).filter((x) => x && x.what);
+
+    /* ONE LIST. Promises used to sit in a second section of their own,
+       which asked the reader to hold two ideas at once — and, worse,
+       arrived every row ticked while the tasks above them followed the
+       opposite rule. A promise IS a piece of work; it belongs in the list
+       with the rest, and the commitment record is written behind it when
+       the row is approved.
+
+       What THEY owe becomes a chase, because that is the work on our side:
+       "Rohan sends the BOM" is nothing we can do, "follow up with Rohan for
+       the BOM" is. */
+    const rows = [
+      ...ours.map((x) => ({ title: x.what, due: x.due || "", assignee: byName(x.owner),
+        side: "us", what: x.what, toWhom: x.toWhom || "", certainty: x.certainty || "promised" })),
+      ...theirs.map((x) => ({
+        title: "Follow up with " + (x.who || touch.contactName || "them") + ": " + x.what,
+        due: x.due || "", assignee: byName(null),
+        side: "them", what: x.what, toWhom: x.who || "", certainty: "promised" })),
+    ];
     const step = w.nextStep && w.nextStep.what ? String(w.nextStep.what) : "";
-    if (step && !ours.some((x) => sameish(x.what, step))) {
-      proposed.push({ key: "step", title: step, due: (w.nextStep && w.nextStep.when) || "",
-        assignee: byName(w.nextStep && w.nextStep.who), on: true, from: null });
+    if (step && !rows.some((x) => sameish(x.what, step) || sameish(x.title, step))) {
+      rows.push({ title: step, due: (w.nextStep && w.nextStep.when) || "",
+        assignee: byName(w.nextStep && w.nextStep.who), side: null, what: step, toWhom: "", certainty: "promised" });
     }
+    /* A task with no date is, by this tool's own rule, not a commitment at
+       all — so a blank one is filled in rather than left to rot. A week is
+       a starting point, not a decision: it is the field most likely to be
+       changed on this sheet. */
+    const tasks = rows.slice(0, 6).map((x, i) => ({ ...x, key: "t" + i, on: true, due: x.due || plus(7) }));
+
     const dealId = touch.dealId || "";
-    return {
-      touch, w, dealId,
-      tasks: proposed.slice(0, 5),
-      ours: ours.map((x) => ({ ...x, on: true })),
-      theirs: (w.theirCommitments || []).filter((x) => x && x.what).map((x) => ({ ...x, on: true })),
-      setStep: !!step && !!dealId,
-      setTemp: !!dealId && !!w.temperature,
-    };
+    return { touch, w, dealId, tasks, setTemp: !!dealId && !!w.temperature };
   };
 
   /* A note that is already filed, read again. This is what makes a failed
@@ -7212,45 +7227,42 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
     const { touch, w } = r;
     touch.dealId = r.dealId || "";
     try {
-      const keptOurs = r.ours.filter((x) => x.on);
-      const fresh = [
-        ...keptOurs.map((x) => ({
-          id: uid(), companyId: c.id, dealId: r.dealId || "", activityId: touch.id, side: "us", what: x.what,
-          toWhom: x.toWhom || touch.contactName || "", due: x.due || "", certainty: x.certainty || "promised",
-          status: "open", ownerId: (users.find((u) => u.name === x.owner) || me).id, createdBy: me.id,
-        })),
-        ...r.theirs.filter((x) => x.on).map((x) => ({
-          id: uid(), companyId: c.id, dealId: r.dealId || "", activityId: touch.id, side: "them", what: x.what,
-          toWhom: x.who || touch.contactName || "", due: x.due || "", certainty: "promised",
-          status: "open", ownerId: null, createdBy: me.id,
-        })),
-      ];
+      const approved = r.tasks.filter((x) => x.on && String(x.title || "").trim());
 
-      // The approved tasks, each linked back to the promise it serves.
-      const newTasks = [];
-      for (const t of r.tasks.filter((x) => x.on && String(x.title || "").trim())) {
+      /* One pass. Each approved row becomes a task, and — where it came
+         from a promise — the commitment record behind it, already linked.
+         Rows left unticked write nothing at all: if a promise is not worth
+         a task, it is not worth tracking either, and that is the reader's
+         call rather than the model's. */
+      const newTasks = [], fresh = [];
+      for (const t of approved) {
         if (openTaskDupe(tasks, c.id, t.title, r.dealId || "")) continue;
         const tid = uid();
         newTasks.push(makeTask({ id: tid, companyId: c.id, dealId: r.dealId || "",
           assignee: t.assignee || me.id, author: me.id, title: t.title,
-          details: t.from === null ? "The next step out of " + (w.title || "this conversation")
-                                   : "Promised in " + (w.title || "this conversation"),
-          due: t.due, source: t.from === null ? "step" : "commitment" }));
-        // stamp the link so the commitment does not offer "make a task" again
-        if (t.from !== null) {
-          const m = fresh.find((f) => f.side === "us" && sameish(f.what, t.title) && !f.taskId);
-          if (m) m.taskId = tid;
+          details: t.side === "them" ? "They promised: " + t.what
+            : t.side === "us" ? "We promised in " + (w.title || "this conversation")
+            : "The next step out of " + (w.title || "this conversation"),
+          due: t.due, source: t.side ? "commitment" : "step" }));
+        if (t.side) {
+          fresh.push({ id: uid(), companyId: c.id, dealId: r.dealId || "", activityId: touch.id,
+            side: t.side, what: t.what, toWhom: t.toWhom || touch.contactName || "",
+            due: t.due || "", certainty: t.certainty || "promised", status: "open",
+            ownerId: t.side === "us" ? (t.assignee || me.id) : null, createdBy: me.id, taskId: tid });
         }
       }
       if (newTasks.length) saveTasks([...newTasks, ...tasks]);
       if (fresh.length) await saveCommitments(fresh);
 
-      // The two things the write-up already worked out and used to discard.
-      if (r.setStep && r.dealId && w.nextStep && w.nextStep.what) {
-        const due = (w.nextStep.when || "") ? w.nextStep.when + "T18:30" : "";
-        saveNextStep(r.dealId, { what: w.nextStep.what, due, owner: me.id });
-        patchDealLocal(r.dealId, { nextStep: w.nextStep.what, nextStepDue: due, nextStepOwner: me.id,
-          nextStepSetAt: nowTS(), nextStepDoneAt: "" });
+      /* The next step is no longer a tick-box of its own: whichever of
+         these tasks is the move, it is already in the list. Setting the
+         deal's next step from the first approved one keeps the board
+         honest without asking a second question about the same thing. */
+      if (r.dealId && newTasks.length) {
+        const lead = newTasks[0];
+        saveNextStep(r.dealId, { what: lead.title, due: lead.due ? lead.due + "T18:30" : "", owner: lead.assignee });
+        patchDealLocal(r.dealId, { nextStep: lead.title, nextStepDue: lead.due ? lead.due + "T18:30" : "",
+          nextStepOwner: lead.assignee, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
       }
       if (r.setTemp && r.dealId && w.temperature) {
         const d0 = (data.deals || []).find((x) => x.id === r.dealId);
@@ -7288,11 +7300,12 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
         dealLabel(r.dealId) ? "Project: " + dealLabel(r.dealId) : "",
         touch.contactName ? "With: " + touch.contactName : "", touch.link ? "Source: " + touch.link : "", "",
         w.summary || "", "", "## What the client said", ...(w.clientSaid || []).map((x) => "- " + x),
-        "", "## We promised", ...keptOurs.map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
-        "## They promised", ...r.theirs.filter((x) => x.on).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
+        "", "## We promised", ...(w.ourCommitments || []).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
+        "## They promised", ...(w.theirCommitments || []).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
         "", "## Objections and how they went", ...(w.challenges || []).map((x) => "- " + x.challenge + " → " + (x.action || "") + " (" + x.status + ")"),
         "", "## Decided", ...(w.decisions || []).map((x) => "- " + x.what),
-        "", "## Next step", (w.nextStep && w.nextStep.what) || "—", "", "## The note as it was written", touch.body,
+        "", "## Agreed to do", ...approved.map((x) => "- " + x.title + (x.due ? " — by " + x.due : "")),
+        "", "## The note as it was written", touch.body,
       ].filter((x) => x !== undefined && x !== "").join("\n");
       fileToDrive(w.title || touch.subject, md, r.dealId, touch.kind || kind);
     } catch (e) { setErr("Some of the write-up did not save — the note itself is filed."); }
@@ -7338,18 +7351,18 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
      sheet, because it puts your name on the machine's guesses. */
   const ReviewSheet = ({ r }) => {
     const set = (patch) => setReview({ ...r, ...patch });
-    const row = (arr, i, patch) => arr.map((x, j) => (j === i ? { ...x, ...patch } : x));
+    const row = (i, patch) => set({ tasks: r.tasks.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
     const people = users.filter((u) => u.active !== false);
     const on = r.tasks.filter((t) => t.on).length;
     return (
-      <Modal title="Before this goes on the record" onClose={() => setReview(null)} wide
+      <Modal title="Tasks from this conversation" onClose={() => setReview(null)} wide
         footer={<>
           <Btn onClick={() => { const { touch } = r; touch.dealId = r.dealId || "";
             saveTouch(touch).then(() => { setReview(null); clearComposer(); reload(); }); }}>
             Just file the note
           </Btn>
-          <Btn kind="primary" onClick={() => applyReview(r)}>
-            <Check size={14} /> Approve{on ? " · " + on + " task" + (on === 1 ? "" : "s") : ""}
+          <Btn kind="primary" disabled={!on} onClick={() => applyReview(r)}>
+            <Check size={14} /> Add {on} task{on === 1 ? "" : "s"}
           </Btn>
         </>}>
         <div className="space-y-4">
@@ -7358,81 +7371,45 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
             {r.w.summary && <p className="text-[13px] text-slate-600 mt-1 leading-relaxed">{r.w.summary}</p>}
           </div>
 
-          {/* Which project all of this lands on — changeable here, because
-              the write-up is often what tells you which one it was. */}
           {liveHere.length > 0 && (
-            <Field label="File all of this under">
-              <Sel value={r.dealId} onChange={(e) => set({ dealId: e.target.value, setStep: !!e.target.value && r.setStep, setTemp: !!e.target.value && r.setTemp })}>
+            <Field label="File these under">
+              <Sel value={r.dealId} onChange={(e) => set({ dealId: e.target.value, setTemp: !!e.target.value && r.setTemp })}>
                 <option value="">the account (no one project)</option>
                 {liveHere.map((x) => <option key={x.id} value={x.id}>{dealProduct(x) || x.did}</option>)}
               </Sel>
             </Field>
           )}
 
+          {/* ONE list. Everything the conversation asks of us — our own
+              promises, a chase for each of theirs, and the next move —
+              already merged, so there is nothing to cross-reference. */}
           <div>
-            <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mb-1">
-              Tasks to raise {r.tasks.length ? "· " + on + " of " + r.tasks.length + " ticked" : ""}
-            </p>
-            {!r.tasks.length && <p className="text-xs text-slate-400">Nothing in the note asks for an action.</p>}
+            {!r.tasks.length && <p className="text-xs text-slate-400">Nothing in this conversation asks for an action.</p>}
             {r.tasks.map((t, i) => (
               <div key={t.key} className="flex items-center gap-2 py-1">
-                <input type="checkbox" checked={t.on} onChange={(e) => set({ tasks: row(r.tasks, i, { on: e.target.checked }) })}
-                  className="flex-none" />
-                <input value={t.title} onChange={(e) => set({ tasks: row(r.tasks, i, { title: e.target.value }) })}
+                <input type="checkbox" checked={t.on} onChange={(e) => row(i, { on: e.target.checked })} className="flex-none" />
+                <input value={t.title} onChange={(e) => row(i, { title: e.target.value })}
                   className={cls("text-[13px] flex-1 min-w-0 border-b border-dashed focus:border-blue-500 focus:outline-none bg-transparent py-0.5",
-                    t.on ? "border-slate-300 text-slate-800" : "border-slate-200 text-slate-400")} />
-                <select value={t.assignee} onChange={(e) => set({ tasks: row(r.tasks, i, { assignee: e.target.value }) })}
-                  title="Who does it" className="text-[10px] text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none max-w-[7rem] truncate">
+                    t.on ? "border-slate-300 text-slate-800" : "border-slate-200 text-slate-400 line-through")} />
+                <select value={t.assignee} onChange={(e) => row(i, { assignee: e.target.value })}
+                  title="Who does it" className="text-[11px] text-slate-600 border border-slate-200 rounded px-1 py-0.5 bg-white flex-none max-w-[8rem] truncate">
                   {people.map((u) => <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>)}
                 </select>
-                <input type="date" value={t.due} onChange={(e) => set({ tasks: row(r.tasks, i, { due: e.target.value }) })}
-                  title="Due" className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
+                <input type="date" value={t.due} onChange={(e) => row(i, { due: e.target.value })}
+                  title="Due" className="text-[11px] font-mono text-slate-600 border border-slate-200 rounded px-1 py-0.5 bg-white flex-none w-[8rem]" />
               </div>
             ))}
-            <p className="text-[10.5px] text-slate-400 mt-1">Only dated, explicit promises arrive ticked. Anything inferred is left for you to decide.</p>
+            <p className="text-[10.5px] text-slate-400 mt-1.5">
+              Untick anything that is not real work. Dates the client did not give are a week out — change them.
+              {" Promises are recorded behind the tasks you keep, so nothing is tracked that you dropped."}
+            </p>
           </div>
 
-          {/* Commitments were being written with no review at all, and they
-              outlive tasks — a missed promise is on the record for good. */}
-          {(r.ours.length > 0 || r.theirs.length > 0) && (
-            <div>
-              <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mb-1">Promises to track</p>
-              {r.ours.map((x, i) => (
-                <label key={"o" + i} className="flex items-start gap-2 py-0.5 text-[12.5px] cursor-pointer">
-                  <input type="checkbox" checked={x.on} onChange={(e) => set({ ours: row(r.ours, i, { on: e.target.checked }) })} className="mt-1 flex-none" />
-                  <span className={x.on ? "text-slate-700" : "text-slate-400 line-through"}>
-                    <b className="text-slate-500">we</b> {x.what}{x.due ? " — by " + x.due : " — no date given"}
-                    {x.certainty === "implied" && <span className="text-amber-600"> (implied, not promised)</span>}
-                  </span>
-                </label>
-              ))}
-              {r.theirs.map((x, i) => (
-                <label key={"t" + i} className="flex items-start gap-2 py-0.5 text-[12.5px] cursor-pointer">
-                  <input type="checkbox" checked={x.on} onChange={(e) => set({ theirs: row(r.theirs, i, { on: e.target.checked }) })} className="mt-1 flex-none" />
-                  <span className={x.on ? "text-slate-700" : "text-slate-400 line-through"}>
-                    <b className="text-slate-500">they</b> {x.what}{x.due ? " — by " + x.due : " — no date given"}
-                  </span>
-                </label>
-              ))}
-            </div>
-          )}
-
-          {/* Both of these were already worked out and then thrown away. */}
-          {!!r.dealId && (
-            <div className="border-t border-slate-200 pt-3 space-y-1">
-              {r.w.nextStep && r.w.nextStep.what && (
-                <label className="flex items-start gap-2 text-[12.5px] cursor-pointer">
-                  <input type="checkbox" checked={r.setStep} onChange={(e) => set({ setStep: e.target.checked })} className="mt-1 flex-none" />
-                  <span className="text-slate-700">Set the next step on <b>{dealLabel(r.dealId)}</b>: “{r.w.nextStep.what}”{r.w.nextStep.when ? " by " + r.w.nextStep.when : ""}</span>
-                </label>
-              )}
-              {r.w.temperature && (
-                <label className="flex items-start gap-2 text-[12.5px] cursor-pointer">
-                  <input type="checkbox" checked={r.setTemp} onChange={(e) => set({ setTemp: e.target.checked })} className="mt-1 flex-none" />
-                  <span className="text-slate-700">Move <b>{dealLabel(r.dealId)}</b> to <b>{r.w.temperature}</b> — judged from what the client said</span>
-                </label>
-              )}
-            </div>
+          {!!r.dealId && r.w.temperature && (
+            <label className="flex items-start gap-2 text-[12.5px] cursor-pointer border-t border-slate-200 pt-3">
+              <input type="checkbox" checked={r.setTemp} onChange={(e) => set({ setTemp: e.target.checked })} className="mt-1 flex-none" />
+              <span className="text-slate-700">Also move <b>{dealLabel(r.dealId)}</b> to <b>{r.w.temperature}</b> — judged from what the client said</span>
+            </label>
           )}
 
           {r.w.risk && <p className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">Risk: {r.w.risk}</p>}
