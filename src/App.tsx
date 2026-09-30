@@ -5258,7 +5258,13 @@ function ExpensesView({ me, data, saveExpenses }) {
     : s === "rejected" ? <Chip color="red"><XCircle size={11} /> Rejected</Chip>
     : <Chip color="amber"><Clock size={11} /> Pending</Chip>;
 
-  const ExpCard = ({ e, actions }) => {
+  /* Called as a function below, not mounted as <ExpCard/>. It is declared
+     inside a render, so as a component its TYPE changes every keystroke and
+     React remounts it — which drops focus from the approver's note field
+     after each letter. It holds no hooks, so calling it inlines the JSX
+     into this render and the input keeps focus. (Same defect the comms
+     approval sheet had.) */
+  const ExpCard = ({ e, actions, key: _k }) => {
     const u = users.find((x) => x.id === e.userId);
     const c = companies.find((x) => x.id === e.companyId);
     const d = users.find((x) => x.id === e.decidedBy);
@@ -5298,19 +5304,19 @@ function ExpensesView({ me, data, saveExpenses }) {
         <div className="mb-6">
           <SectionTitle>Approval queue</SectionTitle>
           {pendingQueue.length === 0 ? <p className="text-sm text-slate-400 bg-white border border-slate-200 rounded-xl p-4">Queue is clear.</p>
-            : <div className="space-y-2">{pendingQueue.map((e) => <ExpCard key={e.id} e={e} actions />)}</div>}
+            : <div className="space-y-2">{pendingQueue.map((e) => <React.Fragment key={e.id}>{ExpCard({ e, actions: true })}</React.Fragment>)}</div>}
         </div>
       )}
 
       <SectionTitle>My requests</SectionTitle>
       {mine.length === 0 ? (
         <Empty icon={Receipt} title="No requests yet" sub="Travelling to meet a client? Raise it here — admin or finance approves before you book." action={<Btn kind="primary" onClick={() => setCreating(true)}><Plus size={14} /> New travel request</Btn>} />
-      ) : <div className="space-y-2">{mine.map((e) => <ExpCard key={e.id} e={e} />)}</div>}
+      ) : <div className="space-y-2">{mine.map((e) => <React.Fragment key={e.id}>{ExpCard({ e })}</React.Fragment>)}</div>}
 
       {isApprover && decided.length > 0 && (
         <div className="mt-6">
           <SectionTitle>Decision history</SectionTitle>
-          <div className="space-y-2">{decided.slice(0, 20).map((e) => <ExpCard key={e.id} e={e} />)}</div>
+          <div className="space-y-2">{decided.slice(0, 20).map((e) => <React.Fragment key={e.id}>{ExpCard({ e })}</React.Fragment>)}</div>
         </div>
       )}
 
@@ -7353,91 +7359,95 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
      Everything the AI worked out, shown before any of it is written. Rows
      are ticked OFF, not on: a sheet you rubber-stamp is worse than no
      sheet, because it puts your name on the machine's guesses. */
-  const ReviewSheet = ({ r }) => {
-    const set = (patch) => setReview({ ...r, ...patch });
-    const row = (i, patch) => set({ tasks: r.tasks.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
-    const people = users.filter((u) => u.active !== false);
-    // An empty row is not a task, however ticked it looks.
-    const on = r.tasks.filter((t) => t.on && String(t.title || "").trim()).length;
-    return (
-      <Modal title="Tasks from this conversation" onClose={() => setReview(null)} wide
-        footer={<>
-          <Btn onClick={() => { const { touch } = r; touch.dealId = r.dealId || "";
-            saveTouch(touch).then(() => { setReview(null); clearComposer(); reload(); }); }}>
-            Just file the note
-          </Btn>
-          <Btn kind="primary" disabled={!on} onClick={() => applyReview(r)}>
-            <Check size={14} /> Add {on} task{on === 1 ? "" : "s"}
-          </Btn>
-        </>}>
-        <div className="space-y-4">
-          <div>
-            <p className="text-sm font-semibold text-slate-900">{r.w.title || "Client conversation"}</p>
-            {r.w.summary && <p className="text-[13px] text-slate-600 mt-1 leading-relaxed">{r.w.summary}</p>}
-          </div>
-
-          {liveHere.length > 0 && (
-            <Field label="File these under">
-              <Sel value={r.dealId} onChange={(e) => set({ dealId: e.target.value, setTemp: !!e.target.value && r.setTemp })}>
-                <option value="">the account (no one project)</option>
-                {liveHere.map((x) => <option key={x.id} value={x.id}>{dealProduct(x) || x.did}</option>)}
-              </Sel>
-            </Field>
-          )}
-
-          {/* ONE list. Everything the conversation asks of us — our own
-              promises, a chase for each of theirs, and the next move —
-              already merged, so there is nothing to cross-reference. */}
-          <div>
-            {!r.tasks.length && <p className="text-xs text-slate-400">Nothing in this conversation asks for an action.</p>}
-            {r.tasks.map((t, i) => (
-              <div key={t.key} className="flex items-center gap-2 py-1">
-                <input type="checkbox" checked={t.on} onChange={(e) => row(i, { on: e.target.checked })} className="flex-none" />
-                <input value={t.title} onChange={(e) => row(i, { title: e.target.value })}
-                  className={cls("text-[13px] flex-1 min-w-0 border-b border-dashed focus:border-blue-500 focus:outline-none bg-transparent py-0.5",
-                    t.on ? "border-slate-300 text-slate-800" : "border-slate-200 text-slate-400 line-through")} />
-                <select value={t.assignee} onChange={(e) => row(i, { assignee: e.target.value })}
-                  title="Who does it" className="text-[11px] text-slate-600 border border-slate-200 rounded px-1 py-0.5 bg-white flex-none max-w-[8rem] truncate">
-                  {people.map((u) => <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>)}
-                </select>
-                <input type="date" value={t.due} onChange={(e) => row(i, { due: e.target.value })}
-                  title="Due" className="text-[11px] font-mono text-slate-600 border border-slate-200 rounded px-1 py-0.5 bg-white flex-none w-[8rem]" />
-              </div>
-            ))}
-            {/* The AI reads what was said; it cannot read what you decided
-                on the way out of the room. A row you add by hand behaves
-                exactly like a proposed one — same fields, same approval. */}
-            <button
-              onClick={() => set({ tasks: [...r.tasks, {
-                key: "m" + r.tasks.length + "-" + nowTS(), title: "", due: defaultDue(),
-                assignee: me.id, on: true, side: null, what: "", toWhom: "", certainty: "promised",
-              }] })}
-              className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-1.5">
-              <Plus size={12} /> add a task
-            </button>
-            <p className="text-[10.5px] text-slate-400 mt-1.5">
-              Untick anything that is not real work, and add whatever the conversation implied but nobody said aloud.
-              Dates the client did not give are a week out — change them.
-              {" Promises are recorded behind the tasks you keep, so nothing is tracked that you dropped."}
-            </p>
-          </div>
-
-          {!!r.dealId && r.w.temperature && (
-            <label className="flex items-start gap-2 text-[12.5px] cursor-pointer border-t border-slate-200 pt-3">
-              <input type="checkbox" checked={r.setTemp} onChange={(e) => set({ setTemp: e.target.checked })} className="mt-1 flex-none" />
-              <span className="text-slate-700">Also move <b>{dealLabel(r.dealId)}</b> to <b>{r.w.temperature}</b> — judged from what the client said</span>
-            </label>
-          )}
-
-          {r.w.risk && <p className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">Risk: {r.w.risk}</p>}
-        </div>
-      </Modal>
-    );
-  };
+  /* The sheet is plain JSX, NOT a component defined in here. It was the
+     latter, and a function declared inside a render is a NEW component
+     type on every keystroke — React threw the old tree away and mounted a
+     fresh one, so the input lost focus after each letter. Every field on
+     the sheet had it; the task you type from scratch is just where it is
+     unmissable. Inline, the element type is stable and focus survives. */
+  const setR = (patch) => setReview((cur) => (cur ? { ...cur, ...patch } : cur));
+  const setRow = (i, patch) =>
+    setReview((cur) => (cur ? { ...cur, tasks: cur.tasks.map((x, j) => (j === i ? { ...x, ...patch } : x)) } : cur));
+  // An empty row is not a task, however ticked it looks.
+  const reviewOn = review ? review.tasks.filter((t) => t.on && String(t.title || "").trim()).length : 0;
+  const activePeople = users.filter((u) => u.active !== false);
 
   return (
     <div className="mt-4 space-y-4">
-      {review && <ReviewSheet r={review} />}
+      {review && (
+    <Modal title="Tasks from this conversation" onClose={() => setReview(null)} wide
+      footer={<>
+        <Btn onClick={() => { const { touch } = review; touch.dealId = review.dealId || "";
+          saveTouch(touch).then(() => { setReview(null); clearComposer(); reload(); }); }}>
+          Just file the note
+        </Btn>
+        <Btn kind="primary" disabled={!reviewOn} onClick={() => applyReview(review)}>
+          <Check size={14} /> Add {reviewOn} task{reviewOn === 1 ? "" : "s"}
+        </Btn>
+      </>}>
+      <div className="space-y-4">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">{review.w.title || "Client conversation"}</p>
+          {review.w.summary && <p className="text-[13px] text-slate-600 mt-1 leading-relaxed">{review.w.summary}</p>}
+        </div>
+
+        {liveHere.length > 0 && (
+          <Field label="File these under">
+            <Sel value={review.dealId} onChange={(e) => setR({ dealId: e.target.value, setTemp: !!e.target.value && review.setTemp })}>
+              <option value="">the account (no one project)</option>
+              {liveHere.map((x) => <option key={x.id} value={x.id}>{dealProduct(x) || x.did}</option>)}
+            </Sel>
+          </Field>
+        )}
+
+        {/* ONE list. Everything the conversation asks of us — our own
+            promises, a chase for each of theirs, and the next move —
+            already merged, so there is nothing to cross-reference. */}
+        <div>
+          {!review.tasks.length && <p className="text-xs text-slate-400">Nothing in this conversation asks for an action.</p>}
+          {review.tasks.map((t, i) => (
+            <div key={t.key} className="flex items-center gap-2 py-1">
+              <input type="checkbox" checked={t.on} onChange={(e) => setRow(i, { on: e.target.checked })} className="flex-none" />
+              <input value={t.title} onChange={(e) => setRow(i, { title: e.target.value })}
+                className={cls("text-[13px] flex-1 min-w-0 border-b border-dashed focus:border-blue-500 focus:outline-none bg-transparent py-0.5",
+                  t.on ? "border-slate-300 text-slate-800" : "border-slate-200 text-slate-400 line-through")} />
+              <select value={t.assignee} onChange={(e) => setRow(i, { assignee: e.target.value })}
+                title="Who does it" className="text-[11px] text-slate-600 border border-slate-200 rounded px-1 py-0.5 bg-white flex-none max-w-[8rem] truncate">
+                {activePeople.map((u) => <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>)}
+              </select>
+              <input type="date" value={t.due} onChange={(e) => setRow(i, { due: e.target.value })}
+                title="Due" className="text-[11px] font-mono text-slate-600 border border-slate-200 rounded px-1 py-0.5 bg-white flex-none w-[8rem]" />
+            </div>
+          ))}
+          {/* The AI reads what was said; it cannot read what you decided
+              on the way out of the room. A row you add by hand behaves
+              exactly like a proposed one — same fields, same approval. */}
+          <button
+            onClick={() => setR({ tasks: [...review.tasks, {
+              key: "m" + review.tasks.length + "-" + nowTS(), title: "", due: defaultDue(),
+              assignee: me.id, on: true, side: null, what: "", toWhom: "", certainty: "promised",
+            }] })}
+            className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-1.5">
+            <Plus size={12} /> add a task
+          </button>
+          <p className="text-[10.5px] text-slate-400 mt-1.5">
+            Untick anything that is not real work, and add whatever the conversation implied but nobody said aloud.
+            Dates the client did not give are a week out — change them.
+            {" Promises are recorded behind the tasks you keep, so nothing is tracked that you dropped."}
+          </p>
+        </div>
+
+        {!!review.dealId && review.w.temperature && (
+          <label className="flex items-start gap-2 text-[12.5px] cursor-pointer border-t border-slate-200 pt-3">
+            <input type="checkbox" checked={review.setTemp} onChange={(e) => setR({ setTemp: e.target.checked })} className="mt-1 flex-none" />
+            <span className="text-slate-700">Also move <b>{dealLabel(review.dealId)}</b> to <b>{review.w.temperature}</b> — judged from what the client said</span>
+          </label>
+        )}
+
+        {review.w.risk && <p className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">Risk: {review.w.risk}</p>}
+      </div>
+    </Modal>
+      )}
       {/* ── email intake: the brief and the mailbox ── */}
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <SectionTitle right={<Btn size="sm" kind="primary" disabled={!boxes.includes("@") || fetching} onClick={fetchMail}>
