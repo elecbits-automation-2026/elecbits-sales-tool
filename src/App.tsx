@@ -7111,6 +7111,10 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
   /* Turn a write-up into the sheet's starting state. Shared, so a note
      whose write-up failed can be run again later and get the same sheet
      without anything being retyped. */
+  // A week out: the default a dateless task gets, in one place so the row
+  // you add by hand starts the same way as the ones the AI proposed.
+  const defaultDue = () => localISO(new Date(Date.now() + 7 * 86400000));
+
   const buildReview = (touch, w) => {
     const byName = (n) => (users.find((u) => u.name === n) || me).id;
     const plus = (n) => localISO(new Date(Date.now() + n * 86400000));
@@ -7353,7 +7357,8 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
     const set = (patch) => setReview({ ...r, ...patch });
     const row = (i, patch) => set({ tasks: r.tasks.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
     const people = users.filter((u) => u.active !== false);
-    const on = r.tasks.filter((t) => t.on).length;
+    // An empty row is not a task, however ticked it looks.
+    const on = r.tasks.filter((t) => t.on && String(t.title || "").trim()).length;
     return (
       <Modal title="Tasks from this conversation" onClose={() => setReview(null)} wide
         footer={<>
@@ -7399,8 +7404,20 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
                   title="Due" className="text-[11px] font-mono text-slate-600 border border-slate-200 rounded px-1 py-0.5 bg-white flex-none w-[8rem]" />
               </div>
             ))}
+            {/* The AI reads what was said; it cannot read what you decided
+                on the way out of the room. A row you add by hand behaves
+                exactly like a proposed one — same fields, same approval. */}
+            <button
+              onClick={() => set({ tasks: [...r.tasks, {
+                key: "m" + r.tasks.length + "-" + nowTS(), title: "", due: defaultDue(),
+                assignee: me.id, on: true, side: null, what: "", toWhom: "", certainty: "promised",
+              }] })}
+              className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-1.5">
+              <Plus size={12} /> add a task
+            </button>
             <p className="text-[10.5px] text-slate-400 mt-1.5">
-              Untick anything that is not real work. Dates the client did not give are a week out — change them.
+              Untick anything that is not real work, and add whatever the conversation implied but nobody said aloud.
+              Dates the client did not give are a week out — change them.
               {" Promises are recorded behind the tasks you keep, so nothing is tracked that you dropped."}
             </p>
           </div>
