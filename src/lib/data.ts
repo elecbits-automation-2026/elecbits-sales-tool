@@ -1044,6 +1044,25 @@ export async function loadTouches(orgId: string): Promise<any[]> {
     ai: a.ai || {},
   }));
 }
+/* The same log, unfiltered by company and bounded: what the whole team has
+   actually done with clients lately. The assistants were answering "what is
+   happening with X?" from the CRM fields alone — stage, owner, value, stale
+   days — because the touch log was only ever fetched one company at a time,
+   inside the company screen. So a call logged this morning was invisible to
+   the question most likely to be asked about it. */
+export async function loadRecentTouches(limit = 150): Promise<any[]> {
+  const { data } = await tbl(supabase, "org_activities").select("*")
+    .neq("kind", "note").order("occurred_at", { ascending: false }).limit(limit);
+  return (data || []).map((a: any) => ({
+    id: a.id, companyId: a.org_id, kind: a.kind, direction: a.direction,
+    subject: a.subject || "", body: a.body || "", contactName: a.contact_name || "",
+    at: a.occurred_at || a.at, loggedAt: a.at, author: a.author_id,
+    dealId: a.deal_id || "", meetingId: a.meeting_id || "",
+    link: a.link || "", driveFile: a.drive_file || "", source: a.source || "manual",
+    ai: a.ai || {},
+  }));
+}
+
 export async function saveTouch(t: any): Promise<string | null> {
   const row = {
     id: t.id, org_id: t.companyId, kind: t.kind, direction: t.direction || "out",
