@@ -14,7 +14,7 @@ import {
   syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
   syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
   loadChat, loadChatDates, saveChat, saveSession, loadAllIdeas,
-  loadTouches, saveTouch, loadCommitments, saveCommitments,
+  loadTouches, loadRecentTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum, deleteDeal,
   saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
@@ -2445,6 +2445,28 @@ function dealEvidence(deal, comp, tasks, touches, commits, deals) {
    cards read as the same company twice and only the deal code tells them
    apart, which nobody scans as meaning. Kept short on purpose: a label for
    a column, not a description. */
+/* ─── WHAT ACTUALLY HAPPENED, FOR AN AI TO READ ────────────────────────────
+   Every assistant was answering "what is happening with X?" out of the CRM
+   fields — stage, owner, value, stale days, profile completeness — because
+   that is all the snapshot carried. A call logged an hour earlier was not in
+   the prompt at all, so the honest answer it gave ("nothing on record") was
+   wrong about the record and right about its own context.
+
+   This is the touch log in the fewest characters that still say something:
+   when, which company, how, which way, and the line the salesperson wrote.
+   Bounded, because a prompt is not a database.                            */
+function touchLines(touches, companies, limit = 40) {
+  const name = (id) => (companies || []).find((c) => c.id === id);
+  return (touches || []).slice(0, limit).map((t) => {
+    const c = name(t.companyId);
+    const said = String(t.subject || t.body || "").replace(/\s+/g, " ").trim();
+    return fmtDate(t.at) + " · " + (c ? c.name : "unknown company")
+      + " · " + (t.kind || "touch") + " (" + (t.direction === "in" ? "they came to us" : "we reached out") + ")"
+      + (t.contactName ? " with " + t.contactName : "")
+      + (said ? " — " + said.slice(0, 240) : "");
+  }).join("\n");
+}
+
 const PRODUCT_MAX = 40;
 const dealProduct = (d) => String((d && d.product) || "").trim();
 
@@ -6126,6 +6148,15 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
   const bodyRef = useRef(null);
   const speech = useSpeech((t) => setInput((p) => (p ? p + " " : "") + t));
 
+  // The touch log, across every client. Fetched once here rather than
+  // per-company, because this assistant is asked about any of them.
+  const [recentTouches, setRecentTouches] = useState([]);
+  useEffect(() => {
+    let a = true;
+    loadRecentTouches(150).then((x) => a && setRecentTouches(x)).catch(() => {});
+    return () => { a = false; };
+  }, []);
+
   // Date-wise threads: each day is its own saved conversation, like the PMS.
   useEffect(() => {
     let alive = true;
@@ -6144,8 +6175,18 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
     }));
     const dealSnap = deals.slice(0, 80).map((d) => ({
       company: (companies.find((c) => c.id === d.companyId) || {}).name,
-      stage: d.lost ? "lost" : stageName(d.stage), value: d.value,
+      // product and temperature matter as much as the stage: one client can
+      // run several projects, and "lead" says nothing about client intent.
+      project: dealProduct(d) || undefined,
+      stage: d.lost ? "lost" : stageName(d.stage),
+      phase: d.lost ? "lost" : (d.temperature || "cold"),
+      value: d.value,
       owner: (users.find((u) => u.id === d.ownerId) || {}).name, staleDays: dealStaleDays(d),
+      nextStep: d.nextStep && !d.nextStepDoneAt ? d.nextStep : undefined,
+    }));
+    const openTasks = (tasks || []).filter((t) => t.status !== "done").slice(0, 40).map((t) => ({
+      title: t.title, company: (companies.find((c) => c.id === t.companyId) || {}).name,
+      who: (users.find((u) => u.id === t.assignee) || {}).name, due: t.due || "",
     }));
     const mem = (memory || []).map((m) => "• " + m.title + ": " + m.text).join("\n");
     return [
@@ -6154,6 +6195,12 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
       "SYSTEM MEMORY (durable facts & rules):\n" + (mem || "(none)"),
       "COMPANIES: " + JSON.stringify(compSnap),
       "DEALS: " + JSON.stringify(dealSnap),
+      "OPEN TASKS: " + JSON.stringify(openTasks),
+      // The part that was missing. Without it the assistant could only
+      // describe the CRM fields, and said so — accurately, and uselessly.
+      "WHAT HAS ACTUALLY HAPPENED — every logged call, mail, meeting and visit, newest first:\n"
+        + (touchLines(recentTouches, companies) || "(nothing logged yet)"),
+      "When asked what is happening with a client, lead with THE TOUCH LOG — the last conversation and what was said in it. Stage, value and profile completeness are context, not the answer. Say 'nothing logged' only when the log above genuinely holds nothing for that client.",
       "TEAM: " + JSON.stringify(users.map((u) => ({ name: u.name, role: roleLabel(u.role), dept: u.dept }))),
       "YOU RUN THE WHOLE TOOL. When the user asks you to DO something, do it by ending your reply with one line: ACTIONS_JSON [ ... ] where each action is one of:",
       "{\"type\":\"task\",\"title\":\"...\",\"company\":\"name or empty\",\"assignee\":\"name or empty\",\"due\":\"YYYY-MM-DD or empty\"} · {\"type\":\"company\",\"name\":\"...\",\"industry\":\"\",\"city\":\"\",\"contact\":\"\"} · {\"type\":\"deal\",\"company\":\"existing company name\",\"value\":0,\"owner\":\"name or empty\"} · {\"type\":\"memory\",\"title\":\"...\",\"text\":\"...\"} · {\"type\":\"scrum\",\"text\":\"the scrum note to file for today\"}",
@@ -6694,6 +6741,17 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
   const qset = (questionSets.company_card && questionSets.company_card.questions) || [];
   const missing = missingFields(c);
 
+  // Same blind spot as the workspace assistant, one screen in: this chat
+  // knew the company's FIELDS and nothing about what had been done with
+  // them. Asked "what is happening here?" it could only recite the profile.
+  const [touches, setTouches] = useState([]);
+  useEffect(() => {
+    let a = true;
+    loadTouches(c.id).then((x) => a && setTouches(x)).catch(() => a && setTouches([]));
+    return () => { a = false; };
+  }, [c.id]);
+  const myDeals = (data.deals || []).filter((x) => x.companyId === c.id && !x.lost);
+
   const fileNote = (text) => {
     const next = companies.map((x) => x.id === c.id ? { ...x, activity: [...(x.activity || []), { at: nowTS(), by: me.id, text }] } : x);
     saveCompanies(next);
@@ -6729,6 +6787,13 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
         "You are the company-record assistant on the Elecbits Sales OS, working the record of \"" + c.name + "\" like a disciplined HubSpot operator.",
         "COMPANY RECORD: " + JSON.stringify({ name: c.name, cid: c.cid, industry: c.industry, city: c.city, whatTheyDo: c.whatTheyDo, potential: c.potential, contact: c.contactPerson, designation: c.designation, source: c.source }),
         "FIELDS STILL MISSING ON THE RECORD: " + (missing.join(", ") || "none"),
+        "LIVE PROJECTS: " + JSON.stringify(myDeals.map((x) => ({
+          id: x.did, project: dealProduct(x) || "(unnamed)", phase: x.temperature || "cold",
+          value: x.value, nextStep: x.nextStep && !x.nextStepDoneAt ? x.nextStep : undefined,
+        }))),
+        "WHAT HAS ACTUALLY HAPPENED WITH THIS CLIENT — every logged call, mail, meeting and visit, newest first:\n"
+          + (touchLines(touches, [c], 25) || "(nothing logged yet)"),
+        "Asked what is happening here, answer from the touch log first — the last conversation and what was said in it. The profile fields are context, not the answer.",
         "THE TRAINED QUESTION SET (ask these, one at a time, most important first — never a wall of questions): " + JSON.stringify(qset),
         "Rules: acknowledge what the agent just told you in one short sentence; extract any facts (including from attached images/PDFs — read them carefully); then ask exactly ONE next question from the set that is still unanswered. Be specific and factual, never generic.",
         "THIS COMPANY'S DRIVE FOLDER is named \"" + driveFolderName(c) + "\" — use it when asked about files.",
