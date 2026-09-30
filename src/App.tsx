@@ -2081,7 +2081,7 @@ function CompanyDetail({ me, company: c, data, saveCompanies, saveDeals, saveTas
 
       </>)}
 
-      {ctab === "comms" && <CommsTab me={me} company={c} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies} />}
+      {ctab === "comms" && <CommsTab me={me} company={c} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies} saveDeals={saveDeals} />}
 
       {ctab === "research" && (
         <div className="mt-4 space-y-4">
@@ -2466,6 +2466,14 @@ function touchLines(touches, companies, limit = 40) {
       + (said ? " — " + said.slice(0, 240) : "");
   }).join("\n");
 }
+
+/* Two bits of text naming the same piece of work. Used to stop one promise
+   becoming both a commitment and a separate task that says the same thing. */
+const sameish = (a, b) => {
+  const n = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const [x, y] = [n(a), n(b)];
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+};
 
 const PRODUCT_MAX = 40;
 const dealProduct = (d) => String((d && d.product) || "").trim();
@@ -6981,7 +6989,10 @@ const draftSystem = (c, me, touch, writeup) => [
   "Reply with ONLY: DRAFT_JSON {\"subject\":\"...\",\"email\":\"...\",\"whatsapp\":\"...\",\"skip\":\"reason to not send, or empty\"}",
 ].join("\n");
 
-function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
+// saveDeals is here because approving a write-up can set the deal's next
+// step and move its temperature — both of which the AI already worked out
+// and the tool used to throw away.
+function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals }) {
   const { users, tasks } = data;
   const [touches, setTouches] = useState(null);
   const [commits, setCommits] = useState([]);
@@ -7001,6 +7012,15 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
   const [link, setLink] = useState("");
   const [driveFile, setDriveFile] = useState("");
   const [checkMsg, setCheckMsg] = useState("");
+  // WHICH PROJECT this conversation was about. Optional on purpose: a first
+  // call happens before there is a project to attach it to, and an intro
+  // mail or a payment-terms thread is genuinely about the account, not one
+  // deal. Defaults to the client's only live project when there is one.
+  const liveHere = (data.deals || []).filter((x) => x.companyId === c.id && !x.lost && x.stage !== "po");
+  const [dealF, setDealF] = useState(() => soleDealId(c.id, data.deals));
+  useEffect(() => { setDealF(soleDealId(c.id, data.deals)); }, [c.id]);
+  // The AI's write-up, held back for approval instead of written straight in.
+  const [review, setReview] = useState(null);
 
   const reload = () => {
     loadTouches(c.id).then(setTouches).catch(() => setTouches([]));
@@ -7061,19 +7081,44 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
   const openCommits = commits.filter((x) => x.status === "open");
   const overdue = openCommits.filter((x) => x.due && x.due < todayStr());
 
-  const fileToDrive = async (title, body) => {
+  /* setTemperature and saveNextStep write straight to the database; the
+     board is rendered from the in-memory copy, so it has to be told too or
+     the change only appears after a reload. */
+  const patchDealLocal = (id, patch) => {
+    if (!saveDeals || !id) return;
+    saveDeals((data.deals || []).map((x) => (x.id === id ? { ...x, ...patch, updatedAt: nowTS() } : x)));
+  };
+
+  // A deal's own name, for a label or a folder path.
+  const dealLabel = (id) => {
+    const x = (data.deals || []).find((y) => y.id === id);
+    return x ? (dealProduct(x) || x.did) : "";
+  };
+  /* A conversation about one project belongs in that project's folder, not
+     loose in the company's. With no project named it files where it always
+     did — which is right for an account-level thread. */
+  const fileToDrive = async (title, body, dealId) => {
     try {
       const slug = String(title).toLowerCase().replace(/[^\w\- ]/g, "").trim().replace(/\s+/g, "-").slice(0, 50);
-      await drive.write(driveFolderName(c), "Client-Comms",
+      const sub = dealId && dealLabel(dealId) ? "Client-Comms/" + dealLabel(dealId) : "Client-Comms";
+      await drive.write(driveFolderName(c), sub,
         todayStr() + "_" + kind + "_" + slug + ".md", body);
     } catch (e) { /* filing is best-effort; the record is in the DB either way */ }
   };
 
+  const clearComposer = () => { setLine(""); setNotes(""); setLink(""); setDriveFile(""); setMore(false); };
+
+  /* Log files the note. Log + AI reads it, proposes, and WAITS — nothing it
+     infers is written until it has been looked at. That is the whole point:
+     commitments and tasks the AI invents are worse than none, and this is
+     the one moment the person still remembers the meeting well enough to
+     say which of them are real. */
   const log = async (withAI) => {
     if (!line.trim() && !notes.trim()) return;
     setBusy(true); setErr("");
     const touch = {
-      id: uid(), companyId: c.id, kind, direction: dir, at: new Date(when).toISOString(),
+      id: uid(), companyId: c.id, dealId: dealF || "", kind, direction: dir,
+      at: new Date(when).toISOString(),
       subject: line.trim(), body: notes.trim() || line.trim(), contactName: contact.trim(),
       author: me.id, link: link.trim(), driveFile: driveFile.trim(), source: "manual", ai: {},
     };
@@ -7085,58 +7130,137 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
         if (w) {
           touch.ai = w;
           touch.subject = w.title || touch.subject;
-          // promises become tracked commitments
-          const fresh = [
-            ...(w.ourCommitments || []).map((x) => ({
-              id: uid(), companyId: c.id, activityId: touch.id, side: "us", what: x.what,
-              toWhom: x.toWhom || contact.trim(), due: x.due || "", certainty: x.certainty || "promised",
-              status: "open", ownerId: (users.find((u) => u.name === x.owner) || me).id, createdBy: me.id,
-            })),
-            ...(w.theirCommitments || []).map((x) => ({
-              id: uid(), companyId: c.id, activityId: touch.id, side: "them", what: x.what,
-              toWhom: x.who || contact.trim(), due: x.due || "", certainty: "promised",
-              status: "open", ownerId: null, createdBy: me.id,
-            })),
-          ];
-          if (fresh.length) { await saveCommitments(fresh); }
-          // Credited ideas feed the Performance → Ideas & contribution tab,
-          // which reads the meetings quartet — file this conversation there.
-          if ((w.ideas || []).length) {
-            const first = (n) => String(n || "").trim().toLowerCase().split(" ")[0];
-            const session = {
-              id: uid(), companyId: c.id, dealId: "", date: todayStr(),
-              title: w.title || touch.subject || "Client conversation",
-              attendees: contact.trim() ? [contact.trim()] : [],
-              raw: touch.body, createdBy: me.id,
-              ideas: w.ideas.map((x) => ({
-                by: x.by || "", idea: x.idea || "", impact: x.impact || "",
-                value: Math.min(5, Math.max(1, Number(x.value) || 3)), why: x.why || "",
-                authorId: (users.find((u) => x.by && first(u.name) === first(x.by)) || {}).id || null,
-              })).filter((x) => x.idea),
-              decisions: (w.decisions || []).map((x) => ({ what: x.what || "", ownerName: x.owner || "" })).filter((x) => x.what),
-              challenges: (w.challenges || []).map((x) => ({
-                challenge: x.challenge || "", action: x.action || "",
-                status: ["solved", "open", "watch"].includes(x.status) ? x.status : "open",
-              })).filter((x) => x.challenge),
-            };
-            await saveSession(session);
-            touch.meetingId = session.id;
+          const byName = (n) => (users.find((u) => u.name === n) || me).id;
+
+          /* What to propose as a TASK. Our own promises, plus the next step
+             if it is not already one of them. Capped, and pre-ticked only
+             where a date was actually promised — an inferred item arrives
+             unticked, so a sheet is something you untick rather than
+             something you rubber-stamp. */
+          const ours = (w.ourCommitments || []).filter((x) => x && x.what);
+          const proposed = ours.slice(0, 5).map((x, i) => ({
+            key: "c" + i, title: x.what, due: x.due || "",
+            assignee: byName(x.owner), on: !!x.due && (x.certainty || "promised") === "promised",
+            from: i,                       // the commitment this came from
+          }));
+          const step = w.nextStep && w.nextStep.what ? String(w.nextStep.what) : "";
+          if (step && !ours.some((x) => sameish(x.what, step))) {
+            proposed.push({ key: "step", title: step, due: (w.nextStep && w.nextStep.when) || "",
+              assignee: byName(w.nextStep && w.nextStep.who), on: true, from: null });
           }
-          const md = ["# " + (w.title || touch.subject), c.name + " · " + fmtDate(touch.at) + " · " + kind + ", " + (dir === "in" ? "they came to us" : "we reached out"),
-            contact.trim() ? "With: " + contact.trim() : "", link.trim() ? "Source: " + link.trim() : "", "",
-            w.summary || "", "", "## What the client said", ...(w.clientSaid || []).map((x) => "- " + x),
-            "", "## We promised", ...(w.ourCommitments || []).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
-            "## They promised", ...(w.theirCommitments || []).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
-            "", "## Objections and how they went", ...(w.challenges || []).map((x) => "- " + x.challenge + " → " + (x.action || "") + " (" + x.status + ")"),
-            "", "## Decided", ...(w.decisions || []).map((x) => "- " + x.what),
-            "", "## Next step", (w.nextStep && w.nextStep.what) || "—", "", "## The note as it was written", touch.body,
-          ].filter((x) => x !== undefined).join("\n");
-          fileToDrive(w.title || touch.subject, md);
+          setReview({
+            touch, w, dealId: dealF || "",
+            tasks: proposed.slice(0, 5),
+            ours: ours.map((x) => ({ ...x, on: true })),
+            theirs: (w.theirCommitments || []).filter((x) => x && x.what).map((x) => ({ ...x, on: true })),
+            setStep: !!step && !!dealF,
+            setTemp: !!dealF && !!w.temperature,
+          });
+          setBusy(false);
+          return;                       // nothing is written until it is approved
         }
-      } catch (e) { setErr("Logged, but the write-up failed — the touch is saved."); }
+      } catch (e) { setErr("The write-up failed — filing the note as written."); }
     }
     await saveTouch(touch);
-    setLine(""); setNotes(""); setLink(""); setDriveFile(""); setMore(false);
+    clearComposer();
+    reload(); setBusy(false);
+  };
+
+  /* Approval. Everything the sheet still has ticked gets written, in one
+     go, against the project the touch names. A task raised from a promise
+     is stamped back onto that promise, so one promise never becomes two
+     records of itself. */
+  const applyReview = async (r) => {
+    setReview(null); setBusy(true);
+    const { touch, w } = r;
+    touch.dealId = r.dealId || "";
+    try {
+      const keptOurs = r.ours.filter((x) => x.on);
+      const fresh = [
+        ...keptOurs.map((x) => ({
+          id: uid(), companyId: c.id, dealId: r.dealId || "", activityId: touch.id, side: "us", what: x.what,
+          toWhom: x.toWhom || contact.trim(), due: x.due || "", certainty: x.certainty || "promised",
+          status: "open", ownerId: (users.find((u) => u.name === x.owner) || me).id, createdBy: me.id,
+        })),
+        ...r.theirs.filter((x) => x.on).map((x) => ({
+          id: uid(), companyId: c.id, dealId: r.dealId || "", activityId: touch.id, side: "them", what: x.what,
+          toWhom: x.who || contact.trim(), due: x.due || "", certainty: "promised",
+          status: "open", ownerId: null, createdBy: me.id,
+        })),
+      ];
+
+      // The approved tasks, each linked back to the promise it serves.
+      const newTasks = [];
+      for (const t of r.tasks.filter((x) => x.on && String(x.title || "").trim())) {
+        if (openTaskDupe(tasks, c.id, t.title, r.dealId || "")) continue;
+        const tid = uid();
+        newTasks.push(makeTask({ id: tid, companyId: c.id, dealId: r.dealId || "",
+          assignee: t.assignee || me.id, author: me.id, title: t.title,
+          details: t.from === null ? "The next step out of " + (w.title || "this conversation")
+                                   : "Promised in " + (w.title || "this conversation"),
+          due: t.due, source: t.from === null ? "step" : "commitment" }));
+        // stamp the link so the commitment does not offer "make a task" again
+        if (t.from !== null) {
+          const m = fresh.find((f) => f.side === "us" && sameish(f.what, t.title) && !f.taskId);
+          if (m) m.taskId = tid;
+        }
+      }
+      if (newTasks.length) saveTasks([...newTasks, ...tasks]);
+      if (fresh.length) await saveCommitments(fresh);
+
+      // The two things the write-up already worked out and used to discard.
+      if (r.setStep && r.dealId && w.nextStep && w.nextStep.what) {
+        const due = (w.nextStep.when || "") ? w.nextStep.when + "T18:30" : "";
+        saveNextStep(r.dealId, { what: w.nextStep.what, due, owner: me.id });
+        patchDealLocal(r.dealId, { nextStep: w.nextStep.what, nextStepDue: due, nextStepOwner: me.id,
+          nextStepSetAt: nowTS(), nextStepDoneAt: "" });
+      }
+      if (r.setTemp && r.dealId && w.temperature) {
+        const d0 = (data.deals || []).find((x) => x.id === r.dealId);
+        setTemperature(r.dealId, { from: (d0 && d0.temperature) || "cold", to: w.temperature,
+          why: w.summary || (w.title || "From a client conversation"), evidence: touch.subject || "",
+          decided: "human", by: me.id });
+        patchDealLocal(r.dealId, { temperature: w.temperature, temperatureWhy: w.summary || "", temperatureAt: nowTS() });
+      }
+
+      // Ideas / decisions / objections keep feeding the Performance tab.
+      if ((w.ideas || []).length) {
+        const first = (n) => String(n || "").trim().toLowerCase().split(" ")[0];
+        const session = {
+          id: uid(), companyId: c.id, dealId: r.dealId || "", date: todayStr(),
+          title: w.title || touch.subject || "Client conversation",
+          attendees: contact.trim() ? [contact.trim()] : [],
+          raw: touch.body, createdBy: me.id,
+          ideas: w.ideas.map((x) => ({
+            by: x.by || "", idea: x.idea || "", impact: x.impact || "",
+            value: Math.min(5, Math.max(1, Number(x.value) || 3)), why: x.why || "",
+            authorId: (users.find((u) => x.by && first(u.name) === first(x.by)) || {}).id || null,
+          })).filter((x) => x.idea),
+          decisions: (w.decisions || []).map((x) => ({ what: x.what || "", ownerName: x.owner || "" })).filter((x) => x.what),
+          challenges: (w.challenges || []).map((x) => ({
+            challenge: x.challenge || "", action: x.action || "",
+            status: ["solved", "open", "watch"].includes(x.status) ? x.status : "open",
+          })).filter((x) => x.challenge),
+        };
+        await saveSession(session);
+        touch.meetingId = session.id;
+      }
+
+      const md = ["# " + (w.title || touch.subject),
+        c.name + " · " + fmtDate(touch.at) + " · " + kind + ", " + (dir === "in" ? "they came to us" : "we reached out"),
+        dealLabel(r.dealId) ? "Project: " + dealLabel(r.dealId) : "",
+        contact.trim() ? "With: " + contact.trim() : "", link.trim() ? "Source: " + link.trim() : "", "",
+        w.summary || "", "", "## What the client said", ...(w.clientSaid || []).map((x) => "- " + x),
+        "", "## We promised", ...keptOurs.map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
+        "## They promised", ...r.theirs.filter((x) => x.on).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
+        "", "## Objections and how they went", ...(w.challenges || []).map((x) => "- " + x.challenge + " → " + (x.action || "") + " (" + x.status + ")"),
+        "", "## Decided", ...(w.decisions || []).map((x) => "- " + x.what),
+        "", "## Next step", (w.nextStep && w.nextStep.what) || "—", "", "## The note as it was written", touch.body,
+      ].filter((x) => x !== undefined && x !== "").join("\n");
+      fileToDrive(w.title || touch.subject, md, r.dealId);
+    } catch (e) { setErr("Some of the write-up did not save — the note itself is filed."); }
+    await saveTouch(touch);
+    clearComposer();
     reload(); setBusy(false);
   };
 
@@ -7171,8 +7295,118 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
 
   const KindIcon = ({ k }) => { const f = TOUCH_KINDS.find((x) => x[0] === k); const I = f ? f[2] : ClipboardList; return <I size={13} />; };
 
+  /* ── THE APPROVAL SHEET ────────────────────────────────────────────────
+     Everything the AI worked out, shown before any of it is written. Rows
+     are ticked OFF, not on: a sheet you rubber-stamp is worse than no
+     sheet, because it puts your name on the machine's guesses. */
+  const ReviewSheet = ({ r }) => {
+    const set = (patch) => setReview({ ...r, ...patch });
+    const row = (arr, i, patch) => arr.map((x, j) => (j === i ? { ...x, ...patch } : x));
+    const people = users.filter((u) => u.active !== false);
+    const on = r.tasks.filter((t) => t.on).length;
+    return (
+      <Modal title="Before this goes on the record" onClose={() => setReview(null)} wide
+        footer={<>
+          <Btn onClick={() => { const { touch } = r; touch.dealId = r.dealId || "";
+            saveTouch(touch).then(() => { setReview(null); clearComposer(); reload(); }); }}>
+            Just file the note
+          </Btn>
+          <Btn kind="primary" onClick={() => applyReview(r)}>
+            <Check size={14} /> Approve{on ? " · " + on + " task" + (on === 1 ? "" : "s") : ""}
+          </Btn>
+        </>}>
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">{r.w.title || "Client conversation"}</p>
+            {r.w.summary && <p className="text-[13px] text-slate-600 mt-1 leading-relaxed">{r.w.summary}</p>}
+          </div>
+
+          {/* Which project all of this lands on — changeable here, because
+              the write-up is often what tells you which one it was. */}
+          {liveHere.length > 0 && (
+            <Field label="File all of this under">
+              <Sel value={r.dealId} onChange={(e) => set({ dealId: e.target.value, setStep: !!e.target.value && r.setStep, setTemp: !!e.target.value && r.setTemp })}>
+                <option value="">the account (no one project)</option>
+                {liveHere.map((x) => <option key={x.id} value={x.id}>{dealProduct(x) || x.did}</option>)}
+              </Sel>
+            </Field>
+          )}
+
+          <div>
+            <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mb-1">
+              Tasks to raise {r.tasks.length ? "· " + on + " of " + r.tasks.length + " ticked" : ""}
+            </p>
+            {!r.tasks.length && <p className="text-xs text-slate-400">Nothing in the note asks for an action.</p>}
+            {r.tasks.map((t, i) => (
+              <div key={t.key} className="flex items-center gap-2 py-1">
+                <input type="checkbox" checked={t.on} onChange={(e) => set({ tasks: row(r.tasks, i, { on: e.target.checked }) })}
+                  className="flex-none" />
+                <input value={t.title} onChange={(e) => set({ tasks: row(r.tasks, i, { title: e.target.value }) })}
+                  className={cls("text-[13px] flex-1 min-w-0 border-b border-dashed focus:border-blue-500 focus:outline-none bg-transparent py-0.5",
+                    t.on ? "border-slate-300 text-slate-800" : "border-slate-200 text-slate-400")} />
+                <select value={t.assignee} onChange={(e) => set({ tasks: row(r.tasks, i, { assignee: e.target.value }) })}
+                  title="Who does it" className="text-[10px] text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none max-w-[7rem] truncate">
+                  {people.map((u) => <option key={u.id} value={u.id}>{u.name.split(" ")[0]}</option>)}
+                </select>
+                <input type="date" value={t.due} onChange={(e) => set({ tasks: row(r.tasks, i, { due: e.target.value }) })}
+                  title="Due" className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
+              </div>
+            ))}
+            <p className="text-[10.5px] text-slate-400 mt-1">Only dated, explicit promises arrive ticked. Anything inferred is left for you to decide.</p>
+          </div>
+
+          {/* Commitments were being written with no review at all, and they
+              outlive tasks — a missed promise is on the record for good. */}
+          {(r.ours.length > 0 || r.theirs.length > 0) && (
+            <div>
+              <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-400 mb-1">Promises to track</p>
+              {r.ours.map((x, i) => (
+                <label key={"o" + i} className="flex items-start gap-2 py-0.5 text-[12.5px] cursor-pointer">
+                  <input type="checkbox" checked={x.on} onChange={(e) => set({ ours: row(r.ours, i, { on: e.target.checked }) })} className="mt-1 flex-none" />
+                  <span className={x.on ? "text-slate-700" : "text-slate-400 line-through"}>
+                    <b className="text-slate-500">we</b> {x.what}{x.due ? " — by " + x.due : " — no date given"}
+                    {x.certainty === "implied" && <span className="text-amber-600"> (implied, not promised)</span>}
+                  </span>
+                </label>
+              ))}
+              {r.theirs.map((x, i) => (
+                <label key={"t" + i} className="flex items-start gap-2 py-0.5 text-[12.5px] cursor-pointer">
+                  <input type="checkbox" checked={x.on} onChange={(e) => set({ theirs: row(r.theirs, i, { on: e.target.checked }) })} className="mt-1 flex-none" />
+                  <span className={x.on ? "text-slate-700" : "text-slate-400 line-through"}>
+                    <b className="text-slate-500">they</b> {x.what}{x.due ? " — by " + x.due : " — no date given"}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+
+          {/* Both of these were already worked out and then thrown away. */}
+          {!!r.dealId && (
+            <div className="border-t border-slate-200 pt-3 space-y-1">
+              {r.w.nextStep && r.w.nextStep.what && (
+                <label className="flex items-start gap-2 text-[12.5px] cursor-pointer">
+                  <input type="checkbox" checked={r.setStep} onChange={(e) => set({ setStep: e.target.checked })} className="mt-1 flex-none" />
+                  <span className="text-slate-700">Set the next step on <b>{dealLabel(r.dealId)}</b>: “{r.w.nextStep.what}”{r.w.nextStep.when ? " by " + r.w.nextStep.when : ""}</span>
+                </label>
+              )}
+              {r.w.temperature && (
+                <label className="flex items-start gap-2 text-[12.5px] cursor-pointer">
+                  <input type="checkbox" checked={r.setTemp} onChange={(e) => set({ setTemp: e.target.checked })} className="mt-1 flex-none" />
+                  <span className="text-slate-700">Move <b>{dealLabel(r.dealId)}</b> to <b>{r.w.temperature}</b> — judged from what the client said</span>
+                </label>
+              )}
+            </div>
+          )}
+
+          {r.w.risk && <p className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">Risk: {r.w.risk}</p>}
+        </div>
+      </Modal>
+    );
+  };
+
   return (
     <div className="mt-4 space-y-4">
+      {review && <ReviewSheet r={review} />}
       {/* ── email intake: the brief and the mailbox ── */}
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <SectionTitle right={<Btn size="sm" kind="primary" disabled={!boxes.includes("@") || fetching} onClick={fetchMail}>
@@ -7225,6 +7459,20 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
             <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="who?"
               className="border-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent text-slate-700 font-medium w-28 py-0.5" />
           </span>
+          {/* WHICH PROJECT. Only worth asking when there is a choice: with
+              one live project it is already the answer, and with none this
+              conversation is what may create one. */}
+          {liveHere.length > 0 && (
+            <span className="flex items-center gap-1.5 text-slate-400">about
+              <select value={dealF} onChange={(e) => setDealF(e.target.value)}
+                title="Which project this conversation was about"
+                className={cls("border-0 border-b border-dashed focus:border-blue-500 focus:outline-none bg-transparent font-medium py-0.5 max-w-[11rem] truncate cursor-pointer",
+                  dealF ? "border-slate-300 text-slate-700" : "border-amber-300 text-amber-700")}>
+                <option value="">the account (no one project)</option>
+                {liveHere.map((x) => <option key={x.id} value={x.id}>{dealProduct(x) || x.did}</option>)}
+              </select>
+            </span>
+          )}
           <span className="flex items-center gap-1.5 text-slate-400">
             <Clock size={12} />
             <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
@@ -7328,6 +7576,13 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies }) {
                       <p className="text-[11px] text-slate-400 mt-0.5">
                         {inbound ? "they came to us" : "we reached out"}
                         {by ? " · " + by.name : ""}{t.contactName ? (inbound ? " ← " : " → ") + t.contactName : ""}
+                        {/* which project — said plainly, because "the
+                            account" and "the UPS dongle" are different
+                            conversations and the list used to show both
+                            the same way */}
+                        {t.dealId
+                          ? <span className="text-slate-500"> · {dealLabel(t.dealId) || "a project"}</span>
+                          : liveHere.length > 1 ? <span className="text-amber-600"> · the account</span> : null}
                         {t.source === "inbox" ? " · from the mailbox" : ""}
                         {t.link && <a href={t.link} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline ml-1.5">source ↗</a>}
                       </p>
