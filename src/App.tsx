@@ -7097,16 +7097,62 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
   /* A conversation about one project belongs in that project's folder, not
      loose in the company's. With no project named it files where it always
      did — which is right for an account-level thread. */
-  const fileToDrive = async (title, body, dealId) => {
+  const fileToDrive = async (title, body, dealId, kindOf) => {
     try {
       const slug = String(title).toLowerCase().replace(/[^\w\- ]/g, "").trim().replace(/\s+/g, "-").slice(0, 50);
       const sub = dealId && dealLabel(dealId) ? "Client-Comms/" + dealLabel(dealId) : "Client-Comms";
       await drive.write(driveFolderName(c), sub,
-        todayStr() + "_" + kind + "_" + slug + ".md", body);
+        todayStr() + "_" + (kindOf || kind) + "_" + slug + ".md", body);
     } catch (e) { /* filing is best-effort; the record is in the DB either way */ }
   };
 
   const clearComposer = () => { setLine(""); setNotes(""); setLink(""); setDriveFile(""); setMore(false); };
+
+  /* Turn a write-up into the sheet's starting state. Shared, so a note
+     whose write-up failed can be run again later and get the same sheet
+     without anything being retyped. */
+  const buildReview = (touch, w) => {
+    const byName = (n) => (users.find((u) => u.name === n) || me).id;
+    const ours = (w.ourCommitments || []).filter((x) => x && x.what);
+    const proposed = ours.slice(0, 5).map((x, i) => ({
+      key: "c" + i, title: x.what, due: x.due || "",
+      assignee: byName(x.owner), on: !!x.due && (x.certainty || "promised") === "promised",
+      from: i,
+    }));
+    const step = w.nextStep && w.nextStep.what ? String(w.nextStep.what) : "";
+    if (step && !ours.some((x) => sameish(x.what, step))) {
+      proposed.push({ key: "step", title: step, due: (w.nextStep && w.nextStep.when) || "",
+        assignee: byName(w.nextStep && w.nextStep.who), on: true, from: null });
+    }
+    const dealId = touch.dealId || "";
+    return {
+      touch, w, dealId,
+      tasks: proposed.slice(0, 5),
+      ours: ours.map((x) => ({ ...x, on: true })),
+      theirs: (w.theirCommitments || []).filter((x) => x && x.what).map((x) => ({ ...x, on: true })),
+      setStep: !!step && !!dealId,
+      setTemp: !!dealId && !!w.temperature,
+    };
+  };
+
+  /* A note that is already filed, read again. This is what makes a failed
+     write-up recoverable: the transcript is safe in the record, so the AI
+     can have another go at it without anybody pasting it twice. */
+  const [rerunning, setRerunning] = useState("");
+  const rerun = async (t) => {
+    setRerunning(t.id); setErr("");
+    try {
+      const reply = await withTimeout(askClaude(commsSystem(c, users, t),
+        [{ role: "user", content: String(t.body || t.subject || "").slice(0, 120000) }],
+        { maxTokens: 8000 }), 120000);
+      const w = extractMarkedJSON(reply, "COMMS_JSON");
+      if (!w) { setErr("The write-up came back unreadable again — the note itself is safe."); }
+      // Carry the write-up onto the touch, so approving saves it there too
+      // and the entry stops looking like a raw note.
+      else setReview(buildReview({ ...t, ai: w, subject: w.title || t.subject }, w));
+    } catch (e) { setErr("Could not reach the AI — try again in a moment."); }
+    setRerunning("");
+  };
 
   /* Log files the note. Log + AI reads it, proposes, and WAITS — nothing it
      infers is written until it has been looked at. That is the whole point:
@@ -7124,42 +7170,33 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
     };
     if (withAI) {
       try {
-        const reply = await askClaude(commsSystem(c, users, touch),
-          [{ role: "user", content: (notes.trim() || line.trim()).slice(0, 120000) }], { maxTokens: 2500 });
+        /* 2500 tokens was not enough. A real transcript yields a write-up
+           with a dozen quotes, promises both ways, objections and ideas —
+           the JSON ran past the limit, came back truncated, failed to
+           parse, and the code below simply carried on and filed the raw
+           note. No sheet, no error, nothing to tell you why. */
+        const reply = await withTimeout(askClaude(commsSystem(c, users, touch),
+          [{ role: "user", content: (notes.trim() || line.trim()).slice(0, 120000) }],
+          { maxTokens: 8000 }), 120000);
         const w = extractMarkedJSON(reply, "COMMS_JSON");
+        if (!w) {
+          // Never again fall through in silence.
+          touch.ai = {};
+          await saveTouch(touch);
+          clearComposer(); reload(); setBusy(false);
+          setErr("The note is filed, but the write-up came back unreadable — press “run the write-up” on it below to try again.");
+          return;
+        }
         if (w) {
           touch.ai = w;
           touch.subject = w.title || touch.subject;
-          const byName = (n) => (users.find((u) => u.name === n) || me).id;
-
-          /* What to propose as a TASK. Our own promises, plus the next step
-             if it is not already one of them. Capped, and pre-ticked only
-             where a date was actually promised — an inferred item arrives
-             unticked, so a sheet is something you untick rather than
-             something you rubber-stamp. */
-          const ours = (w.ourCommitments || []).filter((x) => x && x.what);
-          const proposed = ours.slice(0, 5).map((x, i) => ({
-            key: "c" + i, title: x.what, due: x.due || "",
-            assignee: byName(x.owner), on: !!x.due && (x.certainty || "promised") === "promised",
-            from: i,                       // the commitment this came from
-          }));
-          const step = w.nextStep && w.nextStep.what ? String(w.nextStep.what) : "";
-          if (step && !ours.some((x) => sameish(x.what, step))) {
-            proposed.push({ key: "step", title: step, due: (w.nextStep && w.nextStep.when) || "",
-              assignee: byName(w.nextStep && w.nextStep.who), on: true, from: null });
-          }
-          setReview({
-            touch, w, dealId: dealF || "",
-            tasks: proposed.slice(0, 5),
-            ours: ours.map((x) => ({ ...x, on: true })),
-            theirs: (w.theirCommitments || []).filter((x) => x && x.what).map((x) => ({ ...x, on: true })),
-            setStep: !!step && !!dealF,
-            setTemp: !!dealF && !!w.temperature,
-          });
+          setReview(buildReview(touch, w));
           setBusy(false);
           return;                       // nothing is written until it is approved
         }
-      } catch (e) { setErr("The write-up failed — filing the note as written."); }
+      } catch (e) {
+        setErr("Could not reach the AI. The note is filed as written — “run the write-up” on it below when you want to try again.");
+      }
     }
     await saveTouch(touch);
     clearComposer();
@@ -7179,12 +7216,12 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
       const fresh = [
         ...keptOurs.map((x) => ({
           id: uid(), companyId: c.id, dealId: r.dealId || "", activityId: touch.id, side: "us", what: x.what,
-          toWhom: x.toWhom || contact.trim(), due: x.due || "", certainty: x.certainty || "promised",
+          toWhom: x.toWhom || touch.contactName || "", due: x.due || "", certainty: x.certainty || "promised",
           status: "open", ownerId: (users.find((u) => u.name === x.owner) || me).id, createdBy: me.id,
         })),
         ...r.theirs.filter((x) => x.on).map((x) => ({
           id: uid(), companyId: c.id, dealId: r.dealId || "", activityId: touch.id, side: "them", what: x.what,
-          toWhom: x.who || contact.trim(), due: x.due || "", certainty: "promised",
+          toWhom: x.who || touch.contactName || "", due: x.due || "", certainty: "promised",
           status: "open", ownerId: null, createdBy: me.id,
         })),
       ];
@@ -7229,7 +7266,7 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
         const session = {
           id: uid(), companyId: c.id, dealId: r.dealId || "", date: todayStr(),
           title: w.title || touch.subject || "Client conversation",
-          attendees: contact.trim() ? [contact.trim()] : [],
+          attendees: touch.contactName ? [touch.contactName] : [],
           raw: touch.body, createdBy: me.id,
           ideas: w.ideas.map((x) => ({
             by: x.by || "", idea: x.idea || "", impact: x.impact || "",
@@ -7247,9 +7284,9 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
       }
 
       const md = ["# " + (w.title || touch.subject),
-        c.name + " · " + fmtDate(touch.at) + " · " + kind + ", " + (dir === "in" ? "they came to us" : "we reached out"),
+        c.name + " · " + fmtDate(touch.at) + " · " + (touch.kind || kind) + ", " + (touch.direction === "in" ? "they came to us" : "we reached out"),
         dealLabel(r.dealId) ? "Project: " + dealLabel(r.dealId) : "",
-        contact.trim() ? "With: " + contact.trim() : "", link.trim() ? "Source: " + link.trim() : "", "",
+        touch.contactName ? "With: " + touch.contactName : "", touch.link ? "Source: " + touch.link : "", "",
         w.summary || "", "", "## What the client said", ...(w.clientSaid || []).map((x) => "- " + x),
         "", "## We promised", ...keptOurs.map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
         "## They promised", ...r.theirs.filter((x) => x.on).map((x) => "- " + x.what + (x.due ? " — by " + x.due : "")),
@@ -7257,7 +7294,7 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
         "", "## Decided", ...(w.decisions || []).map((x) => "- " + x.what),
         "", "## Next step", (w.nextStep && w.nextStep.what) || "—", "", "## The note as it was written", touch.body,
       ].filter((x) => x !== undefined && x !== "").join("\n");
-      fileToDrive(w.title || touch.subject, md, r.dealId);
+      fileToDrive(w.title || touch.subject, md, r.dealId, touch.kind || kind);
     } catch (e) { setErr("Some of the write-up did not save — the note itself is filed."); }
     await saveTouch(touch);
     clearComposer();
@@ -7591,6 +7628,19 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
                       {(w.ourCommitments || w.challenges || w.clientSaid) && (
                         <button onClick={() => setOpen(open === t.id ? null : t.id)} className="text-xs text-blue-600 hover:underline mt-1.5">
                           {open === t.id ? "▾ hide the write-up" : "▸ full write-up"}
+                        </button>
+                      )}
+                      {/* A note with no write-up on it — filed with plain
+                          Log, or filed after the write-up failed. The text
+                          is already saved, so the AI can be pointed at it
+                          again without anybody pasting the transcript
+                          twice. This is the door back for the minutes that
+                          went in raw. */}
+                      {!w.title && !w.summary && (
+                        <button onClick={() => rerun(t)} disabled={!!rerunning}
+                          className="text-xs text-blue-600 hover:underline mt-1.5 flex items-center gap-1 disabled:text-slate-300">
+                          {rerunning === t.id ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                          {rerunning === t.id ? "reading it…" : "run the write-up — pull out the tasks and promises"}
                         </button>
                       )}
                       {open === t.id && (
