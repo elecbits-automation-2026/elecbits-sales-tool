@@ -16,7 +16,7 @@ import {
   loadChat, loadChatDates, saveChat, saveSession, loadAllIdeas,
   loadTouches, loadRecentTouches, saveTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum, deleteDeal,
-  saveDealPlan, setTemperature, saveNextStep, loadScrumSessions, upsertScrumSession,
+  saveDealPlan, setTemperature, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
   mintSopClientId, loadIntakeDrafts, upsertIntakeSession, deleteIntakeSession, sopMigrationPresent,
   loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact, schemaGaps,
@@ -2366,13 +2366,12 @@ const tempColor = (t) => (t === "hot" ? "red" : t === "rfq" ? "purple" : t === "
    to it contradicting it. The alarm stays RED only for "a date you
    committed to has passed", never a generic clock.                        */
 
-/* The commitment in one line, for a table cell or a board card. A deal
-   committed only through its tasks has no nextStep sentence to print, so
-   name the tasks instead rather than showing an empty cell. */
+/* The commitment in one line, for a table cell or a board card. There is
+   nothing but the tasks to print now — the deal's own next_step sentence
+   was the second description of the same thing, and it is gone. */
 function commitLine(d, ns) {
-  if (d.nextStep && !d.nextStepDoneAt) return d.nextStep + (ns.due ? " · " + fmtDate(ns.due) : "");
-  if (ns.tasks) return ns.tasks + " task" + (ns.tasks === 1 ? "" : "s") + " assigned" + (ns.due ? " · by " + fmtDate(ns.due) : "");
-  return "";
+  if (!ns || !ns.tasks) return "";
+  return ns.tasks + " task" + (ns.tasks === 1 ? "" : "s") + " assigned" + (ns.due ? " · by " + fmtDate(ns.due) : "");
 }
 
 const tempSystem = (deal, comp, evidence, contacts) => [
@@ -2475,43 +2474,11 @@ const sameish = (a, b) => {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
 
-/* WHICH TASK IS THE COMMITTED STEP. By id since 33-step-task.sql; the title
-   match below is the legacy path, for deals committed before the column
-   existed and for a deployment where the migration has not been run. The
-   title match is exactly what this change exists to retire — it breaks the
-   moment anything rewords a task — so it is a fallback, never the answer
-   when a pointer is available. */
-function stepTaskOf(deal, tasks, deals) {
-  if (!deal || !deal.nextStep || deal.nextStepDoneAt) return null;
-  if (deal.nextStepTaskId) return (tasks || []).find((t) => t.id === deal.nextStepTaskId) || null;
-  const want = normTitle(deal.nextStep);
-  if (!want) return null;
-  return (tasks || []).find((t) => belongsToDeal(t, deal, deals)
-    && (normTitle(t.title) === want || normTitle(t.title).includes(want) || want.includes(normTitle(t.title)))) || null;
-}
-
-/* ─── WHO MAY REWRITE A DEAL'S COMMITTED NEXT STEP ─────────────────────────
-   One named person, by request. A name in the source is brittle and it was
-   said so at the time: two Sauravs, a changed address, or his being away
-   while someone must act, and only a deploy unblocks it. So the name lives
-   in exactly ONE constant, and an env var overrides it without a code
-   change — VITE_STEP_EDITOR, set in Vercel, comma-separated for more than
-   one. Matched on email first, since email is what this tool authenticates
-   on; the first-name match is the fallback for a roster row whose address
-   is not filled in.
-
-   This gates the step ONLY. Tasks, notes and logging are untouched: an
-   agent still runs their own deals, they simply cannot overwrite the one
-   line the board reads as the commitment. */
-const STEP_EDITORS = String(import.meta.env.VITE_STEP_EDITOR || "saurav")
-  .toLowerCase().split(",").map((x) => x.trim()).filter(Boolean);
-
-function canEditStep(me) {
-  if (!me) return false;
-  const email = String(me.email || "").toLowerCase();
-  const first = String(me.name || "").trim().toLowerCase().split(" ")[0];
-  return STEP_EDITORS.some((k) => (k.includes("@") ? email === k : first === k));
-}
+/* stepTaskOf, canEditStep and VITE_STEP_EDITOR lived here. They existed to
+   say which task was "the step" and who could change that — a question
+   that stops existing once the step and the task are one thing. The next
+   action on a deal is a task on that deal, and it is the whole list that
+   matters, not one anointed row.                                         */
 
 const PRODUCT_MAX = 40;
 const dealProduct = (d) => String((d && d.product) || "").trim();
@@ -2989,7 +2956,7 @@ const phaseMoveSystem = (d, comp, to, ev) => [
   "2. While they answer, quietly use the sales COLLATERAL in Drive — search 'collateral', browse the sales folders — to understand what Elecbits has for THIS type of client (industry, size, what they do). Do NOT list or dump files unprompted.",
   "3. Only AFTER their answers give you the real picture: recommend, in a line or two, what to do next and which collateral fits — by file name. The recommendation follows the evidence, never precedes it.",
   "CLIENT: " + comp.name + (comp.industry ? " · " + comp.industry : "") + (comp.orgSize ? " · size " + comp.orgSize : "") + (comp.whatTheyDo ? " — " + comp.whatTheyDo : ""),
-  "DEAL: " + d.did + " · currently " + (d.temperature || "cold") + " · ₹" + (d.value || 0) + (d.nextStep ? " · committed step: " + d.nextStep : ""),
+  "DEAL: " + d.did + " · currently " + (d.temperature || "cold") + " · ₹" + (d.value || 0),
   ev ? "WHAT IS ALREADY ON THE RECORD (newest first) — use it, never ask for what is written here:\n" + ev : "",
   "Keep it tight — 2 to 4 questions total, then close. Sharp and specific beats thorough: reference real names, dates and files from the record. When you have what you need, end your reply with:",
   "PHASE_JSON {\"summary\":\"one line: what the client did that justifies " + to + "\",\"share\":\"collateral to send next, by name — or empty\"}",
@@ -3208,8 +3175,7 @@ function PhaseMoveChat({ me, move, data, deals, saveDeals, saveTasks, saveCompan
 const dealChatSystem = (d, comp, ev, contacts) => [
   "You are the DEAL COPILOT on the Elecbits Sales OS — the sharpest colleague on this one deal. Direct, specific, brief. Today: " + todayStr() + ".",
   dealIdentity(d, comp, contacts),
-  "DEAL: " + d.did + " · " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0)
-    + (d.nextStep && !d.nextStepDoneAt ? " · committed next step: '" + d.nextStep + "'" + (d.nextStepDue ? " by " + fmtDate(d.nextStepDue) : "") : " · NO committed next step"),
+  "DEAL: " + d.did + " · " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0),
   "EVERYTHING ON THE RECORD (newest first):\n" + (ev || "(nothing yet)"),
   "You can read the sales Drive for collateral and the client's folder — use it quietly to inform yourself; never dump file listings unprompted.",
   "BE MATURE: when the record is thin or something is unclear, ASK a sharp question first and recommend after the answer — recommendation follows evidence. Answer from the record, never invent facts. Push toward the ONE next move. You WRITE the next step yourself when the conversation shows it — no permission-asking, just commit it via the action line and say so in a word.",
@@ -3271,25 +3237,15 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
     let nextDeals = deals, nextTasks = tasks;
     for (const a of Array.isArray(list) ? list : []) {
       try {
-        /* The copilot writes the step on the person's behalf, so the same
-            rule applies to it: without the pen you may still SET a step the
-            deal does not have, but you cannot overwrite one that is there.
-            Otherwise "only Saurav edits the step" is undone by asking the
-            AI to do it. */
-        if (a.type === "next_step" && a.what && (canEditStep(me) || !(d.nextStep && !d.nextStepDoneAt))) {
-          saveNextStep(d.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: d.ownerId });
-          nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
-          done.push("✓ committed: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
-          // every step carries its task
+        /* "next_step" is just a task now — the same thing this action
+           always ALSO raised. The deal no longer carries a separate
+           sentence for it to write, so there is nothing to keep in step. */
+        if (a.type === "next_step" && a.what) {
           if (!openTaskDupe(nextTasks, d.companyId, a.what, d.id)) {
-            const stid = uid();
-            nextTasks = [makeTask({ id: stid, companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: a.what,
-              details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-              due: a.due, source: "step" }), ...nextTasks];
-            // The step points at the task it just raised, by id.
-            saveNextStep(d.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: d.ownerId, taskId: stid });
-            nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, nextStepTaskId: stid } : x));
+            nextTasks = [makeTask({ companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id,
+              title: a.what, details: "Raised in the Deal Room", due: a.due, source: "step" }), ...nextTasks];
           }
+          done.push("✓ task: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
         }
         if ((a.type === "task_done" || a.type === "activity_done") && (a.task || a.activity)) {
           const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -3477,140 +3433,23 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
 /* ── THE DEAL ROOM — a full-screen sheet, not a cramped modal. One header,
    three answer cards (phase / commitment / RFQ), the three-stage route with
    its activities, and the trail. Everything contained, nothing bleeding. ── */
-/* Done is not claimed, it is proven. The AI reads the person's account, the
-   attached documents and the mail chain, and only a believable step closes. */
-const stepProofSystem = (d, comp, account, mailCtx, ev) => [
-  "You are the EVIDENCE CHECKER on the Elecbits Sales OS. Today is " + todayStr() + ".",
-  "A salesperson says this committed next step on the " + (comp ? comp.name : "client") + " deal is DONE:",
-  "THE STEP: " + (d.nextStep || "(unnamed)") + (d.nextStepDue ? " — was due " + fmtDate(d.nextStepDue) : ""),
-  "THEIR ACCOUNT OF WHAT THEY DID:\n" + (account || "(none given)"),
-  mailCtx ? "PULLED FROM THE MAIL CHAIN (shared sales mailbox):\n" + mailCtx : "No mail evidence was pulled.",
-  "THE DEAL RECORD (newest first):\n" + (ev || "(empty)"),
-  "Any attached files are part of the evidence — read them.",
-  "Judge it like a sharp sales manager. Believe it only when the evidence actually shows the step happened — the who, the when, the outcome. A vague claim with no document, no mail and no verifiable specifics does NOT pass; late is fine, unproven is not.",
-  'Reply with two or three plain lines addressed to the salesperson, then end with exactly: STEP_VERDICT_JSON {"believe":true,"score":7,"why":"one line","missing":"what would make it believable — empty if believed"}',
-].join("\n");
+/* stepProofSystem went with StepProof: there is no step to prove done,
+   only a task, and its evidence is checked in My Tasks. */
 
-function StepProof({ me, d, comp, data, touches, commits, onBelieved, onClose }) {
-  const { tasks, deals } = data;
-  const [account, setAccount] = useState("");
-  const [atts, setAtts] = useState([]);
-  const [mailCtx, setMailCtx] = useState("");
-  const [mailMsg, setMailMsg] = useState("");
-  const [mailBusy, setMailBusy] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [verdict, setVerdict] = useState(null);
-  const fileRef = useRef(null);
-  const addFiles = (files) => { [...files].forEach((f) => fileToBlock(f).then((b) => b && setAtts((a) => [...a, b]))); };
-  const boxes = ((comp && comp.plan && comp.plan.comms && comp.plan.comms.mailboxes) || "").trim();
+/* StepProof — the modal that proved a committed step was done — went
+   with the step. A task is proved done in My Tasks, where the evidence
+   check already lives. */
 
-  // "Add the AI to the mail chain": CC the shared mailbox, and this pulls the
-  // thread so the checker reads it as evidence.
-  const pullMail = async () => {
-    if (!boxes.includes("@") || mailBusy) return;
-    setMailBusy(true); setMailMsg("");
-    try {
-      const q = "newer_than:45d " + ((comp && (comp.email || comp.name)) || "");
-      const r = await fetch("/api/inbox?action=fetch&mailboxes=" + encodeURIComponent(boxes) + "&q=" + encodeURIComponent(q.trim()) + "&max=15").then((x) => x.json());
-      if (r.error) setMailMsg(r.error);
-      else if (!(r.messages || []).length) setMailMsg("Nothing in the mailbox mentions " + (comp ? comp.name : "this client") + " in the last 45 days — CC " + boxes.split(",")[0] + " on the thread and pull again.");
-      else {
-        setMailCtx(r.messages.slice(0, 12).map((m) => m.date + " · " + m.from + " → " + m.to + " · " + (m.subject || "(no subject)") + " — " + (m.snippet || "")).join("\n"));
-        setMailMsg(r.messages.length + " message(s) pulled — the checker reads them as evidence.");
-      }
-    } catch (e) { setMailMsg("Could not reach the mailbox."); }
-    setMailBusy(false);
-  };
-
-  const judge = async () => {
-    if (busy || (!account.trim() && !atts.length && !mailCtx)) return;
-    setBusy(true); setVerdict(null);
-    try {
-      const content = atts.length
-        ? [...atts.map(({ _name, ...b }) => b), { type: "text", text: "Judge the claim on this evidence." }]
-        : "Judge the claim.";
-      const reply = await withTimeout(askClaude(
-        stepProofSystem(d, comp, account.trim(), mailCtx, dealEvidence(d, comp, tasks, touches, commits, deals)),
-        [{ role: "user", content }], { maxTokens: 500 }), 30000);
-      const v = extractMarkedJSON(reply, "STEP_VERDICT_JSON");
-      if (!v || typeof v.believe !== "boolean") throw new Error("unparseable");
-      const out = { believe: v.believe, score: Number(v.score) || (v.believe ? 7 : 3),
-        why: String(v.why || ""), missing: String(v.missing || ""), offline: false,
-        text: stripToolLines(String(reply).replace(/STEP_VERDICT_JSON[\s\S]*$/, "")).trim() };
-      setVerdict(out);
-      if (out.believe) onBelieved(out);
-    } catch (e) {
-      // AI unreachable: strict but not a trap — a real account PLUS a document
-      // or the mail chain passes; a bare claim never does.
-      const solid = account.trim().length >= 30 && (atts.length > 0 || !!mailCtx);
-      const out = { believe: solid, score: solid ? 6 : 3, offline: true, why: solid ? "Checked offline — account plus attached evidence." : "",
-        missing: solid ? "" : "The AI was unreachable. Offline it needs a real account of what happened AND a document or the mail chain.", text: "" };
-      setVerdict(out);
-      if (out.believe) onBelieved(out);
-    }
-    setBusy(false);
-  };
-
-  return (
-    <Modal title="Close the step — with evidence" onClose={onClose}
-      footer={verdict && verdict.believe
-        ? <><span className="mr-auto text-xs text-green-700 font-mono">believed · {verdict.score}/10{verdict.offline ? " · offline" : ""}</span><Btn kind="primary" onClick={onClose}><Check size={14} /> Done — commit the next one</Btn></>
-        : <>
-            <span className="mr-auto text-[11px] text-slate-400">The AI needs evidence to believe it.</span>
-            <Btn onClick={onClose}>Cancel</Btn>
-            <Btn kind="primary" disabled={busy || (!account.trim() && !atts.length && !mailCtx)} onClick={judge}>
-              {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {verdict ? "Check again" : "Check it"}
-            </Btn>
-          </>}>
-      <div className="space-y-3">
-        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-          <p className="text-[10.5px] font-bold text-slate-400 uppercase tracking-wide">The committed step</p>
-          <p className="text-sm text-slate-800 mt-0.5">{d.nextStep}{d.nextStepDue && <span className="text-[11px] font-mono text-slate-400"> · was due {fmtDate(d.nextStepDue)}</span>}</p>
-        </div>
-        <Field label="What exactly did you do?" req hint="The who, the when, the outcome — in your words.">
-          <TA value={account} onChange={(e) => setAccount(e.target.value)} className="min-h-20"
-            placeholder="e.g. Called Rahul at 3pm, walked him through the revised quote, he confirmed the 8-week timeline works and will send the PO draft by Friday." />
-        </Field>
-        <div className="flex flex-wrap items-center gap-3 text-xs">
-          <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files || []); e.target.value = ""; }} />
-          <button onClick={() => fileRef.current && fileRef.current.click()} className="text-blue-600 hover:underline flex items-center gap-1"><Paperclip size={12} /> attach a document</button>
-          {boxes.includes("@")
-            ? <button onClick={pullMail} disabled={mailBusy} className="text-blue-600 hover:underline flex items-center gap-1">
-                {mailBusy ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />} pull the mail chain ({boxes.split(",")[0]})
-              </button>
-            : <span className="text-slate-400">No shared mailbox on this company yet — add one in Client Comms and the AI can read the mail chain.</span>}
-        </div>
-        {atts.length > 0 && <p className="text-xs text-slate-500">{atts.map((a, i) => <span key={i} className="inline-flex items-center gap-1 mr-3">📎 {a._name}<button onClick={() => setAtts(atts.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500"><X size={11} /></button></span>)}</p>}
-        {mailMsg && <p className="text-xs text-slate-500">{mailMsg}</p>}
-        {verdict && !verdict.believe && (
-          <div className="border border-red-200 bg-red-50/60 rounded-lg p-3">
-            <p className="text-xs font-bold text-red-700 flex items-center gap-1"><XCircle size={13} /> Not believed{verdict.offline ? " (offline check)" : " · " + verdict.score + "/10"}</p>
-            {verdict.text && <p className="text-xs text-slate-700 mt-1 whitespace-pre-wrap leading-relaxed">{verdict.text}</p>}
-            {verdict.missing && <p className="text-xs text-slate-600 mt-1"><b>To make it believable:</b> {verdict.missing}</p>}
-          </div>
-        )}
-        {verdict && verdict.believe && (
-          <div className="border border-green-200 bg-green-50/60 rounded-lg p-3">
-            <p className="text-xs font-bold text-green-700 flex items-center gap-1"><CheckCircle2 size={13} /> Believed · {verdict.score}/10</p>
-            {(verdict.text || verdict.why) && <p className="text-xs text-slate-700 mt-1 whitespace-pre-wrap leading-relaxed">{verdict.text || verdict.why}</p>}
-          </div>
-        )}
-      </div>
-    </Modal>
-  );
-}
-
-/* GENERATE TASKS — click as often as you like. It reads the step, every open
-   task and the record, then realigns the whole set: merges duplicates, drops
-   the obsolete, fixes titles and dates, adds what is missing. */
-const realignSystem = (d, comp, step, taskLines, ev, contacts) => [
+/* GENERATE TASKS — click as often as you like. It reads every open task and
+   the record, then realigns the whole set: merges duplicates, drops the
+   obsolete, fixes titles and dates, adds what is missing. */
+const realignSystem = (d, comp, taskLines, ev, contacts) => [
   "You are the TASK REALIGNER for one deal on the Elecbits Sales OS. Today: " + todayStr() + ".",
   dealIdentity(d, comp, contacts),
   "DEAL: " + (comp ? comp.name : "") + " · phase " + (d.temperature || "cold") + " · ₹" + (d.value || 0),
-  "COMMITTED NEXT STEP: " + (step || "(none committed)"),
-  "OPEN TASKS ON THE DEAL:\n" + (taskLines || "(none)"),
+  "OPEN TASKS ON THE DEAL — this list IS the deal's commitment; there is no separate 'next step' beside it:\n" + (taskLines || "(none)"),
   "THE RECORD (newest first):\n" + (ev || "(thin)"),
-  "Rebuild the list into the SHARPEST minimal set that carries the step and this phase:",
+  "Rebuild the list into the SHARPEST minimal set that carries this phase:",
   "• merge duplicates and near-duplicates (drop the extras) • drop obsolete or irrelevant ones • fix vague titles to action-first and specific • fix dues into a realistic order • add what is missing (max 3). NEVER drop a task marked [in progress] or [written by the user] — those are theirs, not yours to tidy; you may retitle or re-date them, nothing more.",
   'Reply with ONE short line of reasoning, then exactly: REALIGN_JSON {"summary":"what changed, one line","ops":[{"op":"drop","task":"title, close to verbatim"} | {"op":"retitle","task":"old title","title":"new title"} | {"op":"due","task":"title","due":"YYYY-MM-DD"} | {"op":"add","title":"...","due":"YYYY-MM-DD"}]}',
   "Emit ops ONLY for changes — untouched tasks need no op. An already-clean list gets an empty ops array.",
@@ -3650,63 +3489,16 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const [subFor, setSubFor] = useState(null);     // task id taking a sub-task
   const [subTitle, setSubTitle] = useState("");
 
-  // When the step's task closes in My Tasks (evidence checked there), the
-  // committed step marks itself done here — one loop, no second click.
-  useEffect(() => {
-    const dd = deals.find((x) => x.id === dealId);
-    if (!dd || !dd.nextStep || dd.nextStepDoneAt) return;
-    // By id where there is one. The title match stays only for deals
-    // committed before 33-step-task.sql — it is the thing being retired,
-    // not the mechanism.
-    const lt = dd.nextStepTaskId
-      ? tasks.find((t) => t.id === dd.nextStepTaskId && t.status === "done")
-      : tasks.find((t) => t.status === "done"
-          && (t.dealId === dd.id || (!t.dealId && t.companyId === dd.companyId))
-          && (normTitle(t.title) === normTitle(dd.nextStep)
-            || normTitle(t.title).includes(normTitle(dd.nextStep)) || normTitle(dd.nextStep).includes(normTitle(t.title))));
-    if (!lt) return;
-    saveNextStep(dd.id, { what: dd.nextStep, due: dd.nextStepDue, owner: dd.nextStepOwner, doneAt: lt.doneAt || nowTS() });
-    saveDeals(deals.map((x) => (x.id === dd.id ? { ...x, nextStepDoneAt: lt.doneAt || nowTS(), updatedAt: nowTS() } : x)));
-  }, [tasks, deals, dealId]);
+  /* The effect that closed a deal's step when its task closed is gone
+     with the step. A finished task is finished; there is no second record
+     waiting to be told about it. */
 
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
 
-  /* THE COMMITTED STEP IS ONE OF THESE TASKS. Not a sentence beside them:
-     a sentence has its own wording and its own date, and the two drifted
-     apart the first time anything reworded a task. Flagging a row keeps
-     one record, one date, and a rename that costs nothing.
-
-     Visible to everyone, settable only by the named editor; the guard is
-     repeated in the setter rather than trusted to the control being
-     hidden, because a hidden control is not a permission. */
-  const mayEditStep = canEditStep(me);
-  const stepTask = stepTaskOf(d, tasks, deals);
-  const setStepTask = (t) => {
-    if (!mayEditStep) return;
-    if (!t) {
-      saveNextStep(d.id, { what: "", due: "", owner: null, taskId: null });
-      patchDeal({ nextStep: "", nextStepDue: "", nextStepOwner: null, nextStepSetAt: "", nextStepDoneAt: "", nextStepTaskId: "" });
-      return;
-    }
-    const due = t.due ? t.due + "T18:30" : "";
-    saveNextStep(d.id, { what: t.title, due, owner: t.assignee || d.ownerId || me.id, taskId: t.id });
-    patchDeal({ nextStep: t.title, nextStepDue: due, nextStepOwner: t.assignee || d.ownerId || me.id,
-      nextStepSetAt: nowTS(), nextStepDoneAt: "", nextStepTaskId: t.id });
-  };
-
-  /* The text copy follows the task. next_step and next_step_due are read by
-     the pipeline table, the board cards and the Scrum Master, none of which
-     should have to join to tasks — so when the flagged task is retitled or
-     re-dated, the copy is brought along instead of going stale. */
-  useEffect(() => {
-    if (!d || !stepTask || !d.nextStepTaskId) return;
-    const due = stepTask.due ? stepTask.due + "T18:30" : "";
-    if (stepTask.title === d.nextStep && due === (d.nextStepDue || "")) return;
-    saveNextStep(d.id, { what: stepTask.title, due, owner: stepTask.assignee || d.ownerId, taskId: stepTask.id });
-    saveDeals(deals.map((x) => (x.id === d.id
-      ? { ...x, nextStep: stepTask.title, nextStepDue: due, updatedAt: nowTS() } : x)));
-  }, [stepTask && stepTask.title, stepTask && stepTask.due, d && d.nextStepTaskId]);
+  /* "Which task is the step" and "who may change that" both died with the
+     step itself. The next action on this deal is a task on this deal, and
+     the list is the commitment — no row is anointed. */
 
   // One row, drawn the same at either level — depth only shifts it right and
   // shrinks the marker, so a sub-task is visibly subordinate without becoming
@@ -3720,21 +3512,8 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
           ? <span className="text-slate-300 text-[11px] flex-none leading-none">↳</span>
           : <span className={cls("w-1.5 h-1.5 rounded-full flex-none", late ? "bg-red-500" : t.status === "doing" ? "bg-blue-500" : "bg-slate-300")} />}
         <span className={cls("leading-snug mr-auto", depth ? "text-[12px] text-slate-600" : "text-[12.5px] text-slate-700")}>{t.title}
-          {/* THE STEP. One badge on one row, instead of a second sentence
-              with a second date that nothing kept honest. */}
-          {stepTask && stepTask.id === t.id && (
-            <span className="ml-1.5 text-[9.5px] uppercase font-bold text-amber-600 border border-amber-300 bg-amber-50 rounded px-1 py-px">step</span>
-          )}
           {t.source === "stage" && <span className="ml-1.5 text-[9.5px] uppercase text-blue-500">stage</span>}
           {t.source === "scrum" && <span className="ml-1.5 text-[9.5px] uppercase text-purple-500">scrum</span>}
-          {/* Only the named editor decides which task carries the deal. */}
-          {mayEditStep && !depth && (
-            stepTask && stepTask.id === t.id
-              ? <button onClick={() => setStepTask(null)} title="This deal will have no committed step"
-                  className="ml-1.5 text-[10px] text-slate-400 hover:text-slate-700 hover:underline">unset</button>
-              : <button onClick={() => setStepTask(t)} title="Make this the deal's committed step"
-                  className="ml-1.5 text-[10px] text-blue-600 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:underline">make it the step</button>
-          )}
         </span>
         {/* only a top-level task can take sub-tasks — two levels, not a tree */}
         {!depth && (
@@ -3891,8 +3670,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
      the same promise twice. Adding a task below IS committing now.
      deals.next_step still gets written by the copilot and the Scrum
      Master, and the header shows it; nothing here writes it. */
-  // (stepTask is resolved above, by id — stepTaskOf. This second,
-  //  title-matching copy of the same idea was exactly the drift.)
   // GENERATE TASKS — repeatable: audits every open task against the step and
   // the record, applies the realignment, and reports what changed.
   const realignTasks = async () => {
@@ -3903,10 +3680,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
       const lines = open.map((t) => "• " + t.title + (t.due ? " (due " + fmtDate(t.due) + ")" : " (no date)")
         + (t.status === "doing" ? " [in progress]" : "")
         + (t.source === "manual" ? " [written by the user]" : "")).join("\n");
-      const stepLine = d.nextStep && !d.nextStepDoneAt ? d.nextStep + (d.nextStepDue ? " (by " + fmtDate(d.nextStepDue) + ")" : "") : "";
       // A long task list needs a long answer — a tight budget truncated the
       // JSON mid-op and looked like "no brain". Budget scales, timeout too.
-      const reply = await withTimeout(askClaude(realignSystem(d, comp, stepLine, lines, dealEvidence(d, comp, tasks, touches, commits, deals), data.contacts),
+      const reply = await withTimeout(askClaude(realignSystem(d, comp, lines, dealEvidence(d, comp, tasks, touches, commits, deals), data.contacts),
         [{ role: "user", content: "Realign the tasks." }], { maxTokens: 2000 }), 45000);
       const v = extractMarkedJSON(reply, "REALIGN_JSON");
       if (!v || !Array.isArray(v.ops)) throw new Error("no ops");
@@ -3939,13 +3715,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
           }
         } catch (e) { /* one bad op never sinks the pass */ }
       }
-      // the committed step must exist as a task, always
-      if (d.nextStep && !d.nextStepDoneAt && !matchIn(next, d.nextStep)) {
-        next = [makeTask({ companyId: d.companyId, dealId: d.id, assignee: d.nextStepOwner || d.ownerId || me.id, author: me.id,
-          title: d.nextStep, details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-          due: d.nextStepDue, source: "step" }), ...next];
-        added++;
-      }
+      // This used to re-add the committed step as a task if realign had
+      // dropped it — a guard that only made sense while the step was a
+      // separate record that could go missing from its own list.
       if (dropped + edited + added > 0) saveTasks(next);
       setRealignNote((v.summary ? v.summary + " — " : "") + (dropped + edited + added === 0 ? "already aligned, nothing to change." : "dropped " + dropped + " · edited " + edited + " · added " + added));
     } catch (e) { setRealignNote("Couldn't realign — try again."); }
@@ -4102,14 +3874,6 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 {ns.key !== "closed" && (
                   <Chip color={ns.key === "overdue" ? "red" : ns.key === "committed" ? "green" : "amber"}>
                     {ns.key === "overdue" ? "overdue" : ns.key === "committed" ? "committed" : "not committed"}
-                  </Chip>
-                )}
-                {/* a written step's own task carries its status — the evidence
-                   check happens when THAT closes in My Tasks */}
-                {stepTask && (
-                  <Chip color={stepTask.status === "done" ? "green" : stepTask.status === "doing" ? "blue" : "slate"}>
-                    {stepTask.status === "done" ? "task done" : stepTask.status === "doing" ? "task in progress" : "task open"}
-                    {stepTask.status === "done" && (stepTask.ai || {}).score != null ? " · " + stepTask.ai.score + "/10" : ""}
                   </Chip>
                 )}
               </span>
@@ -6282,7 +6046,6 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
       phase: d.lost ? "lost" : (d.temperature || "cold"),
       value: d.value,
       owner: (users.find((u) => u.id === d.ownerId) || {}).name, staleDays: dealStaleDays(d),
-      nextStep: d.nextStep && !d.nextStepDoneAt ? d.nextStep : undefined,
     }));
     const openTasks = (tasks || []).filter((t) => t.status !== "done").slice(0, 40).map((t) => ({
       title: t.title, company: (companies.find((c) => c.id === t.companyId) || {}).name,
@@ -6889,7 +6652,7 @@ function CompanyAssistant({ me, company: c, data, saveCompanies, saveTasks }) {
         "FIELDS STILL MISSING ON THE RECORD: " + (missing.join(", ") || "none"),
         "LIVE PROJECTS: " + JSON.stringify(myDeals.map((x) => ({
           id: x.did, project: dealProduct(x) || "(unnamed)", phase: x.temperature || "cold",
-          value: x.value, nextStep: x.nextStep && !x.nextStepDoneAt ? x.nextStep : undefined,
+          value: x.value,
         }))),
         "WHAT HAS ACTUALLY HAPPENED WITH THIS CLIENT — every logged call, mail, meeting and visit, newest first:\n"
           + (touchLines(touches, [c], 25) || "(nothing logged yet)"),
@@ -7173,9 +6936,9 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
   const openCommits = commits.filter((x) => x.status === "open");
   const overdue = openCommits.filter((x) => x.due && x.due < todayStr());
 
-  /* setTemperature and saveNextStep write straight to the database; the
-     board is rendered from the in-memory copy, so it has to be told too or
-     the change only appears after a reload. */
+  /* setTemperature writes straight to the database; the board is rendered
+     from the in-memory copy, so it has to be told too or the change only
+     appears after a reload. */
   const patchDealLocal = (id, patch) => {
     if (!saveDeals || !id) return;
     saveDeals((data.deals || []).map((x) => (x.id === id ? { ...x, ...patch, updatedAt: nowTS() } : x)));
@@ -7350,22 +7113,11 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
       if (newTasks.length) saveTasks([...newTasks, ...tasks]);
       if (fresh.length) await saveCommitments(fresh);
 
-      /* The next step is no longer a tick-box of its own: whichever of
-         these tasks is the move, it is already in the list. Setting the
-         deal's next step from the first approved one keeps the board
-         honest without asking a second question about the same thing. */
-      const d0 = (data.deals || []).find((x) => x.id === r.dealId);
-      const stepFree = !(d0 && d0.nextStep && !d0.nextStepDoneAt);
-      if (r.dealId && newTasks.length && (canEditStep(me) || stepFree)) {
-        const lead = newTasks[0];
-        // It raised the task, so it can point the step straight at it —
-        // no title matching, nothing to drift.
-        saveNextStep(r.dealId, { what: lead.title, due: lead.due ? lead.due + "T18:30" : "",
-          owner: lead.assignee, taskId: lead.id });
-        patchDealLocal(r.dealId, { nextStep: lead.title, nextStepDue: lead.due ? lead.due + "T18:30" : "",
-          nextStepOwner: lead.assignee, nextStepSetAt: nowTS(), nextStepDoneAt: "", nextStepTaskId: lead.id });
-      }
+      /* This used to also write the deal's next_step from the first
+         approved task. The deal has no next_step to write: the tasks
+         themselves are the commitment. */
       if (r.setTemp && r.dealId && w.temperature) {
+        const d0 = (data.deals || []).find((x) => x.id === r.dealId);
         setTemperature(r.dealId, { from: (d0 && d0.temperature) || "cold", to: w.temperature,
           why: w.summary || (w.title || "From a client conversation"), evidence: touch.subject || "",
           decided: "human", by: me.id });
@@ -9746,20 +9498,14 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
         if (a.type === "team_scrum" && ["yes", "no"].includes(a.answer)) patch.teamScrum = a.answer;
         const comp = a.company ? (matchCompany(a.company, companies) || companies.find((c) => c.name === a.company)) : null;
         const deal = comp ? nextDeals.filter((x) => x.companyId === comp.id && !x.lost).sort((x, y) => (x.updatedAt < y.updatedAt ? 1 : -1))[0] : null;
+        /* The Scrum Master's "next step" is a task, like everyone else's.
+           It used to write the deal's own sentence AND raise a task that
+           said the same thing. */
         if (a.type === "next_step" && deal && a.what
-            && (canEditStep(me) || !(deal.nextStep && !deal.nextStepDoneAt))) {
-          saveNextStep(deal.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: me.id });
-          nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
-          // every step carries its task
-          if (!openTaskDupe(nextTasks, comp.id, a.what, deal ? deal.id : "")) {
-            const stid = uid();
-            nextTasks = [makeTask({ id: stid, companyId: comp.id, dealId: deal.id, assignee: me.id, author: me.id, title: a.what,
-              details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
-              due: a.due, source: "step", scrumNoteId: sess.scrumNoteId }), ...nextTasks];
-            // Point the step at the task it just raised, by id.
-            saveNextStep(deal.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: me.id, taskId: stid });
-            nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStepTaskId: stid } : x));
-          }
+            && !openTaskDupe(nextTasks, comp.id, a.what, deal.id)) {
+          nextTasks = [makeTask({ companyId: comp.id, dealId: deal.id, assignee: me.id, author: me.id,
+            title: a.what, details: "From the Scrum Master check-in", due: a.due,
+            source: "step", scrumNoteId: sess.scrumNoteId }), ...nextTasks];
         }
         if ((a.type === "task_done" || a.type === "activity_done") && comp && (a.task || a.activity)) {
           const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -9987,13 +9733,12 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
     const openDeals = deals.filter((d) => d.ownerId === u.id && !d.lost && d.stage !== "po")
       .map((d) => ({ d, comp: companies.find((c) => c.id === d.companyId) }));
     const day = (x) => String(x || "").slice(0, 10);
-    const stepsIn = openDeals.filter(({ d }) => d.nextStep && !d.nextStepDoneAt && d.nextStepDue && day(d.nextStepDue) >= pFrom && day(d.nextStepDue) <= pTo);
     const tasksIn = tasks.filter((t) => t.assignee === u.id && t.status !== "done" && t.due && t.due >= pFrom && t.due <= pTo);
     // Step-side only, for the same reason as loadOf above: the late tasks
     // are added on the next line.
     const overdue = openDeals.filter(({ d }) => nextStepState(d, [], deals).key === "overdue").length
       + tasks.filter((t) => t.assignee === u.id && t.status !== "done" && t.due && t.due < todayStr()).length;
-    return { openDeals, stepsIn, tasksIn, load: stepsIn.length + tasksIn.length, overdue };
+    return { openDeals, tasksIn, load: tasksIn.length, overdue };
   };
   const planStatus = (u, P) => u.active === false ? ["inactive", "slate"]
     : P.overdue > 0 ? ["Overdue work", "red"]
@@ -10127,8 +9872,8 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                           : <span className={cls("text-sm font-semibold", P.openDeals.length >= capOf(u) ? "text-red-600" : "text-slate-800")}>
                               {P.openDeals.length >= capOf(u) ? "At capacity in this period" : P.load + " commitment" + (P.load > 1 ? "s" : "") + " in this period"}
                             </span>}
-                        {(P.stepsIn.length > 0 || P.tasksIn.length > 0) && (
-                          <p className="text-[11px] text-slate-400 mt-0.5 font-mono">{P.stepsIn.length} deal step{P.stepsIn.length !== 1 ? "s" : ""} · {P.tasksIn.length} task{P.tasksIn.length !== 1 ? "s" : ""} due</p>
+                        {P.tasksIn.length > 0 && (
+                          <p className="text-[11px] text-slate-400 mt-0.5 font-mono">{P.tasksIn.length} task{P.tasksIn.length !== 1 ? "s" : ""} due</p>
                         )}
                       </td>
                       <td className="py-3 px-4">
@@ -10138,7 +9883,7 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                               <div key={d.id} className="leading-tight">
                                 <button onClick={() => comp && openCompany(comp.id)} className="text-[13px] font-medium text-slate-800 hover:text-blue-700 hover:underline text-left">{comp ? comp.name : d.did}</button>
                                 <p className="text-[11px] font-mono text-slate-400">
-                                  {(d.temperature || "cold")} · {d.nextStep && !d.nextStepDoneAt && d.nextStepDue ? "step due " + fmtDate(d.nextStepDue) : "no committed step"}
+                                  {(d.temperature || "cold")} · {commitLine(d, nextStepState(d, tasks, deals)) || "nothing committed"}
                                 </p>
                               </div>
                             ))}

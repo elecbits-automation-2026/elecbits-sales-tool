@@ -48,16 +48,17 @@ whole thing rolls back and the database is untouched.
 | 18 | **`31-deal-product.sql`** | `product` on `sales.deals` — the two or three words naming what a deal is for, so several live deals on one company are told apart on the board |
 | 19 | **`32-deal-contacts.sql`** | `contact_id` + `context` on `sales.deals`, `sales.upsert_contact`/`delete_contact` (SECURITY DEFINER, the sanctioned way into shared `core.contacts`), and a backfill of each company's single contact into `core.contacts` as its primary |
 
-| 20 | **`33-step-task.sql`** | `next_step_task_id` on `sales.deals` — the committed step points at the TASK that is the step, instead of being matched to it by title. Backfills the unambiguous cases |
+| 20 | **`33-step-task.sql`** | ~~`next_step_task_id` on `sales.deals`~~ — **superseded, do not run.** The committed step was removed as a concept before this shipped: a deal's next action is a task on that deal. The `next_step*` columns stay in the database, unread |
 
 Steps 10–19 are also bundled as **`RUN-THIS-phase4.sql`** (23 through 32, one
 paste, same idempotence rules). **`33-step-task.sql` is not in that bundle
 — run it separately**, after phase 4.
 
-Until it is run the app still works: `saveNextStep` notices the missing
-column, drops the pointer, saves the rest, and the schema-gap banner names
-the file. The step then falls back to being matched to its task by title,
-which is the behaviour this step exists to retire.
+`33-step-task.sql` is a dead end — skip it. It pointed a deal's committed
+step at the task that was that step, which was the right fix for the wrong
+problem: the step and the task were the same thing described twice, so the
+step went instead. Nothing reads `deals.next_step` any more. The columns are
+left in place because dropping them is destructive and buys nothing.
 
 **`VERIFY-phase4.sql`** answers the question the editor does not: did it
 commit? It is read-only, it names every object steps 23–32 create, and it

@@ -145,19 +145,21 @@ const both = [dpb, ups, dead, solo];
   check("a deal with no tasks at all is not closedOut",
     !st(dpb, []).closedOut, st(dpb, []));
 
-  // The written next step still counts — deals predate assignable tasks.
+  /* deals.next_step is GONE as a concept. A deal carrying the old columns
+     must be judged on its tasks alone, or the two ideas are still both
+     alive and still free to disagree — which is what this removed. */
   const withStep = { ...dpb, nextStep: "Walk Gopinath through the LLD", nextStepDue: SOON };
-  check("a written next step alone → committed",
-    st(withStep, []).key === "committed" && st(withStep, []).step === true, st(withStep, []));
-  check("…past its date → overdue",
-    st({ ...withStep, nextStepDue: PAST }, []).key === "overdue", st({ ...withStep, nextStepDue: PAST }, []));
-  check("…marked done stops counting",
-    st({ ...withStep, nextStepDoneAt: PAST }, []).key === "none", st({ ...withStep, nextStepDoneAt: PAST }, []));
-  check("step:false when the commitment comes from tasks only — no phantom parent",
-    st(dpb, shreya).step === false, st(dpb, shreya));
-  check("a late step outweighs on-time tasks",
-    st({ ...withStep, nextStepDue: PAST }, shreya).key === "overdue",
+  check("a leftover written step does NOT make a deal committed",
+    st(withStep, []).key === "none", st(withStep, []));
+  check("…nor overdue, however long past its date",
+    st({ ...withStep, nextStepDue: PAST }, []).key === "none", st({ ...withStep, nextStepDue: PAST }, []));
+  check("a leftover step cannot outweigh the tasks",
+    st({ ...withStep, nextStepDue: PAST }, shreya).key === "committed",
     st({ ...withStep, nextStepDue: PAST }, shreya));
+  check("the verdict ignores step fields entirely",
+    JSON.stringify(st(withStep, shreya)) === JSON.stringify(st(dpb, shreya)), st(withStep, shreya));
+  check("no step key is reported any more — one concept, not two",
+    st(dpb, shreya).step === undefined, st(dpb, shreya));
 
   check("a lost deal is closed, whatever is assigned on it",
     st(dead, [{ ...shreya[0], dealId: "deal-old" }]).key === "closed",
@@ -166,8 +168,8 @@ const both = [dpb, ups, dead, solo];
     st({ ...dpb, stage: "po" }, shreya).key === "closed", st({ ...dpb, stage: "po" }, shreya));
   check("no deal → a shape, never a crash",
     nextStepState(null, shreya, both, TODAY).key === "none", nextStepState(null, shreya, both, TODAY));
-  check("no tasks argument → falls back to the written step, no crash",
-    nextStepState(withStep, null, both, TODAY).key === "committed", nextStepState(withStep, null, both, TODAY));
+  check("no tasks argument → not committed, and no crash",
+    nextStepState(withStep, null, both, TODAY).key === "none", nextStepState(withStep, null, both, TODAY));
 
   // The lone-deal company: a company-level task with no dealId still counts.
   check("on a one-deal company an unstamped assigned task commits the deal",
