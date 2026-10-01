@@ -212,6 +212,7 @@ export async function loadWorkspace() {
     nextStep: d.next_step || "", nextStepDue: d.next_step_due || "",
     nextStepOwner: d.next_step_owner || "", nextStepSetAt: d.next_step_set_at || "",
     nextStepDoneAt: d.next_step_done_at || "",
+    nextStepTaskId: d.next_step_task_id || "",
   }));
 
   // kpis — {userId: {metric: target}}.
@@ -642,14 +643,25 @@ export async function setTemperature(dealId: string, move: { from: string; to: s
 }
 
 // The commitment: next step in the salesperson's own words, with their date.
-export async function saveNextStep(dealId: string, step: { what: string; due?: string; owner?: string; doneAt?: string | null }): Promise<boolean> {
-  const { error } = await tbl(supabase, "deals").update({
+export async function saveNextStep(dealId: string, step: { what: string; due?: string; owner?: string; doneAt?: string | null; taskId?: string | null }): Promise<boolean> {
+  const row: any = {
     next_step: step.what || null,
     next_step_due: step.due || null,
     next_step_owner: step.owner || null,
     next_step_set_at: new Date().toISOString(),
     next_step_done_at: step.doneAt === undefined ? null : step.doneAt,
-  }).eq("id", dealId);
+  };
+  // The pointer only goes in when the caller means to set it, so a plain
+  // text update does not silently detach the step from its task.
+  if (step.taskId !== undefined) row.next_step_task_id = step.taskId || null;
+  let { error } = await tbl(supabase, "deals").update(row).eq("id", dealId);
+  // 33-step-task.sql not run yet: drop the pointer and save the rest rather
+  // than losing the whole write. The banner says what is missing.
+  if (error && /next_step_task_id|column/i.test(error.message || "")) {
+    schemaGaps.add("deals.next_step_task_id — run 33-step-task.sql so the committed step can point at its task");
+    const { next_step_task_id, ...rest } = row;
+    ({ error } = await tbl(supabase, "deals").update(rest).eq("id", dealId));
+  }
   return ok(error, "saveNextStep");
 }
 

@@ -2475,6 +2475,21 @@ const sameish = (a, b) => {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
 
+/* WHICH TASK IS THE COMMITTED STEP. By id since 33-step-task.sql; the title
+   match below is the legacy path, for deals committed before the column
+   existed and for a deployment where the migration has not been run. The
+   title match is exactly what this change exists to retire — it breaks the
+   moment anything rewords a task — so it is a fallback, never the answer
+   when a pointer is available. */
+function stepTaskOf(deal, tasks, deals) {
+  if (!deal || !deal.nextStep || deal.nextStepDoneAt) return null;
+  if (deal.nextStepTaskId) return (tasks || []).find((t) => t.id === deal.nextStepTaskId) || null;
+  const want = normTitle(deal.nextStep);
+  if (!want) return null;
+  return (tasks || []).find((t) => belongsToDeal(t, deal, deals)
+    && (normTitle(t.title) === want || normTitle(t.title).includes(want) || want.includes(normTitle(t.title)))) || null;
+}
+
 /* ─── WHO MAY REWRITE A DEAL'S COMMITTED NEXT STEP ─────────────────────────
    One named person, by request. A name in the source is brittle and it was
    said so at the time: two Sauravs, a changed address, or his being away
@@ -3267,9 +3282,13 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
           done.push("✓ committed: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
           // every step carries its task
           if (!openTaskDupe(nextTasks, d.companyId, a.what, d.id)) {
-            nextTasks = [makeTask({ companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: a.what,
+            const stid = uid();
+            nextTasks = [makeTask({ id: stid, companyId: d.companyId, dealId: d.id, assignee: d.ownerId || me.id, author: me.id, title: a.what,
               details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
               due: a.due, source: "step" }), ...nextTasks];
+            // The step points at the task it just raised, by id.
+            saveNextStep(d.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: d.ownerId, taskId: stid });
+            nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, nextStepTaskId: stid } : x));
           }
         }
         if ((a.type === "task_done" || a.type === "activity_done") && (a.task || a.activity)) {
@@ -3636,10 +3655,15 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   useEffect(() => {
     const dd = deals.find((x) => x.id === dealId);
     if (!dd || !dd.nextStep || dd.nextStepDoneAt) return;
-    const lt = tasks.find((t) => t.status === "done"
-      && (t.dealId === dd.id || (!t.dealId && t.companyId === dd.companyId))
-      && (normTitle(t.title) === normTitle(dd.nextStep)
-        || normTitle(t.title).includes(normTitle(dd.nextStep)) || normTitle(dd.nextStep).includes(normTitle(t.title))));
+    // By id where there is one. The title match stays only for deals
+    // committed before 33-step-task.sql — it is the thing being retired,
+    // not the mechanism.
+    const lt = dd.nextStepTaskId
+      ? tasks.find((t) => t.id === dd.nextStepTaskId && t.status === "done")
+      : tasks.find((t) => t.status === "done"
+          && (t.dealId === dd.id || (!t.dealId && t.companyId === dd.companyId))
+          && (normTitle(t.title) === normTitle(dd.nextStep)
+            || normTitle(t.title).includes(normTitle(dd.nextStep)) || normTitle(dd.nextStep).includes(normTitle(t.title))));
     if (!lt) return;
     saveNextStep(dd.id, { what: dd.nextStep, due: dd.nextStepDue, owner: dd.nextStepOwner, doneAt: lt.doneAt || nowTS() });
     saveDeals(deals.map((x) => (x.id === dd.id ? { ...x, nextStepDoneAt: lt.doneAt || nowTS(), updatedAt: nowTS() } : x)));
@@ -3648,21 +3672,41 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
 
-  // The committed step: shown to everyone, writable only by the named
-  // editor. The guard is repeated in saveStep rather than trusted to the
-  // button being hidden — a hidden control is not a permission.
+  /* THE COMMITTED STEP IS ONE OF THESE TASKS. Not a sentence beside them:
+     a sentence has its own wording and its own date, and the two drifted
+     apart the first time anything reworded a task. Flagging a row keeps
+     one record, one date, and a rename that costs nothing.
+
+     Visible to everyone, settable only by the named editor; the guard is
+     repeated in the setter rather than trusted to the control being
+     hidden, because a hidden control is not a permission. */
   const mayEditStep = canEditStep(me);
-  const [stepEdit, setStepEdit] = useState(false);
-  const [stepDraft, setStepDraft] = useState({ what: "", due: "" });
-  const saveStep = () => {
+  const stepTask = stepTaskOf(d, tasks, deals);
+  const setStepTask = (t) => {
     if (!mayEditStep) return;
-    const what = stepDraft.what.trim();
-    const due = stepDraft.due ? stepDraft.due + "T18:30" : "";
-    saveNextStep(d.id, what ? { what, due, owner: d.ownerId || me.id } : { what: "", due: "", owner: null });
-    patchDeal({ nextStep: what, nextStepDue: due, nextStepOwner: what ? (d.ownerId || me.id) : null,
-      nextStepSetAt: what ? nowTS() : "", nextStepDoneAt: "" });
-    setStepEdit(false);
+    if (!t) {
+      saveNextStep(d.id, { what: "", due: "", owner: null, taskId: null });
+      patchDeal({ nextStep: "", nextStepDue: "", nextStepOwner: null, nextStepSetAt: "", nextStepDoneAt: "", nextStepTaskId: "" });
+      return;
+    }
+    const due = t.due ? t.due + "T18:30" : "";
+    saveNextStep(d.id, { what: t.title, due, owner: t.assignee || d.ownerId || me.id, taskId: t.id });
+    patchDeal({ nextStep: t.title, nextStepDue: due, nextStepOwner: t.assignee || d.ownerId || me.id,
+      nextStepSetAt: nowTS(), nextStepDoneAt: "", nextStepTaskId: t.id });
   };
+
+  /* The text copy follows the task. next_step and next_step_due are read by
+     the pipeline table, the board cards and the Scrum Master, none of which
+     should have to join to tasks — so when the flagged task is retitled or
+     re-dated, the copy is brought along instead of going stale. */
+  useEffect(() => {
+    if (!d || !stepTask || !d.nextStepTaskId) return;
+    const due = stepTask.due ? stepTask.due + "T18:30" : "";
+    if (stepTask.title === d.nextStep && due === (d.nextStepDue || "")) return;
+    saveNextStep(d.id, { what: stepTask.title, due, owner: stepTask.assignee || d.ownerId, taskId: stepTask.id });
+    saveDeals(deals.map((x) => (x.id === d.id
+      ? { ...x, nextStep: stepTask.title, nextStepDue: due, updatedAt: nowTS() } : x)));
+  }, [stepTask && stepTask.title, stepTask && stepTask.due, d && d.nextStepTaskId]);
 
   // One row, drawn the same at either level — depth only shifts it right and
   // shrinks the marker, so a sub-task is visibly subordinate without becoming
@@ -3671,13 +3715,26 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
     const who = users.find((u) => u.id === t.assignee);
     const late = t.due && t.due < todayStr();
     return (
-      <div key={t.id} className={cls("flex items-center gap-2", depth ? "pl-6" : "")}>
+      <div key={t.id} className={cls("group flex items-center gap-2", depth ? "pl-6" : "")}>
         {depth
           ? <span className="text-slate-300 text-[11px] flex-none leading-none">↳</span>
           : <span className={cls("w-1.5 h-1.5 rounded-full flex-none", late ? "bg-red-500" : t.status === "doing" ? "bg-blue-500" : "bg-slate-300")} />}
         <span className={cls("leading-snug mr-auto", depth ? "text-[12px] text-slate-600" : "text-[12.5px] text-slate-700")}>{t.title}
+          {/* THE STEP. One badge on one row, instead of a second sentence
+              with a second date that nothing kept honest. */}
+          {stepTask && stepTask.id === t.id && (
+            <span className="ml-1.5 text-[9.5px] uppercase font-bold text-amber-600 border border-amber-300 bg-amber-50 rounded px-1 py-px">step</span>
+          )}
           {t.source === "stage" && <span className="ml-1.5 text-[9.5px] uppercase text-blue-500">stage</span>}
           {t.source === "scrum" && <span className="ml-1.5 text-[9.5px] uppercase text-purple-500">scrum</span>}
+          {/* Only the named editor decides which task carries the deal. */}
+          {mayEditStep && !depth && (
+            stepTask && stepTask.id === t.id
+              ? <button onClick={() => setStepTask(null)} title="This deal will have no committed step"
+                  className="ml-1.5 text-[10px] text-slate-400 hover:text-slate-700 hover:underline">unset</button>
+              : <button onClick={() => setStepTask(t)} title="Make this the deal's committed step"
+                  className="ml-1.5 text-[10px] text-blue-600 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:underline">make it the step</button>
+          )}
         </span>
         {/* only a top-level task can take sub-tasks — two levels, not a tree */}
         {!depth && (
@@ -3834,16 +3891,8 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
      the same promise twice. Adding a task below IS committing now.
      deals.next_step still gets written by the copilot and the Scrum
      Master, and the header shows it; nothing here writes it. */
-  // The step becomes a TASK — the evidence check lives in the task's closure
-  // (My Tasks), not here. The card shows the task's live status, and the step
-  // marks itself done when its task closes. ANY same-titled task on this deal
-  // counts as the step's task, whoever raised it — copilot, scrum, kickoff.
-  const stepTask = d.nextStep && !d.nextStepDoneAt
-    ? (tasks.find((t) => t.dealId === d.id && t.source === "step" && t.title === d.nextStep)
-      || tasks.find((t) => (t.dealId === d.id || (!t.dealId && t.companyId === d.companyId))
-        && (normTitle(t.title) === normTitle(d.nextStep)
-          || normTitle(t.title).includes(normTitle(d.nextStep)) || normTitle(d.nextStep).includes(normTitle(t.title)))))
-    : null;
+  // (stepTask is resolved above, by id — stepTaskOf. This second,
+  //  title-matching copy of the same idea was exactly the drift.)
   // GENERATE TASKS — repeatable: audits every open task against the step and
   // the record, applies the realignment, and reports what changed.
   const realignTasks = async () => {
@@ -4096,42 +4145,9 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                     : "Nothing owed on this deal yet. Add a task below with a name and a date — that is the commitment."}
               </p>
             )}
-            {/* THE COMMITTED STEP. The one line the board reads as this
-                deal's commitment, so only the named editor may rewrite it
-                (canEditStep). Everyone else sees exactly the same text and
-                date — withholding the step from the person doing the work
-                would be worse than useless; what is withheld is the pen. */}
-            {(d.nextStep && !d.nextStepDoneAt) || stepEdit ? (
-              <div className="mt-1.5 flex items-start gap-1.5">
-                <span className="uppercase tracking-wide text-[9.5px] font-bold text-slate-400 mt-1 flex-none">step</span>
-                {stepEdit ? (
-                  <>
-                    <input autoFocus value={stepDraft.what} placeholder="the one move that takes this deal forward"
-                      onChange={(e) => setStepDraft({ ...stepDraft, what: e.target.value })}
-                      onKeyDown={(e) => { if (e.key === "Enter") saveStep(); if (e.key === "Escape") setStepEdit(false); }}
-                      className="text-[12px] flex-1 min-w-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent py-0.5" />
-                    <input type="date" value={stepDraft.due} title="By when"
-                      onChange={(e) => setStepDraft({ ...stepDraft, due: e.target.value })}
-                      className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
-                    <Btn size="sm" kind="primary" onClick={saveStep}>Save</Btn>
-                    <button onClick={() => setStepEdit(false)} className="text-slate-300 hover:text-slate-600 flex-none"><X size={12} /></button>
-                  </>
-                ) : (
-                  <p className="text-[11px] text-slate-500 leading-snug">
-                    {d.nextStep}{d.nextStepDue ? " · by " + fmtDate(d.nextStepDue) : ""}
-                    {mayEditStep && (
-                      <button onClick={() => { setStepDraft({ what: d.nextStep || "", due: d.nextStepDue ? String(d.nextStepDue).slice(0, 10) : "" }); setStepEdit(true); }}
-                        className="text-blue-600 hover:underline ml-1.5">edit</button>
-                    )}
-                  </p>
-                )}
-              </div>
-            ) : mayEditStep ? (
-              <button onClick={() => { setStepDraft({ what: "", due: "" }); setStepEdit(true); }}
-                className="text-[11px] text-blue-600 hover:underline mt-1.5 flex items-center gap-1">
-                <Plus size={11} /> set the committed step
-              </button>
-            ) : null}
+            {/* The committed step used to be printed here as its own
+                sentence. It is now a badge on the task that IS the step —
+                see taskRow — so there is nothing left to disagree with. */}
             {realignNote && <p className="text-[10.5px] text-slate-500 mt-1">{realignNote}</p>}
             <div className="mt-2.5 pt-2.5 border-t border-slate-200/70 space-y-1">
               {roots.map((r) => (
@@ -7342,9 +7358,12 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
       const stepFree = !(d0 && d0.nextStep && !d0.nextStepDoneAt);
       if (r.dealId && newTasks.length && (canEditStep(me) || stepFree)) {
         const lead = newTasks[0];
-        saveNextStep(r.dealId, { what: lead.title, due: lead.due ? lead.due + "T18:30" : "", owner: lead.assignee });
+        // It raised the task, so it can point the step straight at it —
+        // no title matching, nothing to drift.
+        saveNextStep(r.dealId, { what: lead.title, due: lead.due ? lead.due + "T18:30" : "",
+          owner: lead.assignee, taskId: lead.id });
         patchDealLocal(r.dealId, { nextStep: lead.title, nextStepDue: lead.due ? lead.due + "T18:30" : "",
-          nextStepOwner: lead.assignee, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
+          nextStepOwner: lead.assignee, nextStepSetAt: nowTS(), nextStepDoneAt: "", nextStepTaskId: lead.id });
       }
       if (r.setTemp && r.dealId && w.temperature) {
         setTemperature(r.dealId, { from: (d0 && d0.temperature) || "cold", to: w.temperature,
@@ -9733,9 +9752,13 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
           nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
           // every step carries its task
           if (!openTaskDupe(nextTasks, comp.id, a.what, deal ? deal.id : "")) {
-            nextTasks = [makeTask({ companyId: comp.id, dealId: deal.id, assignee: me.id, author: me.id, title: a.what,
+            const stid = uid();
+            nextTasks = [makeTask({ id: stid, companyId: comp.id, dealId: deal.id, assignee: me.id, author: me.id, title: a.what,
               details: "From the committed next step — complete it in My Tasks; the AI checks the evidence there.",
               due: a.due, source: "step", scrumNoteId: sess.scrumNoteId }), ...nextTasks];
+            // Point the step at the task it just raised, by id.
+            saveNextStep(deal.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: me.id, taskId: stid });
+            nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStepTaskId: stid } : x));
           }
         }
         if ((a.type === "task_done" || a.type === "activity_done") && comp && (a.task || a.activity)) {
