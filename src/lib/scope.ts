@@ -100,22 +100,21 @@ export const contactLine = (c: Contact | null | undefined): string => !c ? "" :
    What is outstanding on a committed deal is the UPDATE — whether the work
    got done — and that closes in My Tasks, where the evidence is checked.
 
-   The older free-text `nextStep` still counts when it is set: it is the
-   same promise written another way, and deals from before tasks carried
-   assignees lean on it. It is simply no longer the only thing that counts,
-   which is what made a deal with two assigned tasks report "nothing
-   committed" directly above the list of them.
+   There WAS a second idea here: deals.next_step, the commitment as a
+   sentence, living beside the tasks and counting towards this verdict in
+   its own right. It is gone. Adding a step and adding a task were the same
+   act described twice, and the two descriptions drifted — a deal was found
+   advertising "Send introductory mail to Chinmay · by 2 Oct" above its only
+   real task, overdue since 26 Sept. One concept: the next action on a deal
+   is a task on that deal.
 
    Scoping is belongsToDeal's, so a sibling project's tasks never make this
    deal look committed.                                                    */
 
 export type CommitTask = Scoped & { status?: string; assignee?: string; due?: string };
-export type CommitDeal = DealLike & {
-  stage?: string; nextStep?: string; nextStepDue?: string; nextStepDoneAt?: string;
-};
+export type CommitDeal = DealLike & { stage?: string };
 export type CommitState = {
   key: "closed" | "committed" | "overdue" | "none";
-  step: boolean;      // is the written next step part of this commitment?
   tasks: number;      // assigned, still-live tasks carrying it
   late: number;       // promised dates already past
   unowned: number;    // live tasks with nobody on them
@@ -134,7 +133,7 @@ export function nextStepState(
   deals?: DealLike[] | null,
   today?: string,
 ): CommitState {
-  const base: CommitState = { key: "none", step: false, tasks: 0, late: 0, unowned: 0, due: "" };
+  const base: CommitState = { key: "none", tasks: 0, late: 0, unowned: 0, due: "" };
   if (!d) return base;
   if (d.lost || d.stage === "po") return { ...base, key: "closed" };
 
@@ -143,17 +142,12 @@ export function nextStepState(
   const live  = mine.filter((t) => t.status !== "done");
   const owned = live.filter((t) => !!t.assignee);
 
-  const hasStep = !!d.nextStep && !d.nextStepDoneAt;
-  const stepDue = hasStep && d.nextStepDue ? String(d.nextStepDue).slice(0, 10) : "";
-
-  // Every date promised, task-side and step-side alike.
-  const dates = owned.map((t) => t.due).filter(Boolean).concat(stepDue ? [stepDue] : []).sort() as string[];
+  const dates = owned.map((t) => t.due).filter(Boolean).sort() as string[];
   const late  = dates.filter((x) => x < now);
 
-  if (owned.length || hasStep) {
+  if (owned.length) {
     return {
       key: late.length ? "overdue" : "committed",
-      step: hasStep,
       tasks: owned.length,
       late: late.length,
       unowned: live.length - owned.length,

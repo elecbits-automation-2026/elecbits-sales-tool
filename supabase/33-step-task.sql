@@ -1,4 +1,17 @@
 -- ═══════════════════════════════════════════════════════════════════════════
+-- SUPERSEDED — DO NOT RUN. Kept so the history reads honestly.
+--
+-- This pointed a deal's committed step at the task that WAS that step,
+-- replacing a join on their wording. Correct fix, wrong problem: the step
+-- and the task were never two things. Adding a step and adding a task were
+-- the same act described twice, and the second description is gone.
+--
+-- A deal's next action is a task on that deal. deals.next_step and friends
+-- are no longer read by anything; the columns stay because dropping them is
+-- destructive and buys nothing.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- THE COMMITTED STEP IS A TASK, NOT A SENTENCE ABOUT ONE.
 -- Run after 32-deal-contacts.sql. Idempotent.
 --
