@@ -2475,6 +2475,29 @@ const sameish = (a, b) => {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
 
+/* ─── WHO MAY REWRITE A DEAL'S COMMITTED NEXT STEP ─────────────────────────
+   One named person, by request. A name in the source is brittle and it was
+   said so at the time: two Sauravs, a changed address, or his being away
+   while someone must act, and only a deploy unblocks it. So the name lives
+   in exactly ONE constant, and an env var overrides it without a code
+   change — VITE_STEP_EDITOR, set in Vercel, comma-separated for more than
+   one. Matched on email first, since email is what this tool authenticates
+   on; the first-name match is the fallback for a roster row whose address
+   is not filled in.
+
+   This gates the step ONLY. Tasks, notes and logging are untouched: an
+   agent still runs their own deals, they simply cannot overwrite the one
+   line the board reads as the commitment. */
+const STEP_EDITORS = String(import.meta.env.VITE_STEP_EDITOR || "saurav")
+  .toLowerCase().split(",").map((x) => x.trim()).filter(Boolean);
+
+function canEditStep(me) {
+  if (!me) return false;
+  const email = String(me.email || "").toLowerCase();
+  const first = String(me.name || "").trim().toLowerCase().split(" ")[0];
+  return STEP_EDITORS.some((k) => (k.includes("@") ? email === k : first === k));
+}
+
 const PRODUCT_MAX = 40;
 const dealProduct = (d) => String((d && d.product) || "").trim();
 
@@ -3233,7 +3256,12 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
     let nextDeals = deals, nextTasks = tasks;
     for (const a of Array.isArray(list) ? list : []) {
       try {
-        if (a.type === "next_step" && a.what) {
+        /* The copilot writes the step on the person's behalf, so the same
+            rule applies to it: without the pen you may still SET a step the
+            deal does not have, but you cannot overwrite one that is there.
+            Otherwise "only Saurav edits the step" is undone by asking the
+            AI to do it. */
+        if (a.type === "next_step" && a.what && (canEditStep(me) || !(d.nextStep && !d.nextStepDoneAt))) {
           saveNextStep(d.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: d.ownerId });
           nextDeals = nextDeals.map((x) => (x.id === d.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: d.ownerId, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
           done.push("✓ committed: " + a.what + (a.due ? " by " + fmtDate(a.due) : ""));
@@ -3619,6 +3647,22 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
 
   if (!d) return null;
   const patchDeal = (fields) => saveDeals(deals.map((x) => (x.id === d.id ? { ...x, ...fields, updatedAt: nowTS() } : x)));
+
+  // The committed step: shown to everyone, writable only by the named
+  // editor. The guard is repeated in saveStep rather than trusted to the
+  // button being hidden — a hidden control is not a permission.
+  const mayEditStep = canEditStep(me);
+  const [stepEdit, setStepEdit] = useState(false);
+  const [stepDraft, setStepDraft] = useState({ what: "", due: "" });
+  const saveStep = () => {
+    if (!mayEditStep) return;
+    const what = stepDraft.what.trim();
+    const due = stepDraft.due ? stepDraft.due + "T18:30" : "";
+    saveNextStep(d.id, what ? { what, due, owner: d.ownerId || me.id } : { what: "", due: "", owner: null });
+    patchDeal({ nextStep: what, nextStepDue: due, nextStepOwner: what ? (d.ownerId || me.id) : null,
+      nextStepSetAt: what ? nowTS() : "", nextStepDoneAt: "" });
+    setStepEdit(false);
+  };
 
   // One row, drawn the same at either level — depth only shifts it right and
   // shrinks the marker, so a sub-task is visibly subordinate without becoming
@@ -4052,16 +4096,42 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                     : "Nothing owed on this deal yet. Add a task below with a name and a date — that is the commitment."}
               </p>
             )}
-            {/* A step the AI or the Scrum Master wrote still lands in
-                deals.next_step. Committing one has always also raised a task,
-                so it is normally the line below as well — shown compactly
-                rather than as a second box competing with this one. */}
-            {d.nextStep && !d.nextStepDoneAt && (
-              <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
-                <span className="uppercase tracking-wide text-[9.5px] font-bold text-slate-400 mr-1">step</span>
-                {d.nextStep}{d.nextStepDue ? " · by " + fmtDate(d.nextStepDue) : ""}
-              </p>
-            )}
+            {/* THE COMMITTED STEP. The one line the board reads as this
+                deal's commitment, so only the named editor may rewrite it
+                (canEditStep). Everyone else sees exactly the same text and
+                date — withholding the step from the person doing the work
+                would be worse than useless; what is withheld is the pen. */}
+            {(d.nextStep && !d.nextStepDoneAt) || stepEdit ? (
+              <div className="mt-1.5 flex items-start gap-1.5">
+                <span className="uppercase tracking-wide text-[9.5px] font-bold text-slate-400 mt-1 flex-none">step</span>
+                {stepEdit ? (
+                  <>
+                    <input autoFocus value={stepDraft.what} placeholder="the one move that takes this deal forward"
+                      onChange={(e) => setStepDraft({ ...stepDraft, what: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === "Enter") saveStep(); if (e.key === "Escape") setStepEdit(false); }}
+                      className="text-[12px] flex-1 min-w-0 border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none bg-transparent py-0.5" />
+                    <input type="date" value={stepDraft.due} title="By when"
+                      onChange={(e) => setStepDraft({ ...stepDraft, due: e.target.value })}
+                      className="text-[10px] font-mono text-slate-500 border border-slate-200 rounded px-0.5 py-0 bg-transparent flex-none w-[7.2rem]" />
+                    <Btn size="sm" kind="primary" onClick={saveStep}>Save</Btn>
+                    <button onClick={() => setStepEdit(false)} className="text-slate-300 hover:text-slate-600 flex-none"><X size={12} /></button>
+                  </>
+                ) : (
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    {d.nextStep}{d.nextStepDue ? " · by " + fmtDate(d.nextStepDue) : ""}
+                    {mayEditStep && (
+                      <button onClick={() => { setStepDraft({ what: d.nextStep || "", due: d.nextStepDue ? String(d.nextStepDue).slice(0, 10) : "" }); setStepEdit(true); }}
+                        className="text-blue-600 hover:underline ml-1.5">edit</button>
+                    )}
+                  </p>
+                )}
+              </div>
+            ) : mayEditStep ? (
+              <button onClick={() => { setStepDraft({ what: "", due: "" }); setStepEdit(true); }}
+                className="text-[11px] text-blue-600 hover:underline mt-1.5 flex items-center gap-1">
+                <Plus size={11} /> set the committed step
+              </button>
+            ) : null}
             {realignNote && <p className="text-[10.5px] text-slate-500 mt-1">{realignNote}</p>}
             <div className="mt-2.5 pt-2.5 border-t border-slate-200/70 space-y-1">
               {roots.map((r) => (
@@ -7268,14 +7338,15 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
          these tasks is the move, it is already in the list. Setting the
          deal's next step from the first approved one keeps the board
          honest without asking a second question about the same thing. */
-      if (r.dealId && newTasks.length) {
+      const d0 = (data.deals || []).find((x) => x.id === r.dealId);
+      const stepFree = !(d0 && d0.nextStep && !d0.nextStepDoneAt);
+      if (r.dealId && newTasks.length && (canEditStep(me) || stepFree)) {
         const lead = newTasks[0];
         saveNextStep(r.dealId, { what: lead.title, due: lead.due ? lead.due + "T18:30" : "", owner: lead.assignee });
         patchDealLocal(r.dealId, { nextStep: lead.title, nextStepDue: lead.due ? lead.due + "T18:30" : "",
           nextStepOwner: lead.assignee, nextStepSetAt: nowTS(), nextStepDoneAt: "" });
       }
       if (r.setTemp && r.dealId && w.temperature) {
-        const d0 = (data.deals || []).find((x) => x.id === r.dealId);
         setTemperature(r.dealId, { from: (d0 && d0.temperature) || "cold", to: w.temperature,
           why: w.summary || (w.title || "From a client conversation"), evidence: touch.subject || "",
           decided: "human", by: me.id });
@@ -9656,7 +9727,8 @@ function ScrumMasterPanel({ me, data, saveScrums, saveTasks, saveDeals }) {
         if (a.type === "team_scrum" && ["yes", "no"].includes(a.answer)) patch.teamScrum = a.answer;
         const comp = a.company ? (matchCompany(a.company, companies) || companies.find((c) => c.name === a.company)) : null;
         const deal = comp ? nextDeals.filter((x) => x.companyId === comp.id && !x.lost).sort((x, y) => (x.updatedAt < y.updatedAt ? 1 : -1))[0] : null;
-        if (a.type === "next_step" && deal && a.what) {
+        if (a.type === "next_step" && deal && a.what
+            && (canEditStep(me) || !(deal.nextStep && !deal.nextStepDoneAt))) {
           saveNextStep(deal.id, { what: a.what, due: a.due ? a.due + "T18:30" : "", owner: me.id });
           nextDeals = nextDeals.map((x) => (x.id === deal.id ? { ...x, nextStep: a.what, nextStepDue: a.due ? a.due + "T18:30" : "", nextStepOwner: me.id, nextStepSetAt: nowTS(), nextStepDoneAt: "", updatedAt: nowTS() } : x));
           // every step carries its task
