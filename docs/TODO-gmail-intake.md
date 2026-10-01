@@ -178,3 +178,64 @@ Schneider email under the wrong project is worse than asking.
   get no `dealId` — the same gap as B1, at the other entry point.
 - `StepProof` in `src/App.tsx` is defined and never rendered. Dead since the
   step modal went; delete when someone is next in that file.
+
+---
+
+## C · Turning the daily digest on
+
+`api/digest.js` is built and tested (`npm run test:digest`, 38 assertions).
+It renders both mails correctly today; it just has nowhere to post them.
+Three things, in order.
+
+### 1 · A way to send
+
+Pick one. Resend is the cleaner answer for mail the tool generates: a
+separate identity, its own logs, and it cannot read anything.
+
+| Option | Env | Cost |
+|---|---|---|
+| **Resend** (recommended) | `RESEND_API_KEY`, `DIGEST_FROM` (e.g. `Sales OS <sales-os@elecbits.in>`) | an account, and one DNS record to verify the domain |
+| Gmail, as the consented mailbox | the `INBOX_OAUTH_*` set from part A | **re-consent required** — the existing grant is `gmail.readonly`, and sending needs `gmail.send` in the scope list |
+
+With neither, nothing breaks: every run still renders the digests and
+returns them, and `?action=status` says why nothing was delivered.
+
+### 2 · `CRON_SECRET`
+
+Any random string, set in Vercel. Vercel presents it to its own cron calls,
+and the endpoint **refuses every unauthenticated request** — an open URL
+that mails the whole team on demand is a gift to whoever finds it. Until
+this is set the cron cannot run at all. That is deliberate: a missing
+secret fails shut.
+
+### 3 · Check it before anyone receives it
+
+Signed in as yourself, open:
+
+```
+/api/digest?when=morning&preview=1
+/api/digest?when=evening&preview=1
+```
+
+Both render every person's mail and **send nothing**. Read the HTML, then
+let the cron do it for real.
+
+### The schedule
+
+`vercel.json`: `03:30 UTC` (09:00 IST) and `13:00 UTC` (18:30 IST), weekdays.
+
+**On a Hobby plan Vercel allows two cron jobs and runs each roughly once a
+day, not at a precise minute** — a "morning" mail could land mid-morning.
+Two is exactly what this uses, so it fits, but if the timing has to be
+reliable that is the reason to be on Pro.
+
+### Who gets what
+
+Only people with something owed. A digest that arrives empty every day
+teaches people to filter the sender, and then the one that matters is
+filtered too — so a quiet day sends no mail at all.
+
+Morning is grouped **by project**, because "call Rohan" says nothing when a
+client runs six of them. Evening names what is still open rather than only
+counting it: a number tells you how the day went, a name tells you what to
+do about it.
