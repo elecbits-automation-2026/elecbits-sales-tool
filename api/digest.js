@@ -228,6 +228,14 @@ function money(n) {
 
 /* The headline above a project's tasks: who it is for, what it is, what it
    is worth. The deal code stands in when nobody has named the project. */
+/* The headline above a project's tasks: who it is for, what it is, what it
+   is worth, and a way in. Naming a project and then leaving the reader to
+   find it among six on the same client is most of the work the mail was
+   supposed to save — so every project carries a link that opens its deal
+   room directly (#deal/<id>, which the app reads on load).
+
+   Only when there IS a deal: a company-level task has no room to open,
+   and a link that lands nowhere is worse than no link. */
 function projectHead(head) {
   const name = head.product || head.code || "";
   return `<div style="margin:14px 0 4px;padding-top:10px;border-top:1px solid #f1f5f9">
@@ -235,6 +243,7 @@ function projectHead(head) {
     ${name ? `<span style="font-size:13px;color:#475569"> · ${esc(name)}</span>` : ""}
     ${head.value ? `<span style="font-size:11.5px;font-family:ui-monospace,monospace;color:#64748b;margin-left:6px">${esc(money(head.value))}</span>` : ""}
     ${!head.product && !head.code ? `<span style="font-size:11.5px;color:#94a3b8"> · not tied to a project</span>` : ""}
+    ${head.id ? `<a href="${APP_URL}/#deal/${esc(head.id)}" style="font-size:11.5px;color:#2563eb;text-decoration:none;margin-left:8px;white-space:nowrap">Go to project →</a>` : ""}
   </div>`;
 }
 
@@ -372,9 +381,9 @@ export default async function handler(req, res) {
     const projectOf = (t) => {
       const d = t.deal_id ? dealById.get(t.deal_id) : null;
       const client = orgById.get(t.org_id) || "Unlinked";
-      if (!d) return { key: "org:" + (t.org_id || "none"), client, product: "", value: 0, code: "" };
+      if (!d) return { key: "org:" + (t.org_id || "none"), client, product: "", value: 0, code: "", id: "" };
       return {
-        key: "deal:" + d.id, client,
+        key: "deal:" + d.id, client, id: d.id,
         product: (d.product || "").trim(),
         value: Number(d.value || 0),
         code: d.code || "",
