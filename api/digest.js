@@ -47,6 +47,20 @@ const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CRON_SECRET = process.env.CRON_SECRET || "";
 const APP_URL = (process.env.DIGEST_APP_URL || "https://elecbits-sales-tool.vercel.app").replace(/\/+$/, "");
 
+/* A LIVE TEST WITHOUT MAILING THE TEAM. ?preview=1 proves the content but
+   never exercises the actual send — the token, the scope, the From line,
+   what it looks like in a real client. DIGEST_ONLY_TO does: everything is
+   still built for everyone, and only these addresses are delivered to.
+   The rest are reported as held, so the run still shows who WOULD have
+   been mailed.
+
+   Left set by accident this silently stops the team's digests, so status
+   reports it and every response carries the list. A filter you cannot see
+   is worse than no filter. */
+const ONLY_TO = (process.env.DIGEST_ONLY_TO || "")
+  .toLowerCase().split(",").map((x) => x.trim()).filter((x) => x.includes("@"));
+const deliverable = (email) => !ONLY_TO.length || ONLY_TO.includes(String(email).toLowerCase());
+
 /* ── reading ─────────────────────────────────────────────────────────────
    Service role, because a cron has no user to act as. Read-only here: this
    endpoint never writes, which keeps the blast radius of that key to
@@ -239,6 +253,10 @@ export default async function handler(req, res) {
       senderHelp: senderKind() !== "none" ? null
         : "Either set RESEND_API_KEY + DIGEST_FROM, or consent the sending mailbox at /api/inbox?action=oauth-url&for=digest and store DIGEST_OAUTH_REFRESH_TOKEN + DIGEST_GMAIL_USER.",
       cronSecret: CRON_SECRET ? "set" : "missing — the endpoint refuses unauthenticated calls, so the cron cannot run until this is set",
+      onlyTo: ONLY_TO.length ? ONLY_TO : null,
+      onlyToWarning: ONLY_TO.length
+        ? "TESTING FILTER IS ON. Only these addresses receive anything; everyone else's digest is built and held. Clear DIGEST_ONLY_TO when you are done or the team never gets theirs."
+        : null,
       schedule: "vercel.json: 03:30 UTC (09:00 IST) and 13:00 UTC (18:30 IST), weekdays",
     });
   }
@@ -330,6 +348,7 @@ export default async function handler(req, res) {
       }
 
       if (preview) { out.push({ to: p.email, subject, count, html }); continue; }
+      if (!deliverable(p.email)) { out.push({ to: p.email, subject, count, held: "DIGEST_ONLY_TO" }); continue; }
       try { await sendMail(p.email, subject, html); out.push({ to: p.email, subject, count, sent: true }); }
       catch (e) { errors.push(p.email + ": " + String(e.message || e)); }
     }
@@ -337,6 +356,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       when, date: today, sender: senderKind(), preview: !!preview,
       people: out.length, digests: out,
+      onlyTo: ONLY_TO.length ? ONLY_TO : undefined,
+      held: ONLY_TO.length ? out.filter((x) => x.held).length : undefined,
       errors: errors.length ? errors : undefined,
       note: senderKind() === "none" && !preview
         ? "Rendered but NOT sent — no mail transport is configured. See /api/digest?action=status." : undefined,
