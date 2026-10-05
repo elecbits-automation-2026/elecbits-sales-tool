@@ -63,6 +63,10 @@ const { default: handler } = await import("../api/digest.js");
 /* ── the harness ───────────────────────────────────────────────────────── */
 let pass = 0, fail = 0;
 const results = [];
+// How many project groups in this mail belong to a real deal — a
+// company-level group has no deal room, so it must carry no link.
+const groupsWithDeals = (html) => (html.match(/#deal\//g) || []).length;
+
 const check = (name, cond, got) => {
   if (cond) { pass++; results.push(["PASS", name, ""]); }
   else { fail++; results.push(["FAIL", name, JSON.stringify(got)]); }
@@ -190,6 +194,10 @@ db.sales.tasks = [
   }
   check("an overdue task still sorts under Overdue, not under its deal's value",
     html.indexOf("Overdue") < html.indexOf("Due today"), null);
+  check("every project links straight to its deal room",
+    html.includes("/#deal/d-dpb") && html.includes("/#deal/d-ups") && /Go to project/.test(html), null);
+  check("…and a company-level task offers no link, because there is no room to open",
+    (html.match(/Go to project/g) || []).length === groupsWithDeals(html), null);
   check("the three-day forward view is its own section",
     /Next three days/.test(html) && html.includes("Draft the quote"), null);
   check("overdue says how long the oldest has waited",
@@ -282,6 +290,23 @@ db.sales.tasks = [
                    "INBOX_GMAIL_USER", "DIGEST_GMAIL_USER", "DIGEST_OAUTH_REFRESH_TOKEN"]) {
     if (keep[k] === undefined) delete process.env[k]; else process.env[k] = keep[k];
   }
+}
+
+/* 8b — a task with no deal gets a group but no link */
+{
+  const keep = db.sales.tasks;
+  db.sales.tasks = [
+    T({ id: "n1", title: "Refresh the contact list", assignee_id: "p-shreya", org_id: "o-schneider", due: today }),
+    T({ id: "n2", title: "Send the LLD", assignee_id: "p-shreya", org_id: "o-schneider", deal_id: "d-dpb", due: today }),
+  ];
+  const { html } = (await call({ when: "morning", preview: "1" }, CRON)).body.digests[0];
+  check("a company-level task still gets its own group",
+    html.includes("not tied to a project"), null);
+  check("…with no link, because there is no deal room to open",
+    (html.match(/Go to project/g) || []).length === 1, html.match(/Go to project/g));
+  check("…and the deal-backed group in the same mail does link",
+    html.includes("/#deal/d-dpb"), null);
+  db.sales.tasks = keep;
 }
 
 /* 9 — the mock rejects a column that does not exist, the way PostgREST

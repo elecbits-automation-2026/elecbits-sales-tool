@@ -778,6 +778,36 @@ export default function App() {
 
   const [focusCompanyId, setFocusCompanyId] = useState(null);
 
+  /* DEEP LINK FROM A MAIL. The daily digest names a project and then
+     leaves you to find it — six Schneider deals in, that is a real cost.
+     #deal/<id> opens the pipeline with that deal room already up.
+
+     Read once into state rather than watched: the hash is a starting
+     instruction, not a source of truth. Clearing it after means a refresh
+     does not reopen a room you deliberately closed, and hashchange is
+     still honoured so a second link from the same mail works without a
+     reload. */
+  const dealFromHash = () => {
+    if (typeof window === "undefined") return null;
+    const m = window.location.hash.match(/^#deal\/([0-9a-fA-F-]{10,})/);
+    return m ? m[1] : null;
+  };
+  const [openDealId, setOpenDealId] = useState(dealFromHash);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onHash = () => { const d = dealFromHash(); if (d) { setTab("pipeline"); setOpenDealId(d); } };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  // The room takes it from here; leaving it in the address bar would
+  // reopen it on every refresh.
+  const clearOpenDeal = () => {
+    setOpenDealId(null);
+    if (typeof window !== "undefined" && window.location.hash.startsWith("#deal/")) {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  };
+
   useEffect(() => {
     let alive = true;
     currentAuthEmail().then((email) => {
@@ -957,7 +987,7 @@ export default function App() {
         )}
         <main key={tab} className="flex-1 min-w-0 p-4 md:p-6 overflow-x-hidden fade">
           {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} saveTasks={saveTasks} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
-          {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} saveTasks={saveTasks} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} saveTasks={saveTasks} openDealId={openDealId} clearOpenDeal={clearOpenDeal} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} saveScrums={saveScrums} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "rfqs" && <RfqsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "chatlogs" && <WorkChatLogsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
@@ -3983,7 +4013,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   );
 }
 
-function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompany }) {
+function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompany, openDealId, clearOpenDeal }) {
   // `tasks` is here because the board's commitment state reads them — an
   // assigned task is what makes a deal committed, on the card as in the room.
   const { users, companies, deals, gates, rfq, tasks } = data;
@@ -3992,6 +4022,16 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
   const [gate, setGate] = useState(null); // {deal, from, to, mode} — the lost post-mortem
   const [newDeal, setNewDeal] = useState(false);
   const [room, setRoom] = useState(null); // deal id open in the Deal Room
+  /* Arrived from a mail link. Waits for the deal to exist in memory —
+     the workspace may still be loading when the page opens — and only
+     opens a deal that is really there, so a stale link lands on the board
+     rather than on a blank room. */
+  useEffect(() => {
+    if (!openDealId || !clearOpenDeal) return;
+    if (!(data.deals || []).some((x) => x.id === openDealId)) return;
+    setRoom(openDealId);
+    clearOpenDeal();
+  }, [openDealId, data.deals]);
   const [tempMove, setTempMove] = useState(null); // {deal, to} awaiting the why
   const [winning, setWinning] = useState(null);   // deal being closed-won
   const dragId = useRef(null);
