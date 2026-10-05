@@ -97,6 +97,12 @@ db.sales.tasks = [
   check("no bearer → 401", (await call({ when: "morning" })).statusCode === 401);
   check("wrong secret → 401", (await call({ when: "morning" }, { authorization: "Bearer nope" })).statusCode === 401);
   check("the cron secret gets in", (await call({ when: "morning" }, CRON)).statusCode === 200);
+  // A person pasting a URL cannot send a header, so ?key= is the only way
+  // to run this by hand — without it the job can never be tested.
+  check("?key= gets in too", (await call({ when: "morning", key: "cron-secret" })).statusCode === 200);
+  check("a wrong ?key= does not", (await call({ when: "morning", key: "nope" })).statusCode === 401);
+  check("the refusal says HOW to authenticate",
+    /\?key=/.test(((await call({ when: "morning" })).body || {}).how || ""), (await call({ when: "morning" })).body);
   check("a bad 'when' is refused", (await call({ when: "lunchtime" }, CRON)).statusCode === 400);
   check("status needs no auth — it leaks nothing", (await call({ action: "status" })).statusCode === 200);
 }

@@ -253,6 +253,9 @@ export default async function handler(req, res) {
       senderHelp: senderKind() !== "none" ? null
         : "Either set RESEND_API_KEY + DIGEST_FROM, or consent the sending mailbox at /api/inbox?action=oauth-url&for=digest and store DIGEST_OAUTH_REFRESH_TOKEN + DIGEST_GMAIL_USER.",
       cronSecret: CRON_SECRET ? "set" : "missing — the endpoint refuses unauthenticated calls, so the cron cannot run until this is set",
+      runByHand: CRON_SECRET
+        ? "/api/digest?when=morning&preview=1&key=<CRON_SECRET>  — drop preview to send for real"
+        : "set CRON_SECRET first",
       onlyTo: ONLY_TO.length ? ONLY_TO : null,
       onlyToWarning: ONLY_TO.length
         ? "TESTING FILTER IS ON. Only these addresses receive anything; everyone else's digest is built and held. Clear DIGEST_ONLY_TO when you are done or the team never gets theirs."
@@ -266,13 +269,31 @@ export default async function handler(req, res) {
   }
 
   /* An open endpoint that mails the whole team is a gift to anyone who
-     finds it. Vercel's cron presents CRON_SECRET; a person must be signed
-     in. Everything else is refused, including when no secret is set — a
-     missing secret must fail shut, not open. */
+     finds it, so an unauthenticated call is refused — and refused when no
+     secret is set, because a missing secret must fail shut.
+
+     Three ways in. The header is how Vercel's cron calls it. ?key= is how
+     a PERSON calls it: pasting a URL into the address bar sends no
+     Authorization header, so without this the endpoint could only ever be
+     triggered by a machine — which makes it impossible to test, and an
+     untestable mail job is one nobody trusts. A signed-in app user works
+     too, for anything calling with fetch().
+
+     ?key= puts the secret in a URL, where browser history and access logs
+     keep it. That is the cost of being able to run it by hand; rotate
+     CRON_SECRET if the URL ends up somewhere it should not. */
   const auth = (req.headers.authorization || "").trim();
-  const viaCron = !!CRON_SECRET && auth === "Bearer " + CRON_SECRET;
+  const key = (req.query.key || "").toString().trim();
+  const viaCron = !!CRON_SECRET && (auth === "Bearer " + CRON_SECRET || key === CRON_SECRET);
   const user = viaCron ? null : await verifiedCaller(req);
-  if (!viaCron && !user) return res.status(401).json({ error: "not authorised" });
+  if (!viaCron && !user) {
+    return res.status(401).json({
+      error: "not authorised",
+      how: CRON_SECRET
+        ? "Add ?key=<CRON_SECRET> to this URL to run it by hand — opening a URL in a browser sends no Authorization header, so being signed in to the app is not enough."
+        : "CRON_SECRET is not set, so nothing can authenticate — not even Vercel's own cron. Set it in Vercel and redeploy.",
+    });
+  }
 
   if (!SB_URL || !SERVICE_KEY) {
     return res.status(501).json({ error: "The digest reads the roster and the task list with SUPABASE_SERVICE_ROLE_KEY. Set it (and SUPABASE_URL) in Vercel." });
