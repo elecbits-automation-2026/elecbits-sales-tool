@@ -90,16 +90,17 @@ db.core.people = [
   { id: "p-nikhil", name: "Nikhil Jain", email: "nikhil@elecbits.in" },
   { id: "p-gone",   name: "Former Person", email: "gone@elecbits.in" },
   { id: "p-nomail", name: "No Address", email: "" },
+  { id: "p-far",    name: "Far Horizon", email: "far@elecbits.in" },
 ];
 db.sales.people_detail = [
   { person_id: "p-shreya", active: true }, { person_id: "p-nikhil", active: true },
-  { person_id: "p-gone", active: false },  { person_id: "p-nomail", active: true },
+  { person_id: "p-gone", active: false },  { person_id: "p-nomail", active: true }, { person_id: "p-far", active: true },
 ];
 db.core.orgs = [{ id: "o-schneider", name: "Schneider Electric" }, { id: "o-tesla", name: "Tesla" }];
 db.sales.deals = [
-  { id: "d-ups", product: "UPS wifi dongle", code: "EB-C-26-0007-D01", org_id: "o-schneider" },
-  { id: "d-dpb", product: "DPB Architecture", code: "EB-C-26-0007-D02", org_id: "o-schneider" },
-  { id: "d-bare", product: "", code: "EB-C-26-0009-D01", org_id: "o-tesla" },
+  { id: "d-ups", product: "UPS wifi dongle", code: "EB-C-26-0007-D01", org_id: "o-schneider", value: 2500000 },
+  { id: "d-dpb", product: "DPB Architecture", code: "EB-C-26-0007-D02", org_id: "o-schneider", value: 12000000 },
+  { id: "d-bare", product: "", code: "EB-C-26-0009-D01", org_id: "o-tesla", value: 0 },
 ];
 const T = (o) => ({ status: "open", due: null, deal_id: null, done_at: null, ...o });
 db.sales.tasks = [
@@ -117,6 +118,8 @@ db.sales.tasks = [
   T({ id: "t8", title: "Unreachable", assignee_id: "p-nomail", org_id: "o-tesla", due: today }),
   // Unassigned: nobody to mail.
   T({ id: "t9", title: "Nobody's", assignee_id: null, org_id: "o-tesla", due: today }),
+  // Beyond the three-day horizon: in nobody's morning mail.
+  T({ id: "t10", title: "Someday", assignee_id: "p-far", org_id: "o-tesla", due: shift(10) }),
 ];
 
 /* 1 — the gate. An endpoint that mails the whole team must not be open. */
@@ -138,9 +141,14 @@ db.sales.tasks = [
 {
   const r = await call({ when: "morning", preview: "1" }, CRON);
   const to = r.body.digests.map((x) => x.to);
-  check("only people with something owed today are mailed",
-    to.length === 1 && to[0] === "shreya@elecbits.in", to);
-  check("nobody is mailed an empty digest", !to.includes("nikhil@elecbits.in"), to);
+  check("someone with work owed today is mailed",
+    to.includes("shreya@elecbits.in"), to);
+  // Nikhil owes nothing today but has something tomorrow — the forward
+  // view is the point, so he is told about it.
+  check("…and so is someone with nothing owed but something within three days",
+    to.includes("nikhil@elecbits.in"), to);
+  check("…while someone whose only task is ten days out is not",
+    !to.includes("far@elecbits.in"), to);
   check("an inactive person is skipped entirely",
     !to.includes("gone@elecbits.in") && !JSON.stringify(r.body.errors || []).includes("Former"), r.body.errors);
   check("a rostered person with no address is reported, not silently dropped",
@@ -151,26 +159,41 @@ db.sales.tasks = [
   // Shreya owes three: one from yesterday and two dated today. The task she
   // finished today and the one dated tomorrow are neither of them owed.
   const d = r.body.digests[0];
-  check("the subject counts what is OWED — overdue plus due today",
-    d.subject === "Today: 3 tasks · 1 overdue", d.subject);
-  check("…which is three of her five open-or-closed tasks", d.count === 3, d.count);
+  check("the subject separates due-today from overdue",
+    d.subject === "Today: 2 due · 1 overdue", d.subject);
+  check("…and counts all of it as owed", d.count === 3, d.count);
   check("a task already closed today is not owed", !d.html.includes("Call Gopinath"), null);
-  check("a task dated tomorrow is not owed either",
-    d.subject.includes("3 tasks") && !d.subject.includes("4 tasks"), d.subject);
+  check("the lede reads as a plan, not a count",
+    /2 due today · 1 overdue · 1 in the next three days/.test(d.html), null);
 }
 
 /* 3 — morning body: grouped by PROJECT, which is the whole point */
 {
   const { html } = (await call({ when: "morning", preview: "1" }, CRON)).body.digests[0];
   check("the overdue one is called overdue", html.includes("overdue"), null);
-  check("tasks are grouped under their project, not listed flat",
-    html.includes("Schneider Electric · UPS wifi dongle") && html.includes("Schneider Electric · DPB Architecture"), null);
+  check("every project carries a headline: client and what we are building",
+    html.includes("Schneider Electric") && html.includes("UPS wifi dongle") && html.includes("DPB Architecture"), null);
   check("two projects on one client are told apart",
     html.indexOf("UPS wifi dongle") !== html.indexOf("DPB Architecture"), null);
+  check("the headline carries the deal value",
+    html.includes("₹25L") && html.includes("₹1.2Cr"), null);
+  check("a project with no value prints no money rather than ₹0",
+    !html.includes("₹0"), null);
   check("a deal with no product name falls back to its deal code",
-    html.includes("Tesla · EB-C-26-0009-D01"), null);
-  check("what is coming is included, so it reads as a day plan",
-    html.includes("Draft the quote"), null);
+    html.includes("EB-C-26-0009-D01"), null);
+  // Time is the primary axis; value orders projects WITHIN a bucket. The
+  // ₹1.2Cr DPB job and the unvalued Tesla one are both due today.
+  {
+    const band = html.slice(html.indexOf("Due today"), html.indexOf("Next three days"));
+    check("inside a section the biggest deal comes first",
+      band.indexOf("DPB Architecture") < band.indexOf("Tesla"), band.slice(0, 120));
+  }
+  check("an overdue task still sorts under Overdue, not under its deal's value",
+    html.indexOf("Overdue") < html.indexOf("Due today"), null);
+  check("the three-day forward view is its own section",
+    /Next three days/.test(html) && html.includes("Draft the quote"), null);
+  check("overdue says how long the oldest has waited",
+    /Oldest has been waiting since/.test(html), null);
   check("the already-done task is not on the morning list",
     !html.includes("Call Gopinath"), null);
   check("the person is greeted by first name only",

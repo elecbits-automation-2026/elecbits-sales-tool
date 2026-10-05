@@ -195,31 +195,81 @@ ${t.due ? `<span style="font-family:ui-monospace,monospace;font-size:11.5px;colo
 
 /* Grouped by project, never a flat list. One client can run six of them and
    a bare task title does not say which — that was the whole point of giving
-   tasks a project in the first place. */
+   tasks a project in the first place.
+
+   Keyed on the deal, not on its printed name: two projects can be called
+   the same thing, and a project with no name at all still has to be its
+   own group rather than merging into everything else unnamed. */
 function groupByProject(tasks, projectOf) {
   const g = new Map();
   for (const t of tasks) {
-    const key = projectOf(t) || "No project named";
-    if (!g.has(key)) g.set(key, []);
-    g.get(key).push(t);
+    const head = projectOf(t);
+    if (!g.has(head.key)) g.set(head.key, { head, tasks: [] });
+    g.get(head.key).tasks.push(t);
   }
-  return [...g.entries()].sort((a, b) => (a[0] === "No project named" ? 1 : b[0] === "No project named" ? -1 : a[0].localeCompare(b[0])));
+  // Biggest deal first: if only part of this gets read, let it be the part
+  // with the most riding on it. Unvalued projects sort by name at the end.
+  return [...g.values()].sort((a, b) =>
+    (b.head.value - a.head.value)
+    || a.head.client.localeCompare(b.head.client)
+    || a.head.product.localeCompare(b.head.product));
 }
 
-function morningBody(person, tasks, projectOf, today) {
+/* ₹25L, ₹1.2Cr — the way the board writes money, so the mail and the app
+   do not disagree about what a deal is worth. */
+function money(n) {
+  const v = Number(n || 0);
+  if (!v) return "";
+  if (v >= 10000000) return "₹" + (v / 10000000).toFixed(1).replace(/\.0$/, "") + "Cr";
+  if (v >= 100000) return "₹" + (v / 100000).toFixed(1).replace(/\.0$/, "") + "L";
+  if (v >= 1000) return "₹" + Math.round(v / 1000) + "k";
+  return "₹" + v;
+}
+
+/* The headline above a project's tasks: who it is for, what it is, what it
+   is worth. The deal code stands in when nobody has named the project. */
+function projectHead(head) {
+  const name = head.product || head.code || "";
+  return `<div style="margin:14px 0 4px;padding-top:10px;border-top:1px solid #f1f5f9">
+    <span style="font-size:13px;font-weight:600;color:#0f172a">${esc(head.client)}</span>
+    ${name ? `<span style="font-size:13px;color:#475569"> · ${esc(name)}</span>` : ""}
+    ${head.value ? `<span style="font-size:11.5px;font-family:ui-monospace,monospace;color:#64748b;margin-left:6px">${esc(money(head.value))}</span>` : ""}
+    ${!head.product && !head.code ? `<span style="font-size:11.5px;color:#94a3b8"> · not tied to a project</span>` : ""}
+  </div>`;
+}
+
+/* THE MORNING MAIL, in three time buckets, each grouped by project.
+
+   A task appears in exactly one bucket — the one its date puts it in — so
+   nothing is counted twice and the three sections add up to the day.
+   Within a bucket the work is project-wise and every project carries its
+   headline, because "follow up with Rohan" is not actionable until you
+   know it is the ₹25L Schneider job and not the other five.
+
+   The forward view stops at three days. An unbounded "also open" list is
+   how a digest becomes something nobody reads to the end of. */
+function morningBody(tasks, projectOf, today, horizon) {
   const late = tasks.filter((t) => t.due && t.due < today);
-  const due = tasks.filter((t) => t.due === today);
-  const rest = tasks.filter((t) => !t.due || t.due > today);
-  const section = (label, list, colour) => !list.length ? "" : `
-    <p style="margin:16px 0 6px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:${colour}">${esc(label)} · ${list.length}</p>
-    ${groupByProject(list, projectOf).map(([proj, ts]) => `
-      <p style="margin:10px 0 3px;font-size:12px;font-weight:600;color:#334155">${esc(proj)}</p>
-      <ul style="margin:0;padding-left:18px">${ts.map((t) => taskLi(t, projectOf, t.due && t.due < today)).join("")}</ul>`).join("")}`;
-  return section("Overdue", late, "#dc2626") + section("Due today", due, "#0f172a")
-    + section("Also open", rest.slice(0, 8), "#64748b");
+  const now  = tasks.filter((t) => t.due === today);
+  const soon = tasks.filter((t) => t.due && t.due > today && t.due <= horizon);
+
+  const section = (label, list, colour, note) => !list.length ? "" : `
+    <p style="margin:22px 0 2px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:${colour}">${esc(label)} · ${list.length}</p>
+    ${note ? `<p style="margin:0;font-size:11px;color:#94a3b8">${esc(note)}</p>` : ""}
+    ${groupByProject(list, projectOf).map((g) => projectHead(g.head)
+      + `<ul style="margin:0;padding-left:18px">${g.tasks
+          .slice()
+          .sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")))
+          .map((t) => taskLi(t, projectOf, !!(t.due && t.due < today))).join("")}</ul>`).join("")}`;
+
+  const oldest = late.map((t) => t.due).filter(Boolean).sort()[0];
+  return section("Overdue", late, "#dc2626",
+      oldest ? "Oldest has been waiting since " + prettyDate(oldest) + "." : "")
+    + section("Due today", now, "#0f172a", "")
+    + section("Next three days", soon, "#2563eb", "What is coming, so today can be planned around it.");
 }
 
-function eveningBody(person, dueToday, projectOf, today) {
+function eveningBody(dueToday, projectOf) {
   const done = dueToday.filter((t) => t.status === "done");
   const open = dueToday.filter((t) => t.status !== "done");
   const pct = dueToday.length ? Math.round((done.length / dueToday.length) * 100) : 0;
@@ -230,10 +280,9 @@ function eveningBody(person, dueToday, projectOf, today) {
     <p style="margin:6px 0 0;font-size:13px"><b>${done.length} of ${dueToday.length}</b> closed${pct === 100 ? " — all of it." : ""}</p>
   </div>`;
   const list = (label, ts, colour) => !ts.length ? "" : `
-    <p style="margin:16px 0 6px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:${colour}">${esc(label)} · ${ts.length}</p>
-    ${groupByProject(ts, projectOf).map(([proj, xs]) => `
-      <p style="margin:10px 0 3px;font-size:12px;font-weight:600;color:#334155">${esc(proj)}</p>
-      <ul style="margin:0;padding-left:18px">${xs.map((t) => taskLi(t, projectOf, false)).join("")}</ul>`).join("")}`;
+    <p style="margin:22px 0 2px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:${colour}">${esc(label)} · ${ts.length}</p>
+    ${groupByProject(ts, projectOf).map((g) => projectHead(g.head)
+      + `<ul style="margin:0;padding-left:18px">${g.tasks.map((t) => taskLi(t, projectOf, false)).join("")}</ul>`).join("")}`;
   // The ones still open are named, not counted: a number tells you how the
   // day went, a name tells you what to do about it.
   return bar + list("Still open", open, "#dc2626") + list("Closed", done, "#16a34a");
@@ -301,12 +350,14 @@ export default async function handler(req, res) {
 
   try {
     const today = istDay();
+    // Three days ahead, in IST — the forward view the morning mail carries.
+    const horizon = istDay(new Date(Date.now() + 3 * 86400000));
     const [people, details, tasks, deals, orgs] = await Promise.all([
       pg("core", "people?select=id,name,email"),
       pg("sales", "people_detail?select=person_id,active"),
       pg("sales", "tasks?select=id,title,status,due,assignee_id,org_id,deal_id,done_at"),
       // `code`, not `did`: did is the app's name for it, code is the column.
-      pg("sales", "deals?select=id,product,code,org_id"),
+      pg("sales", "deals?select=id,product,code,org_id,value,currency"),
       pg("core", "orgs?select=id,name"),
     ]);
 
@@ -314,12 +365,20 @@ export default async function handler(req, res) {
     const activeIds = new Set(details.filter((d) => d.active !== false).map((d) => d.person_id));
     const dealById = new Map(deals.map((x) => [x.id, x]));
     const orgById = new Map(orgs.map((o) => [o.id, o.name]));
+    /* A project's headline, not a string: the client, what we are building
+       for them, and what it is worth. A task title alone does not tell you
+       which of six Schneider projects you are looking at, and a project
+       name alone does not tell you whether it is the ₹25L one. */
     const projectOf = (t) => {
       const d = t.deal_id ? dealById.get(t.deal_id) : null;
-      const co = orgById.get(t.org_id) || "";
-      if (!d) return co || "";
-      const label = (d.product || "").trim() || d.code || "";
-      return co ? co + (label ? " · " + label : "") : label;
+      const client = orgById.get(t.org_id) || "Unlinked";
+      if (!d) return { key: "org:" + (t.org_id || "none"), client, product: "", value: 0, code: "" };
+      return {
+        key: "deal:" + d.id, client,
+        product: (d.product || "").trim(),
+        value: Number(d.value || 0),
+        code: d.code || "",
+      };
     };
 
     // Morning: what is owed. Evening: what today asked for, done or not.
@@ -328,8 +387,10 @@ export default async function handler(req, res) {
       : tasks.filter((t) => t.due === today);
     // Morning also carries a little of what is coming, so the mail is a day
     // plan rather than only a list of what is already late.
+    // The forward view is bounded: three days, not everything open. An
+    // undated task is in nobody's three days, so it is left out too.
     const extra = when === "morning"
-      ? tasks.filter((t) => t.status !== "done" && (!t.due || t.due > today))
+      ? tasks.filter((t) => t.status !== "done" && t.due && t.due > today && t.due <= horizon)
       : [];
 
     const perPerson = new Map();
@@ -348,14 +409,22 @@ export default async function handler(req, res) {
       let subject, html, count;
       if (when === "morning") {
         const owed = list.filter((t) => t.status !== "done" && t.due && t.due <= today);
-        if (!owed.length) continue;          // nothing owed today: no mail
+        const soon = list.filter((t) => t.status !== "done" && t.due && t.due > today && t.due <= horizon);
+        // Nothing owed AND nothing imminent: no mail. A digest that arrives
+        // empty is how a sender gets filtered.
+        if (!owed.length && !soon.length) continue;
         const late = owed.filter((t) => t.due < today).length;
-        subject = "Today: " + owed.length + " task" + (owed.length === 1 ? "" : "s")
-          + (late ? " · " + late + " overdue" : "");
+        const dueNow = owed.length - late;
+        subject = late
+          ? "Today: " + dueNow + " due · " + late + " overdue"
+          : "Today: " + dueNow + " task" + (dueNow === 1 ? "" : "s");
         count = owed.length;
         html = SHELL("Good morning, " + first,
-          owed.length + " on you today" + (late ? ", " + late + " already past its date" : "") + ".",
-          morningBody(p, list, projectOf, today),
+          [dueNow ? dueNow + " due today" : "nothing due today",
+           late ? late + " overdue" : null,
+           soon.length ? soon.length + " in the next three days" : null,
+          ].filter(Boolean).join(" · ") + ".",
+          morningBody(list, projectOf, today, horizon),
           "Close them in My Tasks — that is where the evidence is checked.");
       } else {
         const dueToday = list.filter((t) => t.due === today);
@@ -365,7 +434,7 @@ export default async function handler(req, res) {
         count = dueToday.length;
         html = SHELL("Where today landed, " + first,
           done === dueToday.length ? "Everything due today is closed." : "What was due today, and what is still open.",
-          eveningBody(p, dueToday, projectOf, today),
+          eveningBody(dueToday, projectOf),
           "Anything still open rolls into tomorrow's list.");
       }
 
