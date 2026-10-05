@@ -181,61 +181,128 @@ Schneider email under the wrong project is worse than asking.
 
 ---
 
-## C · Turning the daily digest on
+## C · Turning the daily digest on — the exact steps
 
-`api/digest.js` is built and tested (`npm run test:digest`, 38 assertions).
-It renders both mails correctly today; it just has nowhere to post them.
-Three things, in order.
+`api/digest.js` is built and tested (`npm run test:digest`, 46 assertions).
+It renders both mails correctly; it only needs somewhere to post them.
 
-### 1 · A way to send
+Sending goes through Gmail, from ONE mailbox, in a Google Cloud project of
+your own. The project does NOT have to be the one holding the Drive service
+account (`elecbits-pms-odm-504516`) — that one belongs to the PMS, and its
+consent screen is shared. A separate project keeps the two apart and removes
+the one failure you could not fix yourself: somebody else's consent screen
+left on External/Testing, which expires the token every 7 days.
 
-Pick one. Resend is the cleaner answer for mail the tool generates: a
-separate identity, its own logs, and it cannot read anything.
+Recipients need nothing. One consent sends to the whole team; an agent only
+has to be on the roster, active, with tasks assigned.
 
-| Option | Env | Cost |
-|---|---|---|
-| **Resend** (recommended) | `RESEND_API_KEY`, `DIGEST_FROM` (e.g. `Sales OS <sales-os@elecbits.in>`) | an account, and one DNS record to verify the domain |
-| Gmail, as the consented mailbox | the `INBOX_OAUTH_*` set from part A | **re-consent required** — the existing grant is `gmail.readonly`, and sending needs `gmail.send` in the scope list |
+### 1 · The person doing this
 
-With neither, nothing breaks: every run still renders the digests and
-returns them, and `?action=status` says why nothing was delivered.
+Cloud Console: any elecbits.in account that may create a project. If **New
+Project** is greyed out, the Workspace admin restricts it — ask them to
+create an empty project and make you Owner.
 
-### 2 · `CRON_SECRET`
+The CONSENT link later must be opened as the SENDING mailbox, whoever that
+is. Those can be two different people; if they are, use an incognito window
+for the consent so Google does not quietly reuse the wrong account.
 
-Any random string, set in Vercel. Vercel presents it to its own cron calls,
-and the endpoint **refuses every unauthenticated request** — an open URL
-that mails the whole team on demand is a gift to whoever finds it. Until
-this is set the cron cannot run at all. That is deliberate: a missing
-secret fails shut.
+### 2 · Create the project
 
-### 3 · Check it before anyone receives it
+console.cloud.google.com → project picker (top bar) → **New Project** →
+name `elecbits-sales-os` → Create → switch into it.
 
-Signed in as yourself, open:
+Everything below happens inside that project. Check the top bar says so.
+
+### 3 · Enable Gmail
+
+<https://console.cloud.google.com/apis/library/gmail.googleapis.com> →
+**Enable**. (**Manage** means it is already on.)
+
+### 4 · Consent screen
+
+<https://console.cloud.google.com/apis/credentials/consent> — in newer
+consoles this is **Google Auth Platform**, tabs Branding / Audience /
+Clients.
+
+**User type: Internal.** This is the setting that matters. Internal is
+offered only because elecbits.in is a Workspace domain, and it means no
+Google review and **no token expiry**. External leaves the app in Testing,
+where refresh tokens die after 7 days with an `invalid_grant` that reads
+like something else entirely.
+
+App name `Elecbits Sales OS`, your address for both email fields, skip the
+logo and domains. On the **Scopes** page add nothing — the app asks for its
+scope at consent time.
+
+### 5 · OAuth client
+
+<https://console.cloud.google.com/apis/credentials> → **+ CREATE
+CREDENTIALS → OAuth client ID** → type **Web application** → name
+`Sales OS digest`.
+
+Leave JavaScript origins empty. Under **Authorised redirect URIs** add
+exactly, copied not typed:
 
 ```
-/api/digest?when=morning&preview=1
-/api/digest?when=evening&preview=1
+https://elecbits-sales-tool.vercel.app/api/inbox?action=oauth-callback
 ```
 
-Both render every person's mail and **send nothing**. Read the HTML, then
-let the cron do it for real.
+Character for character. A trailing slash or space gives
+`redirect_uri_mismatch` two steps later.
 
-### The schedule
+Copy the **Client ID** and **Client secret**.
 
-`vercel.json`: `03:30 UTC` (09:00 IST) and `13:00 UTC` (18:30 IST), weekdays.
+### 6 · First two variables
 
-**On a Hobby plan Vercel allows two cron jobs and runs each roughly once a
-day, not at a precise minute** — a "morning" mail could land mid-morning.
-Two is exactly what this uses, so it fits, but if the timing has to be
-reliable that is the reason to be on Pro.
+Vercel → Settings → Environment Variables → `INBOX_OAUTH_CLIENT_ID`,
+`INBOX_OAUTH_CLIENT_SECRET` → **Redeploy**. Vercel does not apply new
+variables to a running deployment.
 
-### Who gets what
+### 7 · Consent, as the sending mailbox
 
-Only people with something owed. A digest that arrives empty every day
-teaches people to filter the sender, and then the one that matters is
-filtered too — so a quiet day sends no mail at all.
+Open `/api/inbox?action=oauth-url&for=digest`. The `for=digest` asks for
+`gmail.send` rather than read access, and makes the callback name the
+DIGEST_* variables.
 
-Morning is grouped **by project**, because "call Rohan" says nothing when a
-client runs six of them. Evening names what is still open rather than only
-counting it: a number tells you how the day went, a name tells you what to
-do about it.
+Follow the `open` link **signed in as the sending mailbox**. Approve.
+
+**Check `consentedAs` on the result page.** Consenting as the wrong account
+is the one mistake that fails silently, days later.
+
+### 8 · The rest of the variables
+
+| Name | Value |
+|---|---|
+| `DIGEST_OAUTH_REFRESH_TOKEN` | from step 7 |
+| `DIGEST_GMAIL_USER` | the sending address |
+| `CRON_SECRET` | any long random string |
+| `DIGEST_ONLY_TO` | **while testing** — the only address that receives |
+
+Redeploy.
+
+### 9 · Check, read, then send
+
+`/api/digest?action=status` → wants `sender: gmail`, the right `sendsAs`,
+`cronSecret: set`, and the **TESTING FILTER IS ON** warning. No warning
+means a real send would reach the team.
+
+`/api/digest?when=morning&preview=1` renders everyone's mail and sends
+nothing. Then drop `&preview=1` for a real send — delivered only to
+`DIGEST_ONLY_TO`, everyone else reported as `held`.
+
+### 10 · Go live
+
+Delete `DIGEST_ONLY_TO`, redeploy. `vercel.json` already runs it at 09:00
+and 18:30 IST on weekdays.
+
+**On Hobby, Vercel allows two crons and runs each about once a day rather
+than to the minute** — a "9am" mail may land mid-morning. This uses exactly
+two, so it fits; precise timing is the reason to be on Pro.
+
+### Afterwards
+
+The sender can be changed any time: consent again as the new mailbox, swap
+the two DIGEST_* variables, redeploy, and revoke the old grant at
+myaccount.google.com/permissions. Worth doing before the team sees it, so
+the digests arrive from something like `sales-os@elecbits.in` rather than
+from a colleague.
