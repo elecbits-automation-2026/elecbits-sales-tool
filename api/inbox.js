@@ -56,10 +56,17 @@ const GMAIL_SEND  = "https://www.googleapis.com/auth/gmail.send";
      (default)  gmail.readonly  → INBOX_*   the mailbox /api/inbox reads
      digest     gmail.send      → DIGEST_*  the address the digest sends as
      both       both scopes     → INBOX_*   one mailbox doing both jobs   */
+/* userinfo.email rides along on every grant. Without it a send-only
+   consent cannot be checked: gmail.send does not permit users.getProfile,
+   so the callback could not say WHICH mailbox had just approved — and
+   consenting as the wrong Google account is the one mistake here that
+   fails silently, days later. A grant that cannot confirm itself is worth
+   less than the one extra scope costs. */
+const USERINFO = "https://www.googleapis.com/auth/userinfo.email";
 const GRANTS = {
-  inbox:  { key: "inbox",  scope: GMAIL_SCOPE, prefix: "INBOX", does: "read" },
-  digest: { key: "digest", scope: GMAIL_SEND,  prefix: "DIGEST", does: "send as" },
-  both:   { key: "both",   scope: GMAIL_SCOPE + " " + GMAIL_SEND, prefix: "INBOX", does: "read and send as" },
+  inbox:  { key: "inbox",  scope: GMAIL_SCOPE + " " + USERINFO, prefix: "INBOX", does: "read" },
+  digest: { key: "digest", scope: GMAIL_SEND + " " + USERINFO,  prefix: "DIGEST", does: "send as" },
+  both:   { key: "both",   scope: GMAIL_SCOPE + " " + GMAIL_SEND + " " + USERINFO, prefix: "INBOX", does: "read and send as" },
 };
 const grantFor = (q) => GRANTS[String(q || "").toLowerCase()] || GRANTS.inbox;
 
@@ -307,11 +314,16 @@ export default async function handler(req, res) {
     // Which mailbox actually consented: worth stating, because consenting as
     // the wrong account is the easy mistake and it fails silently later.
     let who = "";
-    try {
-      const p = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile",
-        { headers: { Authorization: "Bearer " + j.access_token } }).then((x) => x.json());
-      who = p.emailAddress || "";
-    } catch (e) { /* the token is the point; the name is a courtesy */ }
+    const askWho = async (url, field) => {
+      try {
+        const p = await fetch(url, { headers: { Authorization: "Bearer " + j.access_token } }).then((x) => x.json());
+        return p[field] || "";
+      } catch (e) { return ""; }
+    };
+    // userinfo works for every grant; the Gmail profile is the fallback for
+    // a token minted before userinfo.email was requested.
+    who = await askWho("https://www.googleapis.com/oauth2/v2/userinfo", "email")
+       || await askWho("https://gmail.googleapis.com/gmail/v1/users/me/profile", "emailAddress");
     res.setHeader("Cache-Control", "no-store");
     // Named for the job it was granted for, so there is nothing to work out
     // about which variable this belongs in.
@@ -320,7 +332,8 @@ export default async function handler(req, res) {
     const g = grantFor(req.query.state || req.query.for);
     const out = { consentedAs: who || "(could not read the address)" };
     out[g.prefix + "_OAUTH_REFRESH_TOKEN"] = j.refresh_token;
-    out[g.prefix + "_GMAIL_USER"] = who || mailbox || "(set this to the address above)";
+    out[g.prefix + "_GMAIL_USER"] = who || mailbox || "(could not confirm — set this to the address you just signed in as)";
+    if (!who) out.couldNotConfirm = "The token is valid; only the identity check failed. Set " + g.prefix + "_GMAIL_USER by hand to the address you approved as, and be sure it is the right one — nothing downstream can tell.";
     out.grants = g.does + " this mailbox";
     out.next = "Store both in Vercel → Settings → Environment Variables, redeploy, then check "
       + (g.prefix === "DIGEST" ? "/api/digest?action=status." : "/api/inbox?action=status.");
