@@ -46,6 +46,22 @@
 import crypto from "node:crypto";
 
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+const GMAIL_SEND  = "https://www.googleapis.com/auth/gmail.send";
+
+/* Reading a mailbox and sending AS one are different jobs, often for
+   different addresses: the comms intake reads a shared box the team CCs,
+   while the daily digest goes out as a person. ?for= keeps them apart, so
+   consenting one never silently grants the other.
+
+     (default)  gmail.readonly  → INBOX_*   the mailbox /api/inbox reads
+     digest     gmail.send      → DIGEST_*  the address the digest sends as
+     both       both scopes     → INBOX_*   one mailbox doing both jobs   */
+const GRANTS = {
+  inbox:  { scope: GMAIL_SCOPE, prefix: "INBOX", does: "read" },
+  digest: { scope: GMAIL_SEND,  prefix: "DIGEST", does: "send as" },
+  both:   { scope: GMAIL_SCOPE + " " + GMAIL_SEND, prefix: "INBOX", does: "read and send as" },
+};
+const grantFor = (q) => GRANTS[String(q || "").toLowerCase()] || GRANTS.inbox;
 
 function fixPem(k) {
   if (!k || k.includes("\n")) return k;
@@ -206,18 +222,21 @@ export default async function handler(req, res) {
   // ── One-time consent, so nobody has to hand-roll an OAuth dance ────────
   if (action === "oauth-url") {
     if (!oc.id) return res.status(501).json({ error: "INBOX_OAUTH_CLIENT_ID is not set. Google Cloud → APIs & Services → Credentials → Create OAuth client ID → Web application." });
-    const uri = redirectUri(req);
+    const g = grantFor(req.query.for);
+    const uri = redirectUri(req) + (req.query.for ? "&for=" + encodeURIComponent(String(req.query.for)) : "");
     const url = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({
-      client_id: oc.id, redirect_uri: uri, response_type: "code", scope: GMAIL_SCOPE,
+      client_id: oc.id, redirect_uri: uri, response_type: "code", scope: g.scope,
       // offline + consent together are what actually return a refresh token;
       // without prompt=consent a second run gives an access token only.
       access_type: "offline", prompt: "consent", include_granted_scopes: "true",
     });
     return res.status(200).json({
       open: url,
+      grants: g.does,
       redirectUri: uri,
-      then: "Sign in AS THE MAILBOX you want read (not your own account), approve, and the next page shows the refresh token to store as INBOX_OAUTH_REFRESH_TOKEN.",
-      note: "If Google says redirect_uri_mismatch, add " + uri + " verbatim to the OAuth client's Authorised redirect URIs.",
+      then: "Sign in AS THE MAILBOX this is for (not your own account, unless it is yours), approve, and the next page shows the two values to store as "
+        + g.prefix + "_OAUTH_REFRESH_TOKEN and " + g.prefix + "_GMAIL_USER.",
+      note: "If Google says redirect_uri_mismatch, add " + uri.split("&for=")[0] + " verbatim to the OAuth client's Authorised redirect URIs. Google matches the path, so the &for= suffix needs no separate entry.",
     });
   }
 
@@ -247,13 +266,17 @@ export default async function handler(req, res) {
       who = p.emailAddress || "";
     } catch (e) { /* the token is the point; the name is a courtesy */ }
     res.setHeader("Cache-Control", "no-store");
-    return res.status(200).json({
-      consentedAs: who || "(could not read the address)",
-      INBOX_OAUTH_REFRESH_TOKEN: j.refresh_token,
-      INBOX_GMAIL_USER: who || mailbox || "(set this to the address above)",
-      next: "Store both in Vercel → Settings → Environment Variables, redeploy, then check /api/inbox?action=status.",
-      warning: "This token reads that inbox until revoked. Treat it as a password: store it, do not paste it anywhere else, and revoke at https://myaccount.google.com/permissions if it leaks.",
-    });
+    // Named for the job it was granted for, so there is nothing to work out
+    // about which variable this belongs in.
+    const g = grantFor(req.query.for);
+    const out = { consentedAs: who || "(could not read the address)" };
+    out[g.prefix + "_OAUTH_REFRESH_TOKEN"] = j.refresh_token;
+    out[g.prefix + "_GMAIL_USER"] = who || mailbox || "(set this to the address above)";
+    out.grants = g.does + " this mailbox";
+    out.next = "Store both in Vercel → Settings → Environment Variables, redeploy, then check "
+      + (g.prefix === "DIGEST" ? "/api/digest?action=status." : "/api/inbox?action=status.");
+    out.warning = "This token " + g.does + " that mailbox until revoked. Treat it as a password: store it, paste it nowhere else, and revoke at https://myaccount.google.com/permissions if it leaks.";
+    return res.status(200).json(out);
   }
 
   // WhatsApp webhook verification handshake.

@@ -193,9 +193,39 @@ db.sales.tasks = [
   const s = (await call({ action: "status" })).body;
   check("status reports no sender until one is configured", s.sender === "none" && !s.ready, s);
   check("…and names both ways to fix it",
-    /RESEND_API_KEY/.test(s.senderHelp) && /gmail\.send/.test(s.senderHelp), s.senderHelp);
+    /RESEND_API_KEY/.test(s.senderHelp) && /for=digest/.test(s.senderHelp), s.senderHelp);
+  check("…including the variable to paste the token into",
+    /DIGEST_OAUTH_REFRESH_TOKEN/.test(s.senderHelp), s.senderHelp);
   check("status confirms the reads are wired", s.reads === "ok", s.reads);
   check("status reports the cron secret", s.cronSecret === "set", s.cronSecret);
+}
+
+/* 8 — the sending address is its own decision, not the reading mailbox's */
+{
+  const keep = { ...process.env };
+  process.env.INBOX_OAUTH_CLIENT_ID = "id"; process.env.INBOX_OAUTH_CLIENT_SECRET = "secret";
+  process.env.INBOX_OAUTH_REFRESH_TOKEN = "read-token";
+  process.env.INBOX_GMAIL_USER = "clients@elecbits.in";
+
+  let s = (await call({ action: "status" })).body;
+  check("with only the reading mailbox set, it sends as that",
+    s.sender === "gmail" && s.sendsAs === "clients@elecbits.in", s.sendsAs);
+
+  process.env.DIGEST_GMAIL_USER = "ankita.shrivastava@elecbits.in";
+  process.env.DIGEST_OAUTH_REFRESH_TOKEN = "send-token";
+  s = (await call({ action: "status" })).body;
+  check("a digest mailbox overrides it — choosing a sender does not choose an inbox",
+    s.sendsAs === "ankita.shrivastava@elecbits.in", s.sendsAs);
+
+  delete process.env.INBOX_GMAIL_USER; delete process.env.INBOX_OAUTH_REFRESH_TOKEN;
+  s = (await call({ action: "status" })).body;
+  check("the digest sends with no reading mailbox configured at all",
+    s.sender === "gmail" && s.sendsAs === "ankita.shrivastava@elecbits.in", s);
+
+  for (const k of ["INBOX_OAUTH_CLIENT_ID", "INBOX_OAUTH_CLIENT_SECRET", "INBOX_OAUTH_REFRESH_TOKEN",
+                   "INBOX_GMAIL_USER", "DIGEST_GMAIL_USER", "DIGEST_OAUTH_REFRESH_TOKEN"]) {
+    if (keep[k] === undefined) delete process.env[k]; else process.env[k] = keep[k];
+  }
 }
 
 server.close();

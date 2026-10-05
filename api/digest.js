@@ -90,30 +90,41 @@ const prettyDate = (iso) => {
 };
 
 /* ── sending ─────────────────────────────────────────────────────────── */
+/* The address the digest sends AS is its own setting. It used to borrow
+   INBOX_GMAIL_USER, which meant choosing a sender also chose whose inbox
+   the comms intake reads — two unrelated decisions welded together. The
+   OAuth client id and secret are shared (one app, one consent screen);
+   only the mailbox and its token differ. */
+const gmailCfg = () => ({
+  id:      process.env.INBOX_OAUTH_CLIENT_ID || "",
+  secret:  process.env.INBOX_OAUTH_CLIENT_SECRET || "",
+  refresh: process.env.DIGEST_OAUTH_REFRESH_TOKEN || process.env.INBOX_OAUTH_REFRESH_TOKEN || "",
+  user:    (process.env.DIGEST_GMAIL_USER || process.env.INBOX_GMAIL_USER || "").trim(),
+});
+
 function senderKind() {
   if (process.env.RESEND_API_KEY && process.env.DIGEST_FROM) return "resend";
-  if (process.env.INBOX_OAUTH_CLIENT_ID && process.env.INBOX_OAUTH_CLIENT_SECRET
-      && process.env.INBOX_OAUTH_REFRESH_TOKEN && process.env.INBOX_GMAIL_USER) return "gmail";
+  const g = gmailCfg();
+  if (g.id && g.secret && g.refresh && g.user) return "gmail";
   return "none";
 }
 
 let gmailTok = null;   // cached for the life of the lambda
 async function gmailToken() {
   if (gmailTok && gmailTok.exp > Date.now() + 60000) return gmailTok.token;
+  const g = gmailCfg();
   const r = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: process.env.INBOX_OAUTH_REFRESH_TOKEN,
-      client_id: process.env.INBOX_OAUTH_CLIENT_ID,
-      client_secret: process.env.INBOX_OAUTH_CLIENT_SECRET,
+      grant_type: "refresh_token", refresh_token: g.refresh,
+      client_id: g.id, client_secret: g.secret,
     }),
   });
   const j = await r.json();
   if (!r.ok) {
     throw new Error("gmail token: " + (j.error_description || j.error || r.status)
-      + " — if this says insufficient scope, the mailbox consented to gmail.readonly only."
-      + " Re-run /api/inbox?action=oauth-url; sending needs gmail.send as well.");
+      + " — if this mentions scope, the mailbox consented to reading only."
+      + " Run /api/inbox?action=oauth-url&for=digest, which asks for gmail.send.");
   }
   gmailTok = { token: j.access_token, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000 };
   return gmailTok.token;
@@ -131,7 +142,7 @@ async function sendMail(to, subject, html) {
     return;
   }
   if (kind === "gmail") {
-    const from = process.env.INBOX_GMAIL_USER;
+    const from = gmailCfg().user;
     // RFC 2047 for the subject: a rupee sign or an em dash in a raw header
     // arrives as mojibake in most clients.
     const subj = "=?utf-8?B?" + Buffer.from(subject, "utf8").toString("base64") + "?=";
@@ -224,8 +235,9 @@ export default async function handler(req, res) {
       ready: !!(SB_URL && SERVICE_KEY) && senderKind() !== "none",
       reads: SB_URL && SERVICE_KEY ? "ok" : "needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY",
       sender: senderKind(),
+      sendsAs: senderKind() === "gmail" ? gmailCfg().user : (process.env.DIGEST_FROM || null),
       senderHelp: senderKind() !== "none" ? null
-        : "Set RESEND_API_KEY + DIGEST_FROM, or finish the mailbox consent in /api/inbox?action=oauth-url WITH the gmail.send scope.",
+        : "Either set RESEND_API_KEY + DIGEST_FROM, or consent the sending mailbox at /api/inbox?action=oauth-url&for=digest and store DIGEST_OAUTH_REFRESH_TOKEN + DIGEST_GMAIL_USER.",
       cronSecret: CRON_SECRET ? "set" : "missing — the endpoint refuses unauthenticated calls, so the cron cannot run until this is set",
       schedule: "vercel.json: 03:30 UTC (09:00 IST) and 13:00 UTC (18:30 IST), weekdays",
     });
