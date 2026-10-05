@@ -13,14 +13,41 @@ import http from "node:http";
 /* ── the mock database ─────────────────────────────────────────────────── */
 const db = { core: { people: [], orgs: [] }, sales: { people_detail: [], tasks: [], deals: [] } };
 
+/* The columns each table really has, copied from the migrations. The mock
+   used to hand back whole rows whatever the select asked for, so a column
+   that does not exist read exactly like one that does — and `deals.did`
+   (the APP's name for the field; the column is `code`) reached production
+   and failed there instead of here. PostgREST 400s on an unknown column,
+   so this does too. */
+const COLUMNS = {
+  "core.people":          ["id", "name", "email"],
+  "core.orgs":            ["id", "name"],
+  "sales.people_detail":  ["person_id", "active", "role", "dept", "capacity"],
+  "sales.deals":          ["id", "code", "org_id", "owner_id", "value", "currency",
+                           "stage", "lost", "product", "created_at", "updated_at"],
+  "sales.tasks":          ["id", "org_id", "deal_id", "assignee_id", "author_id", "title",
+                           "details", "due", "status", "source", "created_at", "done_at"],
+};
+
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
   const schema = (req.headers["accept-profile"] || "sales").toString();
-  // The handler only ever reads: /rest/v1/<table>?select=...
   const table = u.pathname.replace("/rest/v1/", "").split("?")[0];
   const rows = (db[schema] || {})[table];
-  res.writeHead(rows ? 200 : 404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(rows || { message: "no such table " + schema + "." + table }));
+  const send = (code, body) => {
+    res.writeHead(code, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  if (!rows) return send(404, { message: "no such table " + schema + "." + table });
+
+  const known = COLUMNS[schema + "." + table];
+  const asked = (u.searchParams.get("select") || "*").split(",").map((x) => x.trim()).filter(Boolean);
+  if (known && !asked.includes("*")) {
+    const bad = asked.find((c) => !known.includes(c));
+    // PostgREST's own wording, so the test failure reads like the real one.
+    if (bad) return send(400, { message: "column " + table + "." + bad + " does not exist" });
+  }
+  send(200, rows);
 });
 await new Promise((r) => server.listen(0, r));
 const PORT = server.address().port;
@@ -70,9 +97,9 @@ db.sales.people_detail = [
 ];
 db.core.orgs = [{ id: "o-schneider", name: "Schneider Electric" }, { id: "o-tesla", name: "Tesla" }];
 db.sales.deals = [
-  { id: "d-ups", product: "UPS wifi dongle", did: "EB-C-26-0007-D01", org_id: "o-schneider" },
-  { id: "d-dpb", product: "DPB Architecture", did: "EB-C-26-0007-D02", org_id: "o-schneider" },
-  { id: "d-bare", product: "", did: "EB-C-26-0009-D01", org_id: "o-tesla" },
+  { id: "d-ups", product: "UPS wifi dongle", code: "EB-C-26-0007-D01", org_id: "o-schneider" },
+  { id: "d-dpb", product: "DPB Architecture", code: "EB-C-26-0007-D02", org_id: "o-schneider" },
+  { id: "d-bare", product: "", code: "EB-C-26-0009-D01", org_id: "o-tesla" },
 ];
 const T = (o) => ({ status: "open", due: null, deal_id: null, done_at: null, ...o });
 db.sales.tasks = [
@@ -140,7 +167,7 @@ db.sales.tasks = [
     html.includes("Schneider Electric · UPS wifi dongle") && html.includes("Schneider Electric · DPB Architecture"), null);
   check("two projects on one client are told apart",
     html.indexOf("UPS wifi dongle") !== html.indexOf("DPB Architecture"), null);
-  check("a deal with no product name falls back to its id",
+  check("a deal with no product name falls back to its deal code",
     html.includes("Tesla · EB-C-26-0009-D01"), null);
   check("what is coming is included, so it reads as a day plan",
     html.includes("Draft the quote"), null);
@@ -234,7 +261,28 @@ db.sales.tasks = [
   }
 }
 
-/* 9 — a live send that reaches one inbox, not the whole team */
+/* 9 — the mock rejects a column that does not exist, the way PostgREST
+       does. Without this the harness happily answered a select for
+       deals.did and the wrong name reached production. */
+{
+  const r = await new Promise((resolve) => {
+    http.get({ port: PORT, path: "/rest/v1/deals?select=id,did", headers: { "accept-profile": "sales" } }, (x) => {
+      let b = ""; x.on("data", (c) => (b += c)); x.on("end", () => resolve({ code: x.statusCode, body: JSON.parse(b) }));
+    });
+  });
+  check("an unknown column is a 400, not a silent pass", r.code === 400, r);
+  check("…and it is named, in PostgREST's own words",
+    /column deals\.did does not exist/.test(r.body.message || ""), r.body);
+
+  const ok = await new Promise((resolve) => {
+    http.get({ port: PORT, path: "/rest/v1/deals?select=id,product,code,org_id", headers: { "accept-profile": "sales" } }, (x) => {
+      let b = ""; x.on("data", (c) => (b += c)); x.on("end", () => resolve(x.statusCode));
+    });
+  });
+  check("the select the handler actually uses is accepted", ok === 200, ok);
+}
+
+/* 10 — a live send that reaches one inbox, not the whole team */
 {
   const keep = process.env.DIGEST_ONLY_TO;
   process.env.DIGEST_ONLY_TO = "ankita.shrivastava@elecbits.in";

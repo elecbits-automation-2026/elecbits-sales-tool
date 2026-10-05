@@ -305,7 +305,8 @@ export default async function handler(req, res) {
       pg("core", "people?select=id,name,email"),
       pg("sales", "people_detail?select=person_id,active"),
       pg("sales", "tasks?select=id,title,status,due,assignee_id,org_id,deal_id,done_at"),
-      pg("sales", "deals?select=id,product,did,org_id"),
+      // `code`, not `did`: did is the app's name for it, code is the column.
+      pg("sales", "deals?select=id,product,code,org_id"),
       pg("core", "orgs?select=id,name"),
     ]);
 
@@ -317,7 +318,7 @@ export default async function handler(req, res) {
       const d = t.deal_id ? dealById.get(t.deal_id) : null;
       const co = orgById.get(t.org_id) || "";
       if (!d) return co || "";
-      const label = (d.product || "").trim() || d.did || "";
+      const label = (d.product || "").trim() || d.code || "";
       return co ? co + (label ? " · " + label : "") : label;
     };
 
