@@ -228,6 +228,28 @@ db.sales.tasks = [
   }
 }
 
+/* 9 — a live send that reaches one inbox, not the whole team */
+{
+  const keep = process.env.DIGEST_ONLY_TO;
+  process.env.DIGEST_ONLY_TO = "ankita.shrivastava@elecbits.in";
+  const mod = await import("../api/digest.js?onlyto");   // ONLY_TO is read at import
+  const res = { statusCode: 0, body: null, setHeader() {},
+    status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+  await mod.default({ query: { when: "morning" }, headers: { host: "x", ...CRON }, method: "GET" }, res);
+  const b2 = res.body;
+  check("with the filter on, a real run holds everyone not on the list",
+    b2.held === b2.digests.length && b2.digests.every((x) => x.held === "DIGEST_ONLY_TO"), b2.digests);
+  check("…but still builds their digest, so the run shows who WOULD be mailed",
+    b2.digests.length > 0 && b2.digests.every((x) => x.subject), b2.digests);
+  check("the response names the filter — it cannot be left on unnoticed",
+    JSON.stringify(b2.onlyTo) === JSON.stringify(["ankita.shrivastava@elecbits.in"]), b2.onlyTo);
+
+  const st = { statusCode: 0, body: null, setHeader() {}, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+  await mod.default({ query: { action: "status" }, headers: { host: "x" }, method: "GET" }, st);
+  check("status shouts about the filter", /TESTING FILTER IS ON/.test(st.body.onlyToWarning || ""), st.body.onlyToWarning);
+  if (keep === undefined) delete process.env.DIGEST_ONLY_TO; else process.env.DIGEST_ONLY_TO = keep;
+}
+
 server.close();
 for (const [state, name, got] of results) {
   console.log((state === "PASS" ? "  ✓ " : "  ✗ ") + name + (got ? "   → " + got : ""));
