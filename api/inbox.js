@@ -57,9 +57,9 @@ const GMAIL_SEND  = "https://www.googleapis.com/auth/gmail.send";
      digest     gmail.send      → DIGEST_*  the address the digest sends as
      both       both scopes     → INBOX_*   one mailbox doing both jobs   */
 const GRANTS = {
-  inbox:  { scope: GMAIL_SCOPE, prefix: "INBOX", does: "read" },
-  digest: { scope: GMAIL_SEND,  prefix: "DIGEST", does: "send as" },
-  both:   { scope: GMAIL_SCOPE + " " + GMAIL_SEND, prefix: "INBOX", does: "read and send as" },
+  inbox:  { key: "inbox",  scope: GMAIL_SCOPE, prefix: "INBOX", does: "read" },
+  digest: { key: "digest", scope: GMAIL_SEND,  prefix: "DIGEST", does: "send as" },
+  both:   { key: "both",   scope: GMAIL_SCOPE + " " + GMAIL_SEND, prefix: "INBOX", does: "read and send as" },
 };
 const grantFor = (q) => GRANTS[String(q || "").toLowerCase()] || GRANTS.inbox;
 
@@ -223,9 +223,17 @@ export default async function handler(req, res) {
   if (action === "oauth-url") {
     if (!oc.id) return res.status(501).json({ error: "INBOX_OAUTH_CLIENT_ID is not set. Google Cloud → APIs & Services → Credentials → Create OAuth client ID → Web application." });
     const g = grantFor(req.query.for);
-    const uri = redirectUri(req) + (req.query.for ? "&for=" + encodeURIComponent(String(req.query.for)) : "");
+    /* Which grant this is travels in `state`, NOT in the redirect URI.
+       Google compares redirect_uri against the registered list EXACTLY,
+       query string included — so "...?action=oauth-callback&for=digest"
+       is a different URI from the one you registered and is refused.
+       `state` is the parameter meant for carrying your own context
+       through the round trip, and it keeps one registered URI serving
+       every grant. */
+    const uri = redirectUri(req);
     const url = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({
       client_id: oc.id, redirect_uri: uri, response_type: "code", scope: g.scope,
+      state: g.key,
       // offline + consent together are what actually return a refresh token;
       // without prompt=consent a second run gives an access token only.
       access_type: "offline", prompt: "consent", include_granted_scopes: "true",
@@ -236,7 +244,7 @@ export default async function handler(req, res) {
       redirectUri: uri,
       then: "Sign in AS THE MAILBOX this is for (not your own account, unless it is yours), approve, and the next page shows the two values to store as "
         + g.prefix + "_OAUTH_REFRESH_TOKEN and " + g.prefix + "_GMAIL_USER.",
-      note: "If Google says redirect_uri_mismatch, add " + uri.split("&for=")[0] + " verbatim to the OAuth client's Authorised redirect URIs. Google matches the path, so the &for= suffix needs no separate entry.",
+      note: "If Google says redirect_uri_mismatch, add " + uri + " verbatim — and alone — to the OAuth client's Authorised redirect URIs.",
     });
   }
 
@@ -268,7 +276,9 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "no-store");
     // Named for the job it was granted for, so there is nothing to work out
     // about which variable this belongs in.
-    const g = grantFor(req.query.for);
+    // Google hands `state` back untouched; ?for= is still read so an old
+    // link, or a hand-built one, keeps working.
+    const g = grantFor(req.query.state || req.query.for);
     const out = { consentedAs: who || "(could not read the address)" };
     out[g.prefix + "_OAUTH_REFRESH_TOKEN"] = j.refresh_token;
     out[g.prefix + "_GMAIL_USER"] = who || mailbox || "(set this to the address above)";
