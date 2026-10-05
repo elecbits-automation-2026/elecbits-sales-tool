@@ -119,12 +119,32 @@ async function gmailToken(sa, user) {
    one inbox, needs no Workspace admin, and the owner can revoke it. Access
    tokens last an hour, so they are cached for the life of the lambda rather
    than re-minted on every fetch. */
+/* Everything is trimmed. Pasting a value into a web form carries a
+   trailing newline more often than anyone expects, and Google answers a
+   secret with one stray character on the end as "The provided client
+   secret is invalid" — which reads as "wrong secret", not "right secret,
+   wrong whitespace", and sends you back to the console to re-copy a value
+   that was correct all along. */
 const oauthCfg = () => ({
-  id:      process.env.INBOX_OAUTH_CLIENT_ID || "",
-  secret:  process.env.INBOX_OAUTH_CLIENT_SECRET || "",
-  refresh: process.env.INBOX_OAUTH_REFRESH_TOKEN || "",
+  id:      (process.env.INBOX_OAUTH_CLIENT_ID || "").trim(),
+  secret:  (process.env.INBOX_OAUTH_CLIENT_SECRET || "").trim(),
+  refresh: (process.env.INBOX_OAUTH_REFRESH_TOKEN || "").trim(),
   user:    (process.env.INBOX_GMAIL_USER || "").trim().toLowerCase(),
 });
+
+/* Enough about a secret to debug it, nothing that reveals it: how long it
+   is, whether it has the shape Google issues, and whether it arrived with
+   whitespace attached. Those three answer almost every "invalid secret". */
+const shapeOf = (raw, want) => {
+  const v = String(raw || "");
+  if (!v) return "missing";
+  const t = v.trim();
+  return [
+    t.length + " chars",
+    t.startsWith(want) ? "starts " + want + " ✓" : "does NOT start " + want + " — wrong value in this variable?",
+    v === t ? null : "HAD SURROUNDING WHITESPACE (now trimmed) — re-save it without the stray newline",
+  ].filter(Boolean).join(" · ");
+};
 const oauthReady = (c) => !!(c.id && c.secret && c.refresh && c.user);
 
 const tokenCache = new Map();   // user → { token, exp }
@@ -208,6 +228,10 @@ export default async function handler(req, res) {
         oauth: {
           ready: viaOauth,
           have: { clientId: !!oc.id, clientSecret: !!oc.secret, refreshToken: !!oc.refresh, mailbox: !!oc.user },
+          clientIdShape: !oc.id ? "missing"
+            : shapeOf(process.env.INBOX_OAUTH_CLIENT_ID, "").replace(" · starts  ✓", "")
+              + (oc.id.endsWith(".apps.googleusercontent.com") ? " · ends .apps.googleusercontent.com ✓" : " · does NOT end .apps.googleusercontent.com — is this the SECRET by mistake?"),
+          clientSecretShape: shapeOf(process.env.INBOX_OAUTH_CLIENT_SECRET, "GOCSPX-"),
           setUpAt: viaOauth ? null : "/api/inbox?action=oauth-url",
         },
         missing: [
@@ -261,7 +285,22 @@ export default async function handler(req, res) {
       }),
     });
     const j = await r.json();
-    if (!r.ok) return res.status(502).json({ error: j.error_description || j.error || ("HTTP " + r.status) });
+    if (!r.ok) {
+      const msg = j.error_description || j.error || ("HTTP " + r.status);
+      return res.status(502).json({
+        error: msg,
+        // The consent SUCCEEDED to get this far — Google sent a code back.
+        // What failed is this server's half of the exchange, which is a
+        // configuration answer, not something to retry.
+        meaning: /client secret/i.test(msg)
+          ? "The consent worked; INBOX_OAUTH_CLIENT_SECRET does not match this OAuth client. Check /api/inbox?action=status for its shape, confirm it is the secret for client " + oc.id.split("-")[0] + "…, re-save it in Vercel, REDEPLOY, then start the consent again — this code is now spent."
+          : /redirect_uri/i.test(msg)
+          ? "Add " + redirectUri(req) + " verbatim to the OAuth client's Authorised redirect URIs."
+          : /invalid_grant|code/i.test(msg)
+          ? "The code is single-use and short-lived. Start again at /api/inbox?action=oauth-url."
+          : undefined,
+      });
+    }
     if (!j.refresh_token) {
       return res.status(200).json({ error: "Google returned no refresh token — this account has already granted consent. Revoke it at https://myaccount.google.com/permissions and run oauth-url again." });
     }
