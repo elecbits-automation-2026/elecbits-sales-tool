@@ -23,6 +23,7 @@ import {
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
 import { belongsToDeal, soleDealId, dealContact, contactLine, nextStepState } from "./lib/scope";
+import { searchBrain, brainContext, brainStatus, brainLearn, brainFolders, setBrainFolder } from "./lib/brain";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
   askClaude, askWithDrive, fileToBlock, contentText, stripToolLines,
@@ -995,6 +996,7 @@ export default function App() {
           {tab === "performance" && <PerformanceView me={me} data={data} saveKpis={saveKpis} saveTrainings={saveTrainings} saveWorklogs={saveWorklogs} fixNow={fixNow} goFix={goFix} />}
           {tab === "expenses" && <ExpensesView me={me} data={data} saveExpenses={saveExpenses} />}
           {tab === "scrum" && <DailyScrumView me={me} data={data} saveScrums={saveScrums} saveTasks={saveTasks} />}
+          {tab === "brain" && <KnowledgeView me={me} data={data} saveKnowledge={saveKnowledge} />}
           {tab === "assistant" && me.role === "admin" && <AssistantView me={me} data={data} saveTasks={saveTasks} saveCompanies={saveCompanies} saveDeals={saveDeals} saveMemory={saveMemory} saveScrums={saveScrums} />}
           {tab === "memory" && me.role === "admin" && <SystemMemoryView me={me} data={data} saveMemory={saveMemory} />}
           {tab === "admin" && me.role === "admin" && <AdminView me={me} data={data} saveUsers={saveUsers} saveGates={saveGates} saveQuestionSet={saveQuestionSet} />}
@@ -1130,6 +1132,9 @@ function navGroups(me) {
       { key: "rfqs", label: "RFQs", icon: FileText },
     ] },
     { label: "My day", items: [
+      // Everyone, not just admins. The whole point is that an agent
+      // mid-call can ask without finding someone to ask.
+      { key: "brain", label: "Sales Brain", icon: Bot },
       { key: "tasks", label: "My Tasks", icon: ListTodo },
       { key: "scrum", label: "Daily Scrum", icon: CalendarCheck2 },
       { key: "performance", label: "Performance", icon: TrendingUp },
@@ -3349,11 +3354,15 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
         const lastUser = history.length ? history[history.length - 1] : null;
         const memQ = ((lastUser && (typeof lastUser.content === "string" ? lastUser.content : lastUser.display)) ||
           ((comp ? comp.name + " " + (comp.industry || "") + " " : "") + (d.temperature || "cold") + " phase sales next move")).slice(0, 300);
-        const mj = await withTimeout(fetch("/api/memory?action=search&q=" + encodeURIComponent(memQ) + "&n=4").then((r) => r.json()), 6000);
-        memCtx = (mj.hits || []).map((h) => "[" + h.folder_path + "/" + h.file_name + "] " + String(h.content).slice(0, 500)).join("\n");
+        /* searchBrain, not a raw fetch: it attaches the caller's token (so
+           the result is tier-filtered), reduces the question to keywords —
+           a whole sentence ANDs every word and matched almost nothing —
+           and keeps the unreadable files apart from the quotable text. */
+        const brain = await withTimeout(searchBrain(memQ, 4), 6000);
+        memCtx = brainContext(brain);
       } catch (e) { /* the record alone still answers */ }
       const sys = dealChatSystem({ ...d, _openTasks: openTaskTitles }, comp,
-        evidence() + (memCtx ? "\n\nFROM THE DMP KNOWLEDGE BASE (Drive playbooks & processes — name the file when you use one):\n" + memCtx : ""),
+        evidence() + (memCtx ? "\n\nFROM THE COMPANY DRIVE — name the file when you use one:\n" + memCtx : ""),
         data.contacts);
       let reply, notes;
       try {
@@ -4959,20 +4968,40 @@ function KnowledgeView({ me, data, saveKnowledge }) {
   const [companyId, setCompanyId] = useState("");
   const [tpl, setTpl] = useState(null); // {type, text}
   const [tplBusy, setTplBusy] = useState("");
+  const [stage, setStage] = useState("");
   const bodyRef = useRef(null);
   const speech = useSpeech((t) => setInput((p) => (p ? p + " " : "") + t));
 
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
 
-  const buildSystem = () => {
+  /* THREE SOURCES, IN ORDER OF AUTHORITY.
+
+     1. Curated entries — a human wrote them for this purpose. If one covers
+        the question it IS the answer, and it outranks anything crawled.
+     2. Drive passages — real text the crawler read. Quotable, must be cited
+        by filename so the reader can check it.
+     3. Files matched by name only — a .pptx or PDF nobody can read. These
+        answer "which file is it", never "what does it say".
+
+     The separation is the point. An answer that quotes a deck it never
+     opened is worse than no answer, because the agent repeats it to a
+     client. The prompt says so in those terms rather than hoping. */
+  const buildSystem = (brain) => {
     const kb = accessible.map((k) => "### " + k.title + "\n" + String(k.content || "").slice(0, 4000)).join("\n\n").slice(0, 15000);
     const comp = companies.find((c) => c.id === companyId);
+    const ctx = brain ? brainContext(brain) : "";
     return [
-      "You are the Elecbits product & commercial knowledge assistant for the sales team.",
-      "Answer ONLY using the knowledge entries below. If the answer is not covered, say exactly: \"Not in the knowledge base yet — ask admin to add it.\" Never invent specs, prices, or terms.",
-      "Be tight and practical. Short paragraphs or bullet lists. This is for an agent mid-conversation with a client.",
-      comp ? "The agent is preparing for this client — tailor framing to them, but facts still come only from the knowledge base: " + JSON.stringify({ name: comp.name, industry: comp.industry, city: comp.city, whatTheyDo: comp.whatTheyDo, potential: comp.potential }) : "",
-      "KNOWLEDGE ENTRIES:\n" + (kb || "(empty)"),
+      "You are the Elecbits sales brain: product, capability and commercial knowledge for the sales team. Today: " + todayStr() + ".",
+      "SOURCES, IN ORDER OF AUTHORITY. 1) CURATED ENTRIES — written by hand for this purpose; where one covers the question, it is the answer and overrides everything else. 2) DRIVE PASSAGES — real text read out of the company Drive; quotable, but always name the file. 3) FILES MATCHED BY NAME — the contents were NOT read.",
+      "NEVER state or imply what is inside a file listed as name-only. Say \"this looks like the right file\" and hand over the link. Inventing a figure from a filename is the one failure that reaches a client.",
+      "If two sources disagree, say so and name both. Never average two numbers into one you have not seen.",
+      "If nothing here answers it, say plainly what is missing and where it should live — a curated entry, or a document in Drive. Do not guess at specs, prices, lead times or terms.",
+      "Be tight and practical: short paragraphs or bullets. The reader is usually mid-conversation with a client.",
+      comp ? "The agent is preparing for this client — tailor the framing, but the facts still come only from the sources: " + JSON.stringify({ name: comp.name, industry: comp.industry, city: comp.city, whatTheyDo: comp.whatTheyDo, potential: comp.potential }) : "",
+      "CURATED ENTRIES:\n" + (kb || "(none yet)"),
+      ctx || "DRIVE: nothing in the indexed Drive matched this question.",
+      "You can also look around the Drive yourself when the search above missed — folder and file names, not contents.",
+      DRIVE_TOOL_PROMPT,
     ].filter(Boolean).join("\n\n");
   };
 
@@ -4981,12 +5010,26 @@ function KnowledgeView({ me, data, saveKnowledge }) {
     if (!text || busy) return;
     setInput(""); setErr("");
     const next = [...msgs, { role: "user", content: text }];
-    setMsgs(next); setBusy(true);
+    setMsgs(next); setBusy(true); setStage("searching the Drive…");
     try {
-      const reply = await askClaude(buildSystem(), next.map((m) => ({ role: m.role, content: m.content })));
-      setMsgs([...next, { role: "assistant", content: reply }]);
+      /* Retrieve, then answer. The search is scoped server-side to what
+         this person's role may see — finance, commercial and HR folders
+         are simply not in the results, so there is nothing for the model
+         to leak. The filter is not a prompt instruction. */
+      const brain = await searchBrain(text, 6);
+      setStage("writing the answer…");
+      const { reply, notes } = await askWithDrive(buildSystem(brain),
+        next.map((m) => ({ role: m.role, content: m.content })));
+      /* Sources are rendered from the RETRIEVED data, as real anchors —
+         never parsed out of the model's prose. A link the model typed is a
+         link the model can invent. */
+      setMsgs([...next, {
+        role: "assistant",
+        content: stripToolLines(reply) + (notes.length ? "\n\n" + notes.map((n) => "🔎 " + n).join("\n") : ""),
+        sources: [...brain.hits, ...brain.files],
+      }]);
     } catch (e) { setErr("AI call failed — try again."); setInput(text); setMsgs(msgs); }
-    setBusy(false);
+    setBusy(false); setStage("");
   };
 
   const templatise = async (type) => {
@@ -5017,7 +5060,7 @@ function KnowledgeView({ me, data, saveKnowledge }) {
           Knowledge base
         </SectionTitle>
         {accessible.length === 0 ? (
-          <Empty icon={BookOpen} title="Knowledge base is empty" sub="Admin trains this: capabilities, product lines, pricing rules. The chat answers only from what is here." action={canManage ? <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={14} /> Add entry</Btn> : null} />
+          <Empty icon={BookOpen} title="No curated entries yet" sub="The chat still answers from the Drive — but an entry written by hand outranks anything crawled, so this is where MOQ, payment terms and discount authority belong." action={canManage ? <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={14} /> Add entry</Btn> : null} />
         ) : (
           <div className="space-y-2">
             {accessible.map((k) => (
@@ -5054,17 +5097,37 @@ function KnowledgeView({ me, data, saveKnowledge }) {
                 <p className="font-medium text-slate-500 mb-2">Ask anything the company should know:</p>
                 <ul className="space-y-1 list-disc pl-4">
                   <li>"What's our MOQ for consumer devices?"</li>
+                  <li>"Send me the ODM capability deck"</li>
+                  <li>"What's our standard PCBA turnaround?"</li>
                   <li>"How do I pitch ESL to a 40-store retail chain?"</li>
-                  <li>"What payment terms can I offer without approval?"</li>
                 </ul>
               </div>
             )}
             {msgs.map((m, i) => (
-              <div key={i} className={cls("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+              <div key={i} className={cls("flex flex-col", m.role === "user" ? "items-end" : "items-start")}>
                 <div className={cls("max-w-lg rounded-lg px-3 py-2 text-sm whitespace-pre-wrap", m.role === "user" ? "bg-blue-600 text-white" : "bg-slate-50 border border-slate-200 text-slate-800")}>{m.content}</div>
+                {/* SOURCES, rendered from what was retrieved — not from the
+                    model's prose. A link the model wrote is a link it could
+                    have invented; these are the real files the answer was
+                    built from, and the ones it was only shown the names of
+                    are labelled as such so nobody forwards a deck believing
+                    the assistant read it. */}
+                {m.role === "assistant" && (m.sources || []).length > 0 && (
+                  <div className="max-w-lg mt-1.5 border-l-2 border-slate-200 pl-2.5 space-y-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">From the Drive</p>
+                    {m.sources.map((s) => (
+                      <a key={s.fileId} href={s.link} target="_blank" rel="noreferrer"
+                        className="block text-[11.5px] text-blue-600 hover:underline leading-snug">
+                        {s.fileName}
+                        {s.folder && <span className="text-slate-400"> · {s.folder}</span>}
+                        {s.kind === "file" && <span className="text-amber-600" title="A PowerPoint, PDF or image — the file was found by name; nothing inside it has been read"> · name only</span>}
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
-            {busy && <div className="flex items-center gap-2 text-xs text-slate-400 font-mono"><Loader2 size={13} className="animate-spin" /> searching the knowledge base…</div>}
+            {busy && <div className="flex items-center gap-2 text-xs text-slate-400 font-mono"><Loader2 size={13} className="animate-spin" /> {stage || "thinking…"}</div>}
             {err && <p className="text-xs text-red-600 flex items-center gap-1.5"><AlertCircle size={13} /> {err}</p>}
             {msgs.some((m) => m.role === "assistant") && !busy && (
               <div className="flex flex-wrap gap-1.5 pt-1 items-center">
@@ -6262,10 +6325,74 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
    SYSTEM MEMORY (admin) — durable facts the Assistant remembers
    ============================================================ */
 
-/* THE DMP BRAIN — System Memory's other half: everything learned from the
-   Google Drive DMP folder (Digital Manufacturing Platform), crawled folder by
-   folder, chunked and stored as pgvector embeddings. Learn is repeatable and
-   incremental; search proves what the brain knows. */
+/* THE BRAIN'S CRAWLER — System Memory's other half: everything read out of
+   Google Drive, folder by folder, chunked and stored as pgvector embeddings.
+   It began as one folder called DMP and now takes every folder shared with
+   the service account. Learn is repeatable and incremental — press it until
+   it says up to date; search proves what the brain actually holds. */
+/* ─── WHO MAY READ WHICH FOLDER ───────────────────────────────────────────
+   The brain reaches the whole Drive, which means it reaches finance, HR and
+   commercial material too. This card is the control that keeps those out of
+   the team's answers, and it is the ONLY one — the crawler's name-matching
+   is a first guess, not a policy.
+
+   So the unclassified folders are listed first and loudly. A folder nobody
+   has looked at is closed, which is safe but also silent: the collateral
+   sitting in it answers nobody's question and no one finds out why. */
+function BrainFoldersCard() {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+
+  const load = () => brainFolders().then((j) => setRows(j.folders || [])).catch(() => setRows([]));
+  useEffect(() => { load(); }, []);
+
+  const setTier = async (folder, tier) => {
+    setBusy(folder); setErr("");
+    const r = await setBrainFolder(folder, tier);
+    if (r && r.error) setErr(r.error); else await load();
+    setBusy("");
+  };
+
+  if (!rows) return null;
+  const closed = rows.filter((r) => r.tier !== "all");
+  const auto = rows.filter((r) => r.tier === "admin" && (r.note || "").startsWith("Auto-closed"));
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4">
+      <SectionTitle right={<span className="text-xs font-mono text-slate-400">{rows.length} folders · {closed.length} restricted</span>}>
+        What the brain may repeat
+      </SectionTitle>
+      <p className="text-xs text-slate-500 mb-3">
+        The crawler reads every folder shared with it. This decides who the answers can come from.
+        <b> Everyone</b> means any salesperson; <b>Leadership</b> adds dept heads; <b>Admin only</b> keeps it out of every answer but yours.
+        {auto.length > 0 && <span className="text-amber-700"> {auto.length} {auto.length === 1 ? "folder was" : "folders were"} closed automatically on the folder name — check the guess.</span>}
+      </p>
+      {!rows.length && <p className="text-xs text-slate-400">Nothing crawled yet. Press “Learn from Drive”.</p>}
+      <div className="space-y-1">
+        {rows.map((r) => (
+          <div key={r.folder} className="flex items-center gap-2 py-1 border-b border-slate-100 last:border-0">
+            <span className="text-[13px] text-slate-800 mr-auto truncate">{r.folder}</span>
+            {r.files > 0 && <span className="text-[10px] text-amber-600 flex-none" title="Files found but not readable — PowerPoints, PDFs, images. Findable by name only.">{r.files} link-only</span>}
+            <span className="text-[10px] font-mono text-slate-400 flex-none">{r.chunks || 0}</span>
+            <Sel className="w-36 text-xs py-0.5 flex-none" value={r.tier} disabled={busy === r.folder}
+              onChange={(e) => setTier(r.folder, e.target.value)}>
+              <option value="all">Everyone</option>
+              <option value="leadership">Leadership</option>
+              <option value="admin">Admin only</option>
+            </Sel>
+          </div>
+        ))}
+      </div>
+      {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
+      <p className="text-[10.5px] text-slate-400 mt-3">
+        Folder-level, and name-based on first sight. A salary sheet filed inside a sales folder is open — nothing here reads
+        contents to decide. Reviewing this list once is the control; the guess is not.
+      </p>
+    </div>
+  );
+}
+
 function DmpBrainCard() {
   const [st, setSt] = useState(null);
   const [learning, setLearning] = useState(false);
@@ -6273,13 +6400,18 @@ function DmpBrainCard() {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState(null);
   const [searching, setSearching] = useState(false);
-  const refresh = () => fetch("/api/memory?action=status").then((r) => r.json()).then(setSt).catch(() => {});
+  const refresh = () => brainStatus().then(setSt).catch(() => {});
   useEffect(() => { refresh(); }, []);
   const learn = async () => {
     setLearning(true); setReport("");
     try {
-      const j = await fetch("/api/memory?action=learn", { method: "POST" }).then((r) => r.json());
-      setReport(j.error ? j.error : "Visited " + j.foldersVisited + " folders · saw " + j.filesSeen + " files · learned " + j.learned + " (" + j.chunksWritten + " chunks)" + (j.skippedUnreadable ? " · " + j.skippedUnreadable + " unreadable" : "") + " — " + (j.note || ""));
+      const j = await brainLearn();
+      setReport(j.error ? j.error
+        : "Visited " + j.foldersVisited + " folders · saw " + j.filesSeen + " files · read " + j.learned
+          + " (" + j.chunksWritten + " chunks)"
+          + (j.listed ? " · " + j.listed + " recorded by name only" : "")
+          + (j.restricted ? " · restricted: " + j.restricted.join(", ") : "")
+          + " — " + (j.note || ""));
       refresh();
     } catch (e) { setReport("Learn failed — check the connection and try again."); }
     setLearning(false);
@@ -6289,8 +6421,8 @@ function DmpBrainCard() {
     if (!t || searching) return;
     setSearching(true); setHits(null);
     try {
-      const j = await fetch("/api/memory?action=search&q=" + encodeURIComponent(t)).then((r) => r.json());
-      setHits(j.hits || []);
+      const j = await searchBrain(t, 8);
+      setHits([...j.hits, ...j.files]);
     } catch (e) { setHits([]); }
     setSearching(false);
   };
@@ -6298,15 +6430,18 @@ function DmpBrainCard() {
     <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4">
       <SectionTitle right={
         <Btn size="sm" kind="primary" disabled={learning} onClick={learn}>
-          {learning ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} Learn from DMP
+          {learning ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} Learn from Drive
         </Btn>
-      }>The DMP brain — learned from Drive</SectionTitle>
+      }>What the brain has read</SectionTitle>
       <p className="text-xs text-slate-500 mb-2">
-        Crawls the <span className="font-mono">{(st && st.dmpFolder) || "DMP"}</span> folder in Drive — every sub-folder, every readable file — and stores what it reads as vector memory (pgvector). Click Learn repeatedly until it says up to date; changed files re-learn automatically.
+        Crawls <span className="font-mono">{(st && st.scope) || "every folder shared with the service account"}</span> — every sub-folder, every readable file — and stores what it reads as vector memory (pgvector).
+        A PowerPoint or PDF cannot be read, so it is recorded by name alone and stays findable and linkable.
+        Press Learn repeatedly until it says up to date; changed files re-learn by themselves.
       </p>
       {st && (
         <p className="text-xs text-slate-600 mb-2">
           <b className="font-mono tabular-nums">{st.files || 0}</b> files · <b className="font-mono tabular-nums">{st.chunks || 0}</b> chunks · <b className="font-mono tabular-nums">{st.embedded || 0}</b> embedded
+          {st.folders ? <> · <b className="font-mono tabular-nums">{st.folders}</b> folders, <b className="font-mono tabular-nums">{st.foldersOpenToAll || 0}</b> open to everyone</> : null}
           {st.note && <span className="text-amber-700"> · {st.note}</span>}
         </p>
       )}
@@ -6321,7 +6456,11 @@ function DmpBrainCard() {
           {!hits.length && <p className="text-xs text-slate-400">Nothing matched — learn first, or try other words.</p>}
           {hits.map((h, i) => (
             <div key={i} className="border border-slate-200 rounded-md px-2.5 py-1.5">
-              <p className="text-[10.5px] font-mono text-slate-400">{h.folder_path}/{h.file_name}{h.similarity != null ? " · " + Number(h.similarity).toFixed(2) : ""}</p>
+              <p className="text-[10.5px] font-mono text-slate-400">
+                <a href={h.link} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{h.folder}/{h.fileName}</a>
+                {h.kind === "file" ? " · name only" : ""}
+                {h.similarity != null ? " · " + Number(h.similarity).toFixed(2) : ""}
+              </p>
               <p className="text-[12px] text-slate-700 leading-snug line-clamp-3">{h.content}</p>
             </div>
           ))}
@@ -6351,6 +6490,7 @@ function SystemMemoryView({ me, data, saveMemory }) {
       <p className="text-sm text-slate-500 mb-4">Durable facts, positioning and rules the Assistant always keeps in mind. Keep each entry short and true.</p>
 
       <DmpBrainCard />
+      <BrainFoldersCard />
 
       {(!memory || memory.length === 0) ? (
         <Empty icon={Database} title="No system memory yet" sub="Add the things the Assistant should never forget — positioning, pricing rules, do's and don'ts." action={<Btn kind="primary" onClick={() => setEditing("new")}><Plus size={14} /> Add memory</Btn>} />
