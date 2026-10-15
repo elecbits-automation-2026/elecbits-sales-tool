@@ -49,10 +49,28 @@ whole thing rolls back and the database is untouched.
 | 19 | **`32-deal-contacts.sql`** | `contact_id` + `context` on `sales.deals`, `sales.upsert_contact`/`delete_contact` (SECURITY DEFINER, the sanctioned way into shared `core.contacts`), and a backfill of each company's single contact into `core.contacts` as its primary |
 
 | 20 | **`33-step-task.sql`** | ~~`next_step_task_id` on `sales.deals`~~ — **superseded, do not run.** The committed step was removed as a concept before this shipped: a deal's next action is a task on that deal. The `next_step*` columns stay in the database, unread |
+| 21 | **`34-brain.sql`** | the sales brain opens to the whole Drive: `top_folder`/`tier`/`kind`/`mime` on `memory_chunks`, `sales.brain_folders` (one row per top-level folder → who may read it), and tier-filtered `match_memory`/`search_memory_text`/`search_memory_files` that return `file_id` so an answer can carry a Drive link. Run after 29 |
 
 Steps 10–19 are also bundled as **`RUN-THIS-phase4.sql`** (23 through 32, one
-paste, same idempotence rules). **`33-step-task.sql` is not in that bundle
-— run it separately**, after phase 4.
+paste, same idempotence rules). **`33-step-task.sql` and `34-brain.sql` are
+not in that bundle — run them separately**, after phase 4. (Only 34; 33 is
+the dead end below.)
+
+### 34 is the access control, not a schema tidy-up
+
+`34-brain.sql` is what makes the assistant's Drive search safe to open to the
+team. Before it, retrieval was one folder of playbooks and everyone saw all of
+it. After it the corpus is the whole company Drive, and the only thing keeping
+Eb-04-Finance out of a salesperson's answer is the `tier` column it adds and
+the `p_tiers` argument it adds to the three retrieval functions. Run 29 first;
+without `sales.memory_chunks` there is nothing to alter. Re-running is safe.
+
+Two limits worth knowing before trusting it: the tier is per **top-level
+folder**, so a salary sheet filed inside a sales folder is open; and a new
+folder's tier is first guessed from its **name**. **Sales Brain → folder
+access** in the app lists every folder and what it was assigned — reading that
+list once is the real control, and a tier a human sets there is never
+overwritten by a later crawl.
 
 `33-step-task.sql` is a dead end — skip it. It pointed a deal's committed
 step at the task that was that step, which was the right fix for the wrong
