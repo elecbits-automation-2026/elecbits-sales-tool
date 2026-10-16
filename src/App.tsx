@@ -1162,13 +1162,25 @@ function Sidebar({ me, tab, setTab, onLogout }) {
   const flat = groups.flatMap((g) => g.items); // mobile rail is a single scroll row
   return (
     <>
-      {/* desktop rail */}
-      <aside className="hidden md:flex w-56 flex-none bg-white border-r border-slate-200 text-slate-500 flex-col">
-        <div className="px-4 py-5">
+      {/* DESKTOP RAIL — pinned.
+
+          The pipeline board and the long list views run for several screens,
+          and a nav that scrolls away with them means scrolling back to the
+          top just to change tab.
+
+          `self-start` is the part that is easy to miss. A flex item stretches
+          to the container's full height by default, and the container is as
+          tall as the page — so a stretched sticky element has nowhere to
+          travel and never appears to stick. Shrink it to its own box, give it
+          exactly one viewport of height, and `top-0` can do its job. */}
+      <aside className="hidden md:flex md:sticky md:top-0 md:self-start md:h-screen z-20 w-56 flex-none bg-white border-r border-slate-200 text-slate-500 flex-col">
+        <div className="flex-none px-4 py-5">
           <Logo height={26} />
           <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Sales OS</p>
         </div>
-        <nav className="flex-1 px-2 pb-3 space-y-4 overflow-y-auto">
+        {/* min-h-0 so a short laptop screen scrolls the nav rather than
+            squeezing the person's name and the log-out button off the end. */}
+        <nav className="flex-1 min-h-0 px-2 pb-3 space-y-4 overflow-y-auto">
           {groups.map((g) => (
             <div key={g.label}>
               <p className="px-3 mb-1 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">{g.label}</p>
@@ -1184,7 +1196,7 @@ function Sidebar({ me, tab, setTab, onLogout }) {
             </div>
           ))}
         </nav>
-        <div className="p-3 border-t border-slate-200">
+        <div className="flex-none p-3 border-t border-slate-200">
           <div className="flex items-center gap-2.5">
             <Avatar name={me.name} size="sm" />
             <span className="flex-1 min-w-0">
@@ -1195,8 +1207,10 @@ function Sidebar({ me, tab, setTab, onLogout }) {
           </div>
         </div>
       </aside>
-      {/* mobile rail */}
-      <div className="md:hidden bg-white border-b border-slate-200 px-3 py-2 flex items-center gap-1 overflow-x-auto">
+      {/* MOBILE RAIL — pinned for the same reason. On a phone the rail IS the
+          sidebar, and the views it has to get you out of are the longest
+          ones. Above the desktop rail's z-index, below the z-50 modals. */}
+      <div className="md:hidden sticky top-0 z-30 bg-white border-b border-slate-200 px-3 py-2 flex items-center gap-1 overflow-x-auto">
         {/* Glyph only — the full lockup's wordmark is unreadable at rail height */}
         <span className="flex items-center pr-2.5 mr-1 border-r border-slate-200 flex-none">
           <Logo variant="mark" height={22} />
