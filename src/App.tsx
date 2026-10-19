@@ -10386,6 +10386,25 @@ function DesignerLld({ answers, setAnswers }) {
    user, so a leaver marked inactive can still read the whole database. This
    column is where that is made visible and undone.
 
+   GIVING SOMEONE A WAY IN. For a long time this column could only report the
+   gap: a rostered person read "never signed in" and an admin had nothing to
+   click. The only route in was for the person to work out for themselves that
+   typing a brand-new password into the sign-in box creates the account.
+
+   /api/admin-users has done the real work all along — it holds the service
+   key, checks server-side that the caller is a sales admin, creates the
+   account already email-confirmed and attaches it to the roster row by email.
+   Only the button was missing.
+
+   One button, two meanings, and the difference is stated rather than assumed:
+   for someone with no account it creates one, and for someone who has an
+   account the same endpoint RESETS the password — so the panel says which,
+   and the resting state offers it as "reset password".
+
+   The password is shown ONCE and stored nowhere: not in the roster, not in
+   the database, not in this component once the panel closes. Losing it is not
+   a problem — the same button sets another.
+
    Renders nothing at all when /api/admin-users is unconfigured — an inert
    "Revoke" button beside a leaver's name is worse than no button, because it
    looks like the job is done. */
@@ -10395,42 +10414,119 @@ function LoginCell({ user, me }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [gone, setGone] = useState(false);
+  const [made, setMade] = useState(false);       // provisioned since this page loaded
+  const [pw, setPw] = useState(null);            // non-null = the set-a-password panel is open
+  const [handover, setHandover] = useState("");  // shown once, then gone for good
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState("");
 
   useEffect(() => { adminUsers.status().then(setCfg).catch(() => {}); }, []);
-  if (!cfg.connected) return <span className="text-xs text-slate-300">—</span>;
+  if (!cfg.connected) {
+    return <span className="text-xs text-slate-300" title={cfg.reason ? "Login provisioning is not configured: " + cfg.reason : "Login provisioning is not configured."}>—</span>;
+  }
 
   // authId is null for someone rostered who has never signed in.
-  const hasLogin = !!user.authId && !gone;
+  const hasLogin = (!!user.authId || made) && !gone;
   const isMe = user.id === me.id;
+  const email = String(user.email || "").trim();
 
-  if (!hasLogin) {
-    return <span className="text-xs text-slate-400" title="Rostered, but no account yet — they sign in once to create it.">
-      {gone ? "revoked" : "never signed in"}
-    </span>;
-  }
+  const openPw = () => { setPw(adminUsers.suggestPassword()); setErr(""); setMsg(""); setConfirming(false); };
+
+  const save = async () => {
+    if (String(pw || "").length < 8) { setErr("At least 8 characters."); return; }
+    setBusy(true); setErr("");
+    const r = await adminUsers.provision(email, pw, user.name);
+    setBusy(false);
+    if (r.error) { setErr(r.error); return; }
+    /* r.created === false means the address already had a login and its
+       password has just been changed. Saying "created" there would send an
+       admin off telling someone their account is new when what actually
+       happened is that their old password stopped working. */
+    setHandover(pw); setPw(null); setMade(true); setGone(false);
+    setMsg(r.created === false ? "That address already had a login — its password has been reset." : "Login created.");
+  };
+
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(handover); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) { /* clipboard blocked — it is on screen to read */ }
+  };
 
   const revoke = async () => {
     setBusy(true); setMsg("");
-    const r = await adminUsers.revoke(user.email);
+    const r = await adminUsers.revoke(email);
     if (r.error) { setMsg(r.error); setBusy(false); return; }
-    setGone(true); setConfirming(false); setMsg(r.note || "");
+    setGone(true); setMade(false); setConfirming(false); setMsg(r.note || "");
     setBusy(false);
   };
+
+  /* Handed over once. Closing this panel is the last time it exists. */
+  if (handover) {
+    return (
+      <div className="flex flex-col gap-1 items-start max-w-[250px]">
+        <p className="text-[11px] font-medium text-green-700">{msg}</p>
+        <div className="flex items-center gap-1.5">
+          <code className="text-[11.5px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 select-all">{handover}</code>
+          <button onClick={copy} className="text-[11px] text-blue-600 hover:underline">{copied ? "copied" : "copy"}</button>
+        </div>
+        <p className="text-[10.5px] text-slate-500">Send it to {email} now — it is stored nowhere and cannot be shown again.</p>
+        <button onClick={() => { setHandover(""); setCopied(false); }} className="text-[11px] text-slate-400 hover:underline">done</button>
+      </div>
+    );
+  }
+
+  if (pw !== null) {
+    return (
+      <div className="flex flex-col gap-1 items-start max-w-[250px]">
+        <p className="text-[11px] text-slate-600">
+          {hasLogin
+            ? <>Set a <b>new</b> password for {email}. Their current one stops working.</>
+            : <>Create a login for {email}.</>}
+        </p>
+        <Input value={pw} onChange={(e) => setPw(e.target.value)} className="text-xs py-1 font-mono" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <Btn size="sm" kind="primary" disabled={busy} onClick={save}>
+            {busy ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />} {hasLogin ? "Reset it" : "Create login"}
+          </Btn>
+          <button onClick={() => setPw(adminUsers.suggestPassword())} className="text-[11px] text-slate-400 hover:underline">suggest another</button>
+          <button onClick={() => { setPw(null); setErr(""); }} className="text-[11px] text-slate-400 hover:underline">cancel</button>
+        </div>
+        {err && <p className="text-[11px] text-red-600">{err}</p>}
+      </div>
+    );
+  }
+
+  if (!hasLogin) {
+    return (
+      <div className="flex flex-col gap-1 items-start">
+        <span className="text-xs text-slate-400" title="On the sales roster, but no account yet.">
+          {gone ? "revoked" : "never signed in"}
+        </span>
+        {email
+          ? <button onClick={openPw} className="text-[11px] text-blue-600 hover:underline">create login</button>
+          : <span className="text-[11px] text-slate-300" title="A login is an email and a password.">add an email first</span>}
+        {msg && <p className="text-[11px] text-slate-500 max-w-[230px]">{msg}</p>}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-1 items-start">
       {!confirming ? (
         <div className="flex items-center gap-2">
           <Chip color="blue">can sign in</Chip>
-          {!isMe && (
+          {/* Not for yourself. Revoking your own login signs you out mid-action
+              and the server refuses it anyway; resetting your own password
+              belongs somewhere you went on purpose, not in a roster table. */}
+          {!isMe && (<>
+            <button onClick={openPw}
+              className="text-[11px] text-slate-400 hover:text-blue-600 hover:underline">reset password</button>
             <button onClick={() => { setConfirming(true); setMsg(""); }}
               className="text-[11px] text-slate-400 hover:text-red-600 hover:underline">revoke</button>
-          )}
+          </>)}
         </div>
       ) : (
         <div className="flex flex-col gap-1">
           <p className="text-[11px] text-slate-600 max-w-[230px]">
-            Delete <b>{user.email}</b>'s login? Their session ends and they lose all
+            Delete <b>{email}</b>'s login? Their session ends and they lose all
             database access. The roster entry stays, so their name remains on past work.
           </p>
           <div className="flex items-center gap-2">
@@ -10592,8 +10688,9 @@ function UserModal({ user, me, onClose, onSave }) {
         </Field>
         {isNew && (
           <p className="text-xs text-slate-500 bg-slate-100 rounded-lg px-3 py-2">
-            No password to set here — their <span className="font-medium">first sign-in with this
-            email creates the account</span>, and whatever password they type then becomes theirs.
+            No password here. Once they are on the roster, <span className="font-medium">Login →
+            create login</span> sets one you can hand over — or they can just sign in with this
+            email and whatever password they type the first time becomes theirs.
           </p>
         )}
         <Field label="Role">
