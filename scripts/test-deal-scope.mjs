@@ -9,7 +9,8 @@
 // Two live deals on one company is the case to hold onto. Everything here
 // is that case.
 
-import { belongsToDeal, dealContact, nextStepState, soleDealId, liveDeals } from "../src/lib/scope.ts";
+import { belongsToDeal, dealContact, nextStepState, soleDealId, liveDeals,
+         dealPeople, onDeal, onDealAny } from "../src/lib/scope.ts";
 
 let pass = 0, fail = 0;
 const results = [];
@@ -216,6 +217,70 @@ const both = [dpb, ups, dead, solo];
   check("…and is correctly invisible in each deal room until claimed",
     !belongsToDeal({ companyId: SCHNEIDER }, dpb, both) && !belongsToDeal({ companyId: SCHNEIDER }, ups, both),
     "both false");
+}
+
+/* ─── TWO PEOPLE ON A DEAL ─────────────────────────────────────────────────
+   The reported case: Garvit was added to the roster, signed in, and saw one
+   deal — the one he owned. The team's other deals were not restricted from
+   him, they simply were not on his board, because "mine" meant owner_id.
+   A secondary is how a second person working an account gets to see it.
+
+   The thing worth testing is that the two halves stay DIFFERENT. onDeal is
+   "is this person involved" and answers for both; capacity and the stale
+   nag ask "who is answerable" and must keep answering with one person. A
+   change that quietly made them the same would look like it worked.        */
+{
+  const SAURAV = "u-saurav", GARVIT = "u-garvit", SHREYA = "u-shreya";
+  const solo    = { id: "d1", ownerId: SAURAV };
+  const shared  = { id: "d2", ownerId: SAURAV, secondaryOwnerId: GARVIT };
+  const orphan  = { id: "d3", ownerId: "", secondaryOwnerId: "" };
+  const selfPair = { id: "d4", ownerId: SAURAV, secondaryOwnerId: SAURAV };
+
+  check("a deal with one owner names one person",
+    dealPeople(solo).length === 1 && dealPeople(solo)[0] === SAURAV, dealPeople(solo));
+  check("a shared deal names both, primary first",
+    JSON.stringify(dealPeople(shared)) === JSON.stringify([SAURAV, GARVIT]), dealPeople(shared));
+  check("an unassigned deal names nobody", dealPeople(orphan).length === 0, dealPeople(orphan));
+  check("no deal at all → nobody, not a crash", dealPeople(null).length === 0, dealPeople(null));
+
+  // THE POINT OF THE WHOLE CHANGE.
+  check("the secondary IS on the deal — this is what puts it on his board",
+    onDeal(shared, GARVIT), shared);
+  check("…and the primary still is",  onDeal(shared, SAURAV), shared);
+  check("somebody on neither seat is not on the deal", !onDeal(shared, SHREYA), shared);
+  check("a secondary on ONE deal does not get the owner's other deals",
+    !onDeal(solo, GARVIT), solo);
+
+  /* THE ASYMMETRY THAT MUST SURVIVE. Visibility unions both seats; capacity
+     does not. If capacity ever started using onDeal, one piece of work would
+     be charged to two people and both could read "At Capacity" for it. */
+  const board = [solo, shared];
+  const carries = (who) => board.filter((d) => d.ownerId === who).length;
+  const sees = (who) => board.filter((d) => onDeal(d, who)).length;
+  check("Garvit SEES the shared deal", sees(GARVIT) === 1, sees(GARVIT));
+  check("…but carries none of it — capacity stays with the primary",
+    carries(GARVIT) === 0, carries(GARVIT));
+  check("Saurav carries both, and the shared one is not double-counted",
+    carries(SAURAV) === 2 && sees(SAURAV) === 2, { carries: carries(SAURAV), sees: sees(SAURAV) });
+
+  check("an empty user id never matches an unassigned deal",
+    !onDeal(orphan, "") && !onDeal(orphan, undefined), orphan);
+  check("…nor does it match a deal that HAS owners",
+    !onDeal(shared, ""), shared);
+
+  // Mirrors the CHECK constraint in 35-deal-secondary.sql: one person must
+  // not occupy both seats, or they are counted twice everywhere.
+  check("the same person in both seats counts once",
+    dealPeople(selfPair).length === 1, dealPeople(selfPair));
+
+  // onDealAny is the pipeline's scope test: "is anyone I'm scoped to on it?"
+  check("a dept head's scope picks up a deal where a team member is SECOND",
+    onDealAny(shared, [SHREYA, GARVIT]), shared);
+  check("…and does not pick up one where nobody in scope is on it",
+    !onDealAny(solo, [SHREYA, GARVIT]), solo);
+  check("an empty scope matches nothing", !onDealAny(shared, []), shared);
+  check("an unassigned deal is in nobody's scope — it is surfaced another way",
+    !onDealAny(orphan, [SAURAV, GARVIT, SHREYA]), orphan);
 }
 
 for (const [state, name, got] of results) {
