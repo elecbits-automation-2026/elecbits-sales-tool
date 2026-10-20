@@ -53,6 +53,48 @@ export const soleDealId = (companyId: string | undefined,
   return live.length === 1 ? live[0].id : "";
 };
 
+/* ─── WHOSE DEAL IS THIS? ──────────────────────────────────────────────────
+   A deal carries two people: a PRIMARY, who brought it in and is answerable
+   for it, and an optional SECONDARY, who is also working it.
+
+   The distinction is deliberate and the two halves are not interchangeable:
+
+     onDeal()   "is this person involved?" — either of them. This is what
+                decides whose board the deal appears on, who the Deal Room
+                lets act, and what the person filter matches.
+     ownerId    "who is answerable?" — the primary alone. Capacity, the
+                stale-deal nag and anything that asks whose number this is
+                stay on one person, because a count that both people carry
+                is a count that neither of them does.
+
+   One definition, used by everything that asks. The reason it lives here
+   rather than inline is the same reason belongsToDeal does: the first time
+   this was two different expressions in two files, one of them will be
+   updated and the other will quietly keep showing the old answer.
+
+   Self-pairing is treated as no secondary, mirroring the CHECK constraint
+   in 35-deal-secondary.sql — otherwise one person appears twice in anything
+   that unions the two columns.                                            */
+
+export type Owned = { ownerId?: string | null; secondaryOwnerId?: string | null };
+
+export const dealPeople = (d: Owned | null | undefined): string[] => {
+  const primary = (d && d.ownerId) || "";
+  const second = (d && d.secondaryOwnerId) || "";
+  return [primary, second === primary ? "" : second].filter(Boolean) as string[];
+};
+
+export const onDeal = (d: Owned | null | undefined, userId: string | undefined | null): boolean =>
+  !!userId && dealPeople(d).includes(userId);
+
+/** True when ANY of these people is on the deal — the pipeline's scope test. */
+export const onDealAny = (d: Owned | null | undefined, userIds: Iterable<string>): boolean => {
+  const people = dealPeople(d);
+  if (!people.length) return false;
+  for (const id of userIds) if (id && people.includes(id)) return true;
+  return false;
+};
+
 /* ─── WHO TO CALL ABOUT THIS PROJECT ───────────────────────────────────────
    The same shape of question, for people. A company's contacts live in
    core.contacts; a deal points at one of them. A deal naming nobody inherits

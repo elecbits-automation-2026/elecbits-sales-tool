@@ -22,7 +22,7 @@ import {
   loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact, schemaGaps,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
-import { belongsToDeal, soleDealId, dealContact, contactLine, nextStepState } from "./lib/scope";
+import { belongsToDeal, soleDealId, dealContact, contactLine, nextStepState, onDeal, onDealAny, dealPeople } from "./lib/scope";
 import { searchBrain, brainContext, brainStatus, brainLearn, brainFolders, setBrainFolder } from "./lib/brain";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
@@ -1288,7 +1288,9 @@ function CompaniesView({ me, data, saveCompanies, saveDeals, saveTasks, focusCom
   const peopleOn = (c) => {
     const ids = new Set();
     if (c.accountOwner) ids.add(c.accountOwner);
-    deals.forEach((d) => { if (d.companyId === c.id && !d.lost && d.ownerId) ids.add(d.ownerId); });
+    // Both people on a live deal — "who is working this company" is exactly
+    // the question the secondary was added to answer.
+    deals.forEach((d) => { if (d.companyId === c.id && !d.lost) dealPeople(d).forEach((id) => ids.add(id)); });
     (data.tasks || []).forEach((t) => { if (t.companyId === c.id && t.status !== "done" && t.assignee) ids.add(t.assignee); });
     return [...ids].map((id) => users.find((u) => u.id === id)).filter(Boolean);
   };
@@ -3830,11 +3832,28 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 onChange={(e) => patchDeal({ product: e.target.value })}
                 placeholder="+ what we're building"
                 className="text-xs bg-transparent border-b border-dashed border-slate-300 focus:border-blue-500 focus:outline-none text-slate-700 placeholder:text-slate-300 w-40 py-0.5" />
-              {/* the owner is always editable, right here */}
-              <Sel className="w-36 text-xs py-0.5" value={owner ? owner.id : ""}
-                onChange={(e) => e.target.value && patchDeal({ ownerId: e.target.value })}>
-                {!owner && <option value="">— assign an owner —</option>}
+              {/* PRIMARY — who brought it in and is answerable for it.
+                  Always editable, right here. */}
+              <Sel className="w-36 text-xs py-0.5" value={owner ? owner.id : ""} title="Primary — brought the deal in, answerable for it"
+                onChange={(e) => {
+                  const id = e.target.value;
+                  if (!id) return;
+                  /* Promoting the secondary is a real move (a handover), and
+                     the same person must not end up in both seats — the
+                     database refuses it and it would double-count them. */
+                  patchDeal(id === d.secondaryOwnerId ? { ownerId: id, secondaryOwnerId: "" } : { ownerId: id });
+                }}>
+                {!owner && <option value="">— assign a primary —</option>}
                 {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </Sel>
+              {/* SECONDARY — also working it, so it is on their board too.
+                  Optional, and the empty option has to stay selectable: this
+                  is the only way to take someone back off a deal. */}
+              <Sel className="w-36 text-xs py-0.5" value={d.secondaryOwnerId || ""} title="Secondary — also working this deal; it shows on their board too"
+                onChange={(e) => patchDeal({ secondaryOwnerId: e.target.value })}>
+                <option value="">+ add a secondary</option>
+                {users.filter((u) => u.active !== false && u.id !== d.ownerId)
+                  .map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
               </Sel>
               {comp && comp.city ? <span>· {comp.city}</span> : null}
               {d.createdAt ? <span>· started {fmtDate(d.createdAt)}</span> : null}
@@ -3860,6 +3879,8 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             </p>
           </div>
           {comp && <button onClick={() => { onClose(); openCompany(comp.id); }} className="text-xs text-blue-600 hover:underline">open the company →</button>}
+          {/* Deleting stays with the primary and admins. A secondary can work
+              the deal; destroying it is the accountable person's call. */}
           {(me.role === "admin" || d.ownerId === me.id) && (
             <button title="Delete this deal" onClick={delDeal}
               className="text-slate-300 hover:text-red-600 p-1"><Trash2 size={15} /></button>
@@ -4069,16 +4090,20 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
   // A deal whose owner left the roster must never vanish — surface it as
   // unassigned (outside "Mine") so someone can claim it in the Deal Room.
   const rosterIds = new Set(users.map((u) => u.id));
-  const visible = deals.filter((d) =>
-    (scopeIds.includes(d.ownerId) || (scope !== "mine" && !rosterIds.has(d.ownerId)))
-    && (personF === "all" || d.ownerId === personF)
+  /* "Mine" means a deal I am ON, as primary OR secondary — one shared
+     definition in lib/scope.ts rather than `d.ownerId === me.id` written
+     out here. The secondary exists precisely so the deal reaches a second
+     person's board; testing only the primary here would add the field and
+     change nothing anyone can see. */
+  const inScope = (d) => onDealAny(d, scopeIds)
+    || (scope !== "mine" && !dealPeople(d).some((id) => rosterIds.has(id)));
+  const matchesPerson = (d) => personF === "all" || onDeal(d, personF);
+  const visible = deals.filter((d) => inScope(d) && matchesPerson(d)
     && (companyF === "all" || d.companyId === companyF)
     && (!expOnly || isExploratory(d)));
   // How many there are to find, computed BEFORE the filter — otherwise the
   // button's own count drops to itself the moment it is pressed.
-  const expCount = deals.filter((d) =>
-    (scopeIds.includes(d.ownerId) || (scope !== "mine" && !rosterIds.has(d.ownerId)))
-    && (personF === "all" || d.ownerId === personF)
+  const expCount = deals.filter((d) => inScope(d) && matchesPerson(d)
     && (companyF === "all" || d.companyId === companyF)
     && isExploratory(d)).length;
   const phaseOf = (d) => d.lost ? "lost" : d.stage === "po" ? "won" : (d.temperature || "cold");
@@ -4195,6 +4220,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                 }).map((d) => {
                   const c = companies.find((x) => x.id === d.companyId);
                   const o = users.find((u) => u.id === d.ownerId);
+                  const sec = d.secondaryOwnerId ? users.find((u) => u.id === d.secondaryOwnerId) : null;
                   const ns = nextStepState(d, tasks, deals);
                   const pk = phaseOf(d);
                   return (
@@ -4206,9 +4232,14 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                       </td>
                       <td className="py-2.5 px-4"><Chip color={pk === "won" ? "green" : pk === "lost" ? "slate" : tempColor(d.temperature)}>{pk === "won" ? "WON" : pk === "lost" ? "LOST" : pk.toUpperCase()}</Chip></td>
                       <td className="py-2.5 px-4 font-mono tabular-nums">{fmtINRc(d.value)}</td>
-                      <td className="py-2.5 px-4">{o
-                        ? <span className="flex items-center gap-1.5"><Avatar name={o.name} size="sm" /><span className="text-xs">{o.name}</span></span>
-                        : <span className="text-xs font-semibold text-red-600">unassigned</span>}</td>
+                      <td className="py-2.5 px-4">
+                        {o
+                          ? <span className="flex items-center gap-1.5"><Avatar name={o.name} size="sm" /><span className="text-xs">{o.name}</span></span>
+                          : <span className="text-xs font-semibold text-red-600">unassigned</span>}
+                        {sec && <span className="flex items-center gap-1.5 mt-0.5 opacity-60" title="Secondary">
+                          <Avatar name={sec.name} size="sm" /><span className="text-xs">{sec.name}</span>
+                        </span>}
+                      </td>
                       <td className="py-2.5 px-4 max-w-56">
                         {d.lost || d.stage === "po" ? <span className="text-slate-300 text-xs">—</span>
                           : ns.key === "overdue" ? <span className="text-xs font-semibold text-red-600 flex items-center gap-1"><AlertTriangle size={11} /> overdue {fmtDate(ns.due)}</span>
@@ -4250,6 +4281,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                 {col.map((d) => {
                   const c = companies.find((x) => x.id === d.companyId);
                   const o = users.find((u) => u.id === d.ownerId);
+                  const sec = d.secondaryOwnerId ? users.find((u) => u.id === d.secondaryOwnerId) : null;
                   const stale = dealStaleDays(d);
                   const ns = nextStepState(d, tasks, deals);
                   // RED is the broken commitment first; the stale clock is the fallback signal.
@@ -4283,7 +4315,15 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                         ? <p className="mt-1.5 text-[11px] text-slate-500 truncate">next: {commitLine(d, ns)}</p>
                         : null)}
                       <div className="flex items-center justify-between mt-2">
-                        <span className="flex items-center gap-1 text-xs text-slate-500">{o ? <Avatar name={o.name} size="sm" /> : <span className="text-[10px] font-semibold text-red-600 uppercase">unassigned</span>}</span>
+                        {/* Both people, primary first. The secondary is
+                            dimmed rather than captioned — at card size a
+                            label costs more room than it earns, and the
+                            tooltip says which is which. */}
+                        <span className="flex items-center gap-1 text-xs text-slate-500">
+                          {o ? <span title={o.name + " · primary"}><Avatar name={o.name} size="sm" /></span>
+                             : <span className="text-[10px] font-semibold text-red-600 uppercase">unassigned</span>}
+                          {sec && <span title={sec.name + " · secondary"} className="opacity-55 -ml-1.5"><Avatar name={sec.name} size="sm" /></span>}
+                        </span>
                         <div className="flex items-center gap-2">
                           {c && stageIdx(d.stage) >= stageIdx("rfq") && !d.lost && (
                             <button onClick={(e) => { e.stopPropagation(); openCompany(c.id); }} className="text-xs text-blue-600 hover:underline flex items-center gap-0.5" title="RFQ in hand? Apply for the official Project ID — ULM sanctions it."><Rocket size={11} /> Project ID</button>
@@ -6162,7 +6202,11 @@ function AssistantView({ me, data, saveTasks, saveCompanies, saveDeals, saveMemo
       stage: d.lost ? "lost" : stageName(d.stage),
       phase: d.lost ? "lost" : (d.temperature || "cold"),
       value: d.value,
-      owner: (users.find((u) => u.id === d.ownerId) || {}).name, staleDays: dealStaleDays(d),
+      owner: (users.find((u) => u.id === d.ownerId) || {}).name,
+      // Named differently from `owner` on purpose: asked "whose deal is
+      // this", the answer is still one person.
+      secondary: (users.find((u) => u.id === d.secondaryOwnerId) || {}).name,
+      staleDays: dealStaleDays(d),
     }));
     const openTasks = (tasks || []).filter((t) => t.status !== "done").slice(0, 40).map((t) => ({
       title: t.title, company: (companies.find((c) => c.id === t.companyId) || {}).name,
@@ -9904,14 +9948,20 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
 
   const loadOf = (u) => {
     const comps = companies.filter((c) => c.accountOwner === u.id);
+    /* PRIMARY ONLY, and deliberately so. Capacity asks how much this person
+       is answerable for; a deal both people carried would be counted twice
+       across the team and put two people "At Capacity" for one piece of
+       work. Being second on a deal is real load though, so it is counted
+       separately and shown beside the number rather than folded into it. */
     const openDeals = deals.filter((d) => d.ownerId === u.id && !d.lost && d.stage !== "po");
+    const secondOn = deals.filter((d) => d.secondaryOwnerId === u.id && !d.lost && d.stage !== "po").length;
     const openTasks = tasks.filter((t) => t.assignee === u.id && t.status !== "done");
     // Step-side only — the [] is deliberate. The task half of the overdue
     // count is the line below it; passing tasks in here would count the
     // same late task twice.
     const overdue = openDeals.filter((d) => nextStepState(d, [], deals).key === "overdue").length
       + openTasks.filter((t) => t.due && t.due < todayStr()).length;
-    return { comps, openDeals: openDeals.length, openTasks: openTasks.length, overdue };
+    return { comps, openDeals: openDeals.length, secondOn, openTasks: openTasks.length, overdue };
   };
   // The ODM CAP number: open deals vs. what the person can carry.
   const capOf = (u) => (Number(u.capacity) > 0 ? Number(u.capacity) : 3);
@@ -10173,7 +10223,10 @@ function ResourcesView({ me, data, saveUsers, openCompany }) {
                         </div>
                       ) : <span className="text-slate-300">—</span>}
                     </td>
-                    <td className="py-3 px-4 font-mono tabular-nums">{L.openDeals || <span className="text-slate-300">0</span>}</td>
+                    <td className="py-3 px-4 font-mono tabular-nums">
+                      {L.openDeals || <span className="text-slate-300">0</span>}
+                      {L.secondOn > 0 && <span className="text-slate-400 font-normal" title={"Second on " + L.secondOn + " more — real work, but the primary carries it for capacity"}> +{L.secondOn}</span>}
+                    </td>
                     <td className="py-3 px-4 font-mono tabular-nums">{L.openTasks || <span className="text-slate-300">0</span>}</td>
                     <td className="py-3 px-4 font-mono tabular-nums">
                       <span className={cls("font-semibold", L.openDeals >= capOf(u) ? "text-red-600" : L.openDeals > 0 ? "text-amber-600" : "text-green-700")}>{L.openDeals}/{capOf(u)}</span>

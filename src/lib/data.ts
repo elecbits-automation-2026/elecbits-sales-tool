@@ -195,6 +195,9 @@ export async function loadWorkspace() {
   }
   const dealsOut = deals.map((d: any) => ({
     id: d.id, did: d.code, companyId: d.org_id, ownerId: d.owner_id,
+    // 35-deal-secondary.sql — the second person working this deal. "" not
+    // null, so the <select> binds to a string like every other picker here.
+    secondaryOwnerId: d.secondary_owner_id || "",
     value: Number(d.value || 0), stage: d.stage,
     // 31-deal-product.sql — "" not null, so the input binds to a string.
     product: d.product || "",
@@ -553,11 +556,22 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
     lost_note: (d.lostInfo && d.lostInfo.summary) || null,
     product: d.product || null,
     contact_id: d.contactId || null, context: d.context || null,
+    secondary_owner_id: d.secondaryOwnerId || null,
     created_at: d.createdAt, updated_at: d.updatedAt,
   }));
   // `product` arrives with 31-deal-product.sql — on a database that hasn't
   // run it, retry without the column rather than failing every deal save.
   let r1 = await tbl(supabase, "deals").upsert(dealRows, { onConflict: "id" });
+
+  /* 35-deal-secondary.sql may not have been run yet. Drop just that one
+     column and retry BEFORE the phase-4 fallback below, which matches on a
+     bare "column" and would otherwise throw away the product, contact and
+     context on a database that holds them perfectly well. */
+  if (r1.error && /secondary_owner_id/i.test(r1.error.message || "")) {
+    schemaGaps.add("deals.secondary_owner_id — run supabase/35-deal-secondary.sql");
+    r1 = await tbl(supabase, "deals")
+      .upsert(dealRows.map(({ secondary_owner_id, ...rest }) => rest), { onConflict: "id" });
+  }
   if (r1.error && /product|contact_id|context|column/i.test(r1.error.message || "")) {
     // The migration has not been run. Saving the rest beats losing the deal —
     // but the product, contact and context the user just typed ARE being
@@ -565,7 +579,7 @@ export async function syncDeals(deals: any[]): Promise<boolean> {
     // it so the app can say so out loud.
     schemaGaps.add("deals.product / contact / context — run RUN-THIS-phase4.sql (steps 23–32)");
     r1 = await tbl(supabase, "deals")
-      .upsert(dealRows.map(({ product, contact_id, context, ...rest }) => rest), { onConflict: "id" });
+      .upsert(dealRows.map(({ product, contact_id, context, secondary_owner_id, ...rest }) => rest), { onConflict: "id" });
   }
   let allOk = ok(r1.error, "syncDeals.deals");
 

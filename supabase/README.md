@@ -50,6 +50,7 @@ whole thing rolls back and the database is untouched.
 
 | 20 | **`33-step-task.sql`** | ~~`next_step_task_id` on `sales.deals`~~ — **superseded, do not run.** The committed step was removed as a concept before this shipped: a deal's next action is a task on that deal. The `next_step*` columns stay in the database, unread |
 | 21 | **`34-brain.sql`** | the sales brain opens to the whole Drive: `top_folder`/`tier`/`kind`/`mime` on `memory_chunks`, `sales.brain_folders` (one row per top-level folder → who may read it), and tier-filtered `match_memory`/`search_memory_text`/`search_memory_files` that return `file_id` so an answer can carry a Drive link. Run after 29 |
+| 22 | **`35-deal-secondary.sql`** | `secondary_owner_id` on `sales.deals` — a second person working the deal, so it appears on their board too. `owner_id` stays the primary and still carries capacity and the stale-deal nag. Run after 32 |
 
 Steps 10–19 are also bundled as **`RUN-THIS-phase4.sql`** (23 through 32, one
 paste, same idempotence rules). **`33-step-task.sql` and `34-brain.sql` are
