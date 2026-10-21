@@ -1083,6 +1083,31 @@ export async function saveTouch(t: any): Promise<string | null> {
   return (data && data.id) || t.id;
 }
 
+/* Remove one entry from the touch log.
+
+   WHAT GOES: the log entry, and the write-up stored on it — the summary,
+   the objections, the promises the AI pulled out — because all of that
+   lives in the row's own `ai` column.
+
+   WHAT STAYS, and this is the part worth being deliberate about: the TASKS
+   and the COMMITMENT rows that were raised from it when somebody approved
+   the write-up. `commitments.activity_id` is `on delete set null`, so they
+   survive pointing at nothing, and tasks were never linked to the touch at
+   all. That is the right default. Those are records the team may already be
+   working — a name on them, a date moved, progress logged — and deleting
+   somebody's open work because a duplicate log entry was tidied away is a
+   far worse surprise than leaving a promise behind. The UI says so before
+   it deletes, and counts what will be left, so it is a decision rather
+   than a discovery.
+
+   No role check. Any signed-in teammate may do this: the policy on
+   org_activities is `for all to authenticated`, and a log everyone is
+   asked to keep is a log everyone must be able to correct. */
+export async function deleteTouch(id: string): Promise<boolean> {
+  const { error } = await tbl(supabase, "org_activities").delete().eq("id", id);
+  return ok(error, "deleteTouch");
+}
+
 export async function loadCommitments(orgId?: string): Promise<any[]> {
   let q = tbl(supabase, "commitments").select("*").order("due", { ascending: true });
   if (orgId) q = q.eq("org_id", orgId);

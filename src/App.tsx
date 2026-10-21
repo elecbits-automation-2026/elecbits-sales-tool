@@ -14,7 +14,7 @@ import {
   syncWorklogs, syncKnowledge, syncExpenses, syncScrums, syncMemory, syncGates,
   syncTasks, syncLlds, syncQuestionSet, mintClientId, submitProjectRequest,
   loadChat, loadChatDates, saveChat, saveSession, loadAllIdeas,
-  loadTouches, loadRecentTouches, saveTouch, loadCommitments, saveCommitments,
+  loadTouches, loadRecentTouches, saveTouch, deleteTouch, loadCommitments, saveCommitments,
   deleteTask, deleteScrum, deleteDeal,
   saveDealPlan, setTemperature, loadScrumSessions, upsertScrumSession,
   saveRfqLink, setRequestOvertake, deleteCompany, removeFromRoster, setCapacity, loadClientLog, loadAllClientLogs,
@@ -7121,6 +7121,34 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
   };
   useEffect(() => { reload(); }, [c.id]);
 
+  /* ── REMOVING A LOG ENTRY ───────────────────────────────────────────────
+     The same conversation gets logged twice — someone files it, the mailbox
+     pulls it in, or a call is written up from both ends — and a timeline
+     with the same call in it twice is worse than a thin one: it reads as
+     two contacts, and the AI treats it as two.
+
+     Open to everyone, deliberately. A log the whole team is asked to keep
+     is a log the whole team has to be able to correct, and the database
+     already agrees — org_activities is `for all to authenticated`. Gating
+     this to admins would mean an agent who logs their own call twice has to
+     ask someone else to tidy it.
+
+     Arm first, delete second, disarm after four seconds — the same shape as
+     the task delete, because this one is also immediate and has no undo. */
+  const [armDel, setArmDel] = useState(null);
+  const [deleting, setDeleting] = useState("");
+  const [delErr, setDelErr] = useState("");
+  useEffect(() => { if (!armDel) return; const h = setTimeout(() => setArmDel(null), 4000); return () => clearTimeout(h); }, [armDel]);
+  const removeTouch = async (t) => {
+    if (deleting) return;                  // one in flight is enough
+    setArmDel(null); setDeleting(t.id); setDelErr("");
+    // Optimistic: the row goes now, and comes back if the delete failed.
+    setTouches((prev) => (prev || []).filter((x) => x.id !== t.id));
+    const okd = await deleteTouch(t.id);
+    setDeleting("");
+    if (!okd) { setDelErr("Could not delete that entry — nothing was removed. Check the connection and try again."); reload(); }
+  };
+
   // ── email intake: two boxes. WHAT to fetch (a plain-language brief) and
   //    WHICH mailbox has the access (sales@elecbits.in, comma for several).
   //    The AI reads the mailbox and keeps only what the brief describes. ──
@@ -7673,6 +7701,7 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
       {(touches || []).length > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl p-5">
           <SectionTitle>Every touch, newest first</SectionTitle>
+          {delErr && <p className="text-xs text-red-600 mb-2 flex items-center gap-1.5"><AlertCircle size={13} /> {delErr}</p>}
           <div className="relative">
             <div className="absolute left-[15px] top-2 bottom-2 w-px bg-slate-200" />
             <div className="space-y-4">
@@ -7693,7 +7722,32 @@ function CommsTab({ me, company: c, data, saveTasks, saveCompanies, saveDeals })
                         <span className="text-sm font-semibold text-slate-900 mr-auto">{t.subject || w.title || (kd ? kd[1] : "Touch")}</span>
                         {w.temperature && <Chip color={w.temperature === "hot" ? "red" : w.temperature === "cold" ? "blue" : "amber"}>{w.temperature}</Chip>}
                         <span className="text-[11px] font-mono text-slate-400 flex-none">{fmtDate(t.at)} · {fmtTime(t.at)}</span>
+                        {armDel === t.id
+                          ? <span className="flex items-center gap-1.5 flex-none">
+                              <Btn size="sm" kind="danger" className="" title="Delete this log entry permanently"
+                                disabled={deleting === t.id} onClick={() => removeTouch(t)}>
+                                {deleting === t.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />} Delete
+                              </Btn>
+                              <button onClick={() => setArmDel(null)} className="text-[11px] text-slate-400 hover:underline">cancel</button>
+                            </span>
+                          : <button onClick={() => { setArmDel(t.id); setDelErr(""); }} title="Delete this log entry"
+                              className="text-slate-300 hover:text-red-600 flex-none"><Trash2 size={13} /></button>}
                       </div>
+                      {/* Armed. Say what survives BEFORE it is gone — the
+                          tasks and promises raised from a write-up are
+                          separate records somebody may already be working,
+                          and finding that out afterwards is the bad way. */}
+                      {armDel === t.id && (() => {
+                        const left = (commits || []).filter((x) => x.activityId === t.id).length;
+                        return (
+                          <p className="text-[11px] text-red-700 mt-1 leading-relaxed">
+                            Deletes this entry and its write-up, for everyone, with no undo.
+                            {left > 0
+                              ? " The " + left + " promise" + (left === 1 ? "" : "s") + " raised from it stay, as do any tasks"
+                              : " Any tasks raised from it stay"} — remove those from My Tasks if they are duplicates too.
+                          </p>
+                        );
+                      })()}
                       <p className="text-[11px] text-slate-400 mt-0.5">
                         {inbound ? "they came to us" : "we reached out"}
                         {by ? " · " + by.name : ""}{t.contactName ? (inbound ? " ← " : " → ") + t.contactName : ""}
