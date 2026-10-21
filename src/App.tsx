@@ -5711,13 +5711,32 @@ function DailyScrumView({ me, data, saveScrums, saveTasks }) {
   return <DailyScrumInner me={me} data={data} saveScrums={saveScrums} scrumToTasks={scrumToTasks} />;
 }
 
+/* THE PREVIEW IS NOT A SAVE — and losing it used to cost the whole note.
+
+   `organise()` writes nothing. It calls the model, builds a preview, and
+   the note exists only once somebody presses Save. Meanwhile the box was
+   emptied the instant the AI answered, and `<main>` is keyed on the tab,
+   so this whole view remounts when you leave it. Organise the scrum,
+   glance at Pipeline, come back: the typing and the AI's work are both
+   gone and nothing was ever stored. That is how minutes disappear.
+
+   So the draft outlives the mount. localStorage, because it is one
+   person's unsaved work on one browser and belongs nowhere else; read and
+   written inside try/catch because a private window throws on access
+   rather than returning null. */
+const SCRUM_DRAFT_KEY = "sales:scrum-draft";
+const readScrumDraft = () => {
+  try { return JSON.parse(localStorage.getItem(SCRUM_DRAFT_KEY) || "null") || {}; } catch (e) { return {}; }
+};
+
 function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
   const { users, scrums } = data;
   const [date, setDate] = useState(todayStr());
-  const [raw, setRaw] = useState("");
+  const [raw, setRaw] = useState(() => readScrumDraft().raw || "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [pending, setPending] = useState(null); // AI-organised note awaiting review
+  // AI-organised note awaiting review — restored if one was left behind.
+  const [pending, setPending] = useState(() => readScrumDraft().pending || null);
   const [mode, setMode] = useState("write");    // write | transcript
   const [link, setLink] = useState(() => (scrums.find((s) => s.link) || {}).link || "");
   const [present, setPresent] = useState({});   // personId -> true
@@ -5747,6 +5766,17 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
     absent: users.filter((u) => u.active !== false && !present[u.id]).map((u) => u.id),
     guests, markedBy: me.id, markedAt: nowTS(),
   });
+  // Keep the draft in step with the box and the preview. Removed outright
+  // once there is nothing unsaved, so a stale draft cannot reappear days
+  // later over an empty form.
+  useEffect(() => {
+    try {
+      if (pending || raw.trim()) localStorage.setItem(SCRUM_DRAFT_KEY, JSON.stringify({ raw, pending }));
+      else localStorage.removeItem(SCRUM_DRAFT_KEY);
+    } catch (e) { /* private window or quota — the draft is a convenience, not the record */ }
+  }, [raw, pending]);
+  const clearDraft = () => { try { localStorage.removeItem(SCRUM_DRAFT_KEY); } catch (e) {} };
+
   const setPendingTask = (i, patch) => setPending({ ...pending, tasks: pending.tasks.map((t, j) => (j === i ? { ...t, ...patch } : t)) });
   const savePending = (withTasks) => {
     // Unticked rows never become tasks and are not kept on the note — the
@@ -5758,7 +5788,9 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
     const note = { ...pending, tasks: kept, noteNo: sameDay.length + 1, time: nowHM() };
     note.tasked = withTasks ? scrumToTasks(note) > 0 : false;
     saveScrums([note, ...scrums]);
-    setPending(null); setFromMeetings([]); setTr(""); setTrUrl("");
+    // Now, and only now, is it safe to empty the box: the note is in the
+    // list and on its way to the database.
+    setPending(null); setRaw(""); setFromMeetings([]); setTr(""); setTrUrl(""); clearDraft();
   };
   const speech = useSpeech((t) => setRaw((p) => (p ? p + " " : "") + t));
 
@@ -5836,9 +5868,11 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         transcript: mode === "transcript" ? norm.text : "",
         transcriptUrl: mode === "transcript" ? trUrl : "",
       };
-      // The PMS preview: adjust assignee + time windows before anything saves.
+      /* The PMS preview: adjust assignee + time windows before anything
+         saves. The box is deliberately NOT cleared here — nothing has been
+         stored yet, and emptying it now is what turned a discarded preview
+         into a lost scrum. savePending() clears it. */
       setPending(note);
-      setRaw("");
     } catch (e) {
       // The AI is unreachable. The person has just typed the day's plan —
       // failing the save loses it. Parse it crudely instead, flag the preview
@@ -5862,7 +5896,8 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         transcriptUrl: mode === "transcript" ? trUrl : "",
       });
       setErr("AI unreachable — this is an offline parse. Check every row before saving.");
-      setRaw("");
+      // Same reasoning as the success path, and more so: the AI just failed,
+      // so what they typed is the only good copy of it.
     }
     setBusy(false);
   };
@@ -5871,7 +5906,7 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
     const text = mode === "transcript" ? norm.text : raw.trim();
     if (!text) return;
     saveScrums([{ id: uid(), userId: me.id, date, raw: text, tasks: [], summary: "", createdAt: nowTS() }, ...scrums]);
-    setRaw("");
+    setRaw(""); setTr(""); setTrUrl(""); clearDraft();
   };
   const remove = (id) => { deleteScrum(id); saveScrums(scrums.filter((s) => s.id !== id)); };
 
@@ -5991,6 +6026,18 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
 
         {pending && (
           <div className="mt-4 border-t border-dashed border-slate-200 pt-4">
+            {/* Said plainly, because it was being missed: organising is not
+                saving, and the note does not exist until a button below is
+                pressed. The preview looked finished, so people left. */}
+            <p className="text-[11px] font-semibold text-amber-700 mb-2 flex items-center gap-1.5">
+              <AlertTriangle size={12} /> Not saved yet — review it, then press Save at the bottom.
+              {/* A draft restored from another day saves under THAT day and
+                  will not appear in the list below, which is exactly the
+                  "where did my note go" this banner exists to prevent. */}
+              {pending.date && pending.date !== date && (
+                <span className="font-normal">This one is for {fmtDate(pending.date)}, not the day you are looking at.</span>
+              )}
+            </p>
             <p className="text-xs mb-2">
               {pending.engine === "offline"
                 ? <Chip color="amber"><AlertTriangle size={10} /> Offline parse — review carefully</Chip>
@@ -6061,7 +6108,10 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
               <Btn onClick={() => savePending(false)}>Save note only</Btn>
               <Btn kind="primary" disabled={pending.tasks.filter((t) => t.include !== false).length === 0}
                 onClick={() => savePending(true)}><ListTodo size={14} /> Save note + create {pending.tasks.filter((t) => t.include !== false).length} task{pending.tasks.filter((t) => t.include !== false).length === 1 ? "" : "s"}</Btn>
-              <Btn kind="ghost" onClick={() => setPending(null)}>Discard</Btn>
+              {/* Drops the AI's version only. What was typed stays in the
+                  box above, so "discard" never means "lose the scrum". */}
+              <Btn kind="ghost" title="Throw away the AI's version — your text stays in the box"
+                onClick={() => setPending(null)}>Discard the preview</Btn>
             </div>
           </div>
         )}
