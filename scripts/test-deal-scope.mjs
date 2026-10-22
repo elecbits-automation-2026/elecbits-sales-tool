@@ -10,7 +10,7 @@
 // is that case.
 
 import { belongsToDeal, dealContact, nextStepState, soleDealId, liveDeals,
-         dealPeople, onDeal, onDealAny } from "../src/lib/scope.ts";
+         dealPeople, onDeal, onDealAny, matchDeal } from "../src/lib/scope.ts";
 
 let pass = 0, fail = 0;
 const results = [];
@@ -281,6 +281,61 @@ const both = [dpb, ups, dead, solo];
   check("an empty scope matches nothing", !onDealAny(shared, []), shared);
   check("an unassigned deal is in nobody's scope — it is surfaced another way",
     !onDealAny(orphan, [SAURAV, GARVIT, SHREYA]), orphan);
+}
+
+/* ─── WHICH PROJECT DID THEY MEAN? ─────────────────────────────────────────
+   The reported case, verbatim: somebody dictated "for the hmi project with
+   Schneider Electric I want Garvit to check with Vinay sir if the quotes
+   are ready". The organiser resolved the client and nothing else, so the
+   task was filed company-wide — and Schneider has several live projects,
+   so belongsToDeal matched none of them and the task appeared in no deal
+   room at all. Named as plainly as a human can name a thing, and lost.   */
+{
+  const SE = "org-se";
+  const hmi    = { id: "d-hmi",   companyId: SE, did: "EB-D-0031", product: "HMI panel" };
+  const ipc    = { id: "d-ipc",   companyId: SE, did: "EB-D-0032", product: "Industrial PC" };
+  const dongle = { id: "d-dong",  companyId: SE, did: "EB-D-0013", product: "UPS Wifi Dongle" };
+  const won    = { id: "d-won",   companyId: SE, did: "EB-D-0001", product: "HMI panel", stage: "po" };
+  const se = [hmi, ipc, dongle, won];
+
+  check("the reported sentence now finds the HMI project",
+    matchDeal("for the hmi project with Schneider Electric I want Garvit to check with Vinay sir if the quotes are ready", se, SE) === hmi,
+    (matchDeal("for the hmi project with Schneider Electric", se, SE) || {}).id);
+  check("a deal code said outright wins",
+    matchDeal("chase EB-D-0013 for the quote", se, SE) === dongle,
+    (matchDeal("chase EB-D-0013", se, SE) || {}).id);
+  check("the whole product name matches",
+    matchDeal("send the Industrial PC specs over", se, SE) === ipc,
+    (matchDeal("send the Industrial PC specs over", se, SE) || {}).id);
+  check("one distinctive word is enough — 'the dongle'",
+    matchDeal("ping them about the dongle", se, SE) === dongle,
+    (matchDeal("ping them about the dongle", se, SE) || {}).id);
+
+  /* The ones that MUST return null. A wrong project is worse than none:
+     company-wide is visibly unfiled and the UI asks, whereas a confident
+     wrong answer files the work under somebody else's product. */
+  check("a sentence naming no project stays unfiled",
+    matchDeal("call Schneider about the renewal", se, SE) === null,
+    (matchDeal("call Schneider about the renewal", se, SE) || {}).id);
+  check("'project' alone identifies nothing",
+    matchDeal("follow up on the project", se, SE) === null,
+    (matchDeal("follow up on the project", se, SE) || {}).id);
+  check("a word two live projects share does not pick a winner",
+    matchDeal("the UPS thing", [hmi, dongle, { id: "d-ups2", companyId: SE, product: "UPS Controller" }], SE) === null,
+    "tie → null");
+
+  // A company with exactly one live project needs no naming at all.
+  check("one live project → that one, whatever the text says",
+    matchDeal("do the thing", [hmi, won], SE) === hmi, "sole live");
+  check("a WON project is not a candidate",
+    matchDeal("hmi panel", [won, ipc], SE) === ipc || matchDeal("hmi panel", [won, ipc], SE) === null,
+    (matchDeal("hmi panel", [won, ipc], SE) || {}).id);
+
+  check("no company → nothing to match against", matchDeal("hmi", se, "") === null, "none");
+  check("a company with no deals → null", matchDeal("hmi", se, "org-other") === null, "none");
+  check("empty text on a multi-project client → null, not a guess",
+    matchDeal("", se, SE) === null, "none");
+  check("no deals list → no crash", matchDeal("hmi", null, SE) === null, "none");
 }
 
 for (const [state, name, got] of results) {

@@ -22,7 +22,7 @@ import {
   loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact, schemaGaps,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
-import { belongsToDeal, soleDealId, dealContact, contactLine, nextStepState, onDeal, onDealAny, dealPeople } from "./lib/scope";
+import { belongsToDeal, soleDealId, matchDeal, dealContact, contactLine, nextStepState, onDeal, onDealAny, dealPeople } from "./lib/scope";
 import { searchBrain, brainContext, brainStatus, brainLearn, brainFolders, setBrainFolder } from "./lib/brain";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
@@ -5744,7 +5744,15 @@ function DailyScrumView({ me, data, saveScrums, saveTasks }) {
         || users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
       const win = t.start || t.end ? { start: t.start || "", end: t.end || "" } : parseWin(t.window);
       return {
-        id: uid(), companyId: t.companyId || "", dealId: "",
+        id: uid(), companyId: t.companyId || "",
+        /* THE BUG THIS LINE WAS. It read `dealId: ""`, unconditionally, so
+           every task a scrum ever raised was company-level — even when the
+           note said "for the HMI project with Schneider Electric" and the
+           preview had the project on screen. On a client with one live
+           project the lone-deal fallback hid it; on a client with several,
+           belongsToDeal matches none of them and the task appears in no
+           deal room at all. The work was filed where nobody looks. */
+        dealId: t.dealId || soleDealId(t.companyId, data.deals),
         assignee: owner ? owner.id : s.userId, author: me.id,
         title: t.task,
         details: "",
@@ -5864,13 +5872,21 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
       "You organise a typed/spoken daily sales scrum at Elecbits into clear, assigned, time-boxed tasks. Extract EVERY actionable item — a scrum line with no task extracted is a failure.",
       "TEAM ROSTER (match owners to these people; default owner = the note's author): " + users.filter((u) => u.active !== false).map((u) => u.name).join(", "),
       "COMPANIES with their account owners (match any client mentioned, even loosely — 'Sunrise Company' means 'Sunrise Retail Tech'): " + companies.map((c) => { const o = users.find((u) => u.id === c.accountOwner); return c.name + (o ? " (owner: " + o.name + ")" : ""); }).join(", "),
+      /* A client can have several live projects at once, and a task on the
+         wrong one is as bad as a task on the wrong client. "for the HMI
+         project with Schneider" names it outright — so ask for it. */
+      "LIVE PROJECTS per client — when the note names one, put its exact product text in \"project\"; leave \"project\" empty only when the work genuinely spans the whole account:\n"
+        + companies.map((c) => {
+            const live = (data.deals || []).filter((x) => x.companyId === c.id && !x.lost && x.stage !== "po");
+            return live.length ? "  " + c.name + ": " + live.map((x) => (dealProduct(x) || x.did)).join(" | ") : "";
+          }).filter(Boolean).join("\n"),
       "ROLE REFERENCES: 'the account owner' / 'the owner' of a company means that company's owner from the list above — put their actual roster NAME in owner, never the phrase.",
       "TIME WINDOWS: normalise everything to 24h HH:MM. 'by 2pm' / 'before 2' → end 14:00 with empty start. '12 to 1pm' → 12:00–13:00. 'today' with no time → empty window.",
       "WHEN — resolve the day and put it in \"date\" as YYYY-MM-DD. 'today' or no day mentioned = " + date + "; 'tomorrow' = the day after " + date + "; a weekday name = the next such day on or after " + date + ". A note written today can raise work for tomorrow, and the task must land on the day the work is FOR — never on the day the note was written.",
       "STEPS — where the note spells out how something is to be done, break it into short imperative steps. Omit steps entirely for a one-action task; do not pad.",
       "CONDITIONS — capture every if/else contingency as a STRUCTURED row: what the condition is, what to do when it holds, and a timebox in minutes when one is stated ('in an hour' = 60, 'within 30 mins' = 30). Do not bury a contingency in the task text.",
       "Keep task text short and action-first ('Send Sunrise Retail the pilot quote'). Preserve IDs, part numbers and figures verbatim.",
-      "Reply with ONLY one line: SCRUM_JSON {\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name from the list or empty\",\"date\":\"YYYY-MM-DD\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"steps\":[\"\"],\"conditions\":[{\"if\":\"\",\"then\":\"\",\"timeboxMinutes\":60}]}],\"summary\":\"one-line summary\"}",
+      "Reply with ONLY one line: SCRUM_JSON {\"tasks\":[{\"owner\":\"roster name or empty\",\"task\":\"...\",\"company\":\"exact company name from the list or empty\",\"project\":\"exact project text from the list or empty\",\"date\":\"YYYY-MM-DD\",\"start\":\"HH:MM or empty\",\"end\":\"HH:MM or empty\",\"steps\":[\"\"],\"conditions\":[{\"if\":\"\",\"then\":\"\",\"timeboxMinutes\":60}]}],\"summary\":\"one-line summary\"}",
       "Valid JSON. No markdown.",
     ].join("\n");
     try {
@@ -5885,6 +5901,12 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         tasks: (Array.isArray(parsed.tasks) ? parsed.tasks : []).map((t) => {
           const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
           const comp = matchCompany(t.company, companies) || matchCompany(t.task, companies);
+          /* WHICH PROJECT. What the model named, else what the task text
+             says, else the client's only live one. Left empty when a
+             multi-project client is genuinely ambiguous — the preview then
+             asks rather than filing it somewhere plausible and wrong. */
+          const dl = comp ? (matchDeal(t.project, data.deals, comp.id)
+                          || matchDeal(t.task, data.deals, comp.id)) : null;
           // "the account owner" without a name resolves to the matched
           // company's owner — never to the note's author by accident.
           const compOwner = comp && !owner && /owner/i.test(String(t.owner || "") + " " + String(t.task || ""))
@@ -5892,7 +5914,8 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
           const win = t.start || t.end ? { start: t.start || "", end: t.end || "" } : parseWin(t.window);
           const assigneeId = owner ? owner.id : (compOwner ? compOwner.id : me.id);
           return {
-            ...t, assigneeId, companyId: comp ? comp.id : "", start: win.start, end: win.end,
+            ...t, assigneeId, companyId: comp ? comp.id : "", dealId: dl ? dl.id : "",
+            start: win.start, end: win.end,
             // Every row starts included and can be unticked. Deleting was the
             // only way to drop one before, which is destructive and has no undo.
             include: true,
@@ -5909,7 +5932,15 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
               : (t.condition ? [{ if: String(t.condition), then: "follow the contingency as written", timeboxMinutes: null }] : []),
             // Assigning work on an account to someone who does not own it is
             // usually a mis-read of "the account owner" — say so before saving.
-            offAccount: !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner),
+            /* "Is this really who you meant?" — asked against the PROJECT
+               when we know it, because that is who works it. Garvit being
+               second on the HMI project makes him a perfectly ordinary
+               person to give HMI work to, even though he does not own the
+               Schneider account. Only fall back to the account owner when
+               no project was resolved. */
+            offAccount: dl
+              ? !!(dealPeople(dl).length && !onDeal(dl, assigneeId))
+              : !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner),
           };
         }),
         summary: parsed.summary || "", createdAt: nowTS(),
@@ -5937,9 +5968,14 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
         tasks: fb.tasks.map((t) => {
           const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
           const comp = matchCompany(t.company, companies) || matchCompany(t.task, companies);
+          // No model to name the project, so the task text is all there is —
+          // which still catches "the HMI project" and the lone-deal case.
+          const dl = comp ? matchDeal(t.task, data.deals, comp.id) : null;
           const assigneeId = owner ? owner.id : me.id;
-          return { ...t, assigneeId, companyId: comp ? comp.id : "", include: true,
-                   offAccount: !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner) };
+          return { ...t, assigneeId, companyId: comp ? comp.id : "", dealId: dl ? dl.id : "", include: true,
+                   offAccount: dl
+                     ? !!(dealPeople(dl).length && !onDeal(dl, assigneeId))
+                     : !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner) };
         }),
         summary: fb.summary, createdAt: nowTS(),
         blockers: [], decisions: [], ignored: "",
@@ -6119,10 +6155,29 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
                       <Sel className="w-40" value={t.assigneeId} onChange={(e) => setPendingTask(i, { assigneeId: e.target.value })}>
                         {users.filter((u) => u.active !== false).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                       </Sel>
-                      <Sel className="w-44" value={t.companyId || ""} onChange={(e) => setPendingTask(i, { companyId: e.target.value })}>
+                      {/* Changing the client invalidates the project: the
+                          old one belongs to somebody else now. */}
+                      <Sel className="w-44" value={t.companyId || ""} onChange={(e) => setPendingTask(i, { companyId: e.target.value, dealId: "" })}>
                         <option value="">— no company —</option>
                         {data.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </Sel>
+                      {/* WHICH PROJECT. A task filed on a client with
+                          several live projects and no project named reaches
+                          none of their deal rooms — it is not "filed
+                          loosely", it is filed where nobody looks. So the
+                          picker is here, defaulted to what the note said. */}
+                      {(() => {
+                        const live = (data.deals || []).filter((x) => x.companyId === t.companyId && !x.lost && x.stage !== "po");
+                        if (!t.companyId || !live.length) return null;
+                        return (
+                          <Sel className={cls("w-48", live.length > 1 && !t.dealId && "border-amber-400")}
+                            value={t.dealId || ""} title="Which project this task belongs to"
+                            onChange={(e) => setPendingTask(i, { dealId: e.target.value })}>
+                            <option value="">{live.length > 1 ? "— pick a project —" : "— company-wide —"}</option>
+                            {live.map((x) => <option key={x.id} value={x.id}>{dealProduct(x) || x.did}</option>)}
+                          </Sel>
+                        );
+                      })()}
                       {/* The day the work is FOR. A note written today can
                           raise work for tomorrow, and that has to be visible
                           and correctable before it is saved. */}
@@ -6134,11 +6189,27 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
                       <button onClick={() => setPending({ ...pending, tasks: pending.tasks.filter((_, j) => j !== i) })}
                         className="text-slate-300 hover:text-red-500 ml-auto" title="Remove this row"><Trash2 size={13} /></button>
                     </div>
+                    {/* Said before saving, because afterwards the task is
+                        simply missing from every deal room and nothing
+                        explains why. */}
+                    {(() => {
+                      const live = (data.deals || []).filter((x) => x.companyId === t.companyId && !x.lost && x.stage !== "po");
+                      if (!t.companyId || t.dealId || live.length < 2) return null;
+                      return (
+                        <p className="mt-1.5 text-[11px] text-amber-700 flex items-start gap-1.5">
+                          <AlertTriangle size={11} className="mt-0.5 flex-none" />
+                          <span>{(data.companies.find((c) => c.id === t.companyId) || {}).name} has {live.length} live projects and none is picked — this task will sit on the account and show in none of their deal rooms. Pick one unless it really spans all of them.</span>
+                        </p>
+                      );
+                    })()}
                     {t.offAccount && (
                       <p className="mt-1.5 text-[11px] text-amber-600 flex items-center gap-1.5">
                         <AlertTriangle size={11} />
-                        {(users.find((u) => u.id === t.assigneeId) || {}).name || "That person"} does not own{" "}
-                        {(data.companies.find((c) => c.id === t.companyId) || {}).name || "this account"} — check this is who you meant.
+                        {(users.find((u) => u.id === t.assigneeId) || {}).name || "That person"} is not on{" "}
+                        {t.dealId
+                          ? (dealProduct((data.deals || []).find((x) => x.id === t.dealId)) || "that project")
+                          : ((data.companies.find((c) => c.id === t.companyId) || {}).name || "this account")}
+                        {" "}— check this is who you meant.
                       </p>
                     )}
                     {t.date && t.date !== date && (
