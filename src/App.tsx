@@ -3795,6 +3795,23 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   const subsOf = (id) => dealOpen.filter((t) => t.branchedFrom === id);
   const roots = dealOpen.filter((t) => !t.branchedFrom || !openIds.has(t.branchedFrom)).slice(0, 8);
   const dealTasks = roots.flatMap((r) => [r, ...subsOf(r.id)]);
+  /* WHAT WAS DONE, kept rather than vanished. A finished task used to drop
+     out of this list entirely, which left a deal looking like nothing had
+     happened on it — the one question a deal room exists to answer. They
+     now sit struck through at the bottom, newest first, so the list reads
+     as "what is owed" above and "what has been done" below.
+
+     Flat, not nested: a completed sub-task under a completed parent adds a
+     layer of indentation to tell you nothing. Newest first because the
+     useful end of a history is the recent end.
+
+     Capped at 30. This is a record, not an archive — the full history of a
+     task lives on the task — and an unbounded list behind a scrollbar is
+     still a page that takes a second to render on a long-running deal. */
+  const dealDone = tasks
+    .filter((t) => t.status === "done" && belongsToDeal(t, d, deals))
+    .sort((a, b) => String(b.doneAt || b.due || "").localeCompare(String(a.doneAt || a.due || "")))
+    .slice(0, 30);
   // Company-level tasks that reach no deal room because this client runs
   // more than one project. Empty by definition on a single-project client:
   // there, belongsToDeal already shows them in the list above.
@@ -3942,7 +3959,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
             ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="flex items-center gap-2">
-                <Lbl>Tasks on this deal{dealTasks.length ? " · " + dealTasks.length : ""}</Lbl>
+                {/* The headline number is what is OWED. Done is counted
+                    beside it, not added into it — "4 tasks" meaning one
+                    open and three finished is how a deal looks busy and
+                    reads as stalled. */}
+                <Lbl>Tasks on this deal{dealTasks.length ? " · " + dealTasks.length : ""}
+                  {dealDone.length ? <span className="font-normal text-slate-400"> · {dealDone.length} done</span> : null}</Lbl>
                 {/* Committed is not a thing beside the list, it is a verdict
                     ABOUT the list — so it is a chip on the list's own header. */}
                 {ns.key !== "closed" && (
@@ -3987,7 +4009,12 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 sentence. It is now a badge on the task that IS the step —
                 see taskRow — so there is nothing left to disagree with. */}
             {realignNote && <p className="text-[10.5px] text-slate-500 mt-1">{realignNote}</p>}
-            <div className="mt-2.5 pt-2.5 border-t border-slate-200/70 space-y-1">
+            {/* BOUNDED, NOT FREE-FALL. Once finished tasks stay on the list
+                a long-running deal would push everything under it off the
+                screen, so the list gets its own scrollbar and the rest of
+                the room keeps its position. The height is a max, so a deal
+                with three tasks is still three tasks tall. */}
+            <div className="mt-2.5 pt-2.5 border-t border-slate-200/70 space-y-1 max-h-96 overflow-y-auto pr-1">
               {roots.map((r) => (
                 <React.Fragment key={r.id}>
                   {taskRow(r, 0)}
@@ -4005,7 +4032,34 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                   )}
                 </React.Fragment>
               ))}
-              {!dealTasks.length && <p className="text-xs text-slate-400">No tasks yet — add what you actually plan to do, and break any of them into sub-tasks with the +. “Suggest tasks” is there if you want the AI's view.</p>}
+              {!dealTasks.length && !dealDone.length && <p className="text-xs text-slate-400">No tasks yet — add what you actually plan to do, and break any of them into sub-tasks with the +. “Suggest tasks” is there if you want the AI's view.</p>}
+              {!dealTasks.length && dealDone.length > 0 && <p className="text-xs text-amber-800">Nothing owed right now — everything below is done. Add the next one.</p>}
+
+              {/* DONE — the history, not a to-do list. Struck through and
+                  dimmed so it never reads as outstanding, and no pickers:
+                  reassigning or re-dating something already finished is not
+                  a thing anyone means to do from here. Reopening lives in
+                  My Tasks, where the evidence is. */}
+              {dealDone.length > 0 && (
+                <div className="pt-2 mt-1 border-t border-dashed border-slate-200">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1">
+                    Done · {dealDone.length}{dealDone.length === 30 ? " most recent" : ""}
+                  </p>
+                  {dealDone.map((t) => {
+                    const who = users.find((u) => u.id === t.assignee);
+                    return (
+                      <div key={t.id} className="flex items-center gap-2 py-0.5 opacity-60">
+                        <Check size={11} className="text-green-600 flex-none" />
+                        <span className="text-[12px] text-slate-500 line-through leading-snug mr-auto">{t.title}</span>
+                        {who && <span className="text-[10px] text-slate-400 flex-none">{who.name.split(" ")[0]}</span>}
+                        <span className="text-[10px] font-mono text-slate-400 flex-none w-[7.2rem] text-right">
+                          {t.doneAt ? fmtDate(t.doneAt) : t.due ? fmtDate(t.due) : ""}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               {/* STRANDED WORK. Tasks raised against the company with no
                   project on them. On a client with one live deal they
@@ -4040,7 +4094,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                 scope={{ companyId: d.companyId, dealId: d.id, ownerId: d.ownerId }} onSubmit={addTask} />
 
               <p className="text-[10.5px] text-slate-400 pt-1">
-                Completed — and removed — from <b>My Tasks</b>: that is where the evidence is checked, and this list updates itself.
+                Completed in <b>My Tasks</b> — that is where the evidence is checked. A finished task moves to the Done list above rather than disappearing, so this room still shows what has actually happened on the deal.
               </p>
             </div>
           </div>
