@@ -53,6 +53,72 @@ export const soleDealId = (companyId: string | undefined,
   return live.length === 1 ? live[0].id : "";
 };
 
+/* ─── WHICH PROJECT DID THEY MEAN? ─────────────────────────────────────────
+   soleDealId answers "is there only one it could be?". This answers the
+   harder half: somebody SAID which one, in prose, and we have to find it.
+
+   "for the hmi project with Schneider Electric" names a project as plainly
+   as a human could. Until this existed the scrum organiser could only
+   resolve the company, so the task was filed company-wide — and on a client
+   with several live projects, company-wide means it appears in none of
+   their deal rooms. The one place it was needed was the one place it went
+   missing.
+
+   Matched in descending order of how certain each signal is:
+     1. the deal CODE, said outright (EB-D-0013)
+     2. the product name, whole
+     3. distinctive WORDS of the product — "the dongle", "hmi", "ipc".
+        Scored, because "UPS Wifi Dongle" and "UPS Controller" share a word
+        and the winner has to be the one that shares more.
+
+   A tie returns null, and that is the point rather than a shortfall: two
+   projects equally named is not something to guess at. The caller leaves
+   the task company-wide and the UI asks.                                  */
+
+const normWords = (s: unknown): string[] =>
+  String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
+
+// Words that identify no project: every deal is a "project" for a "client".
+const VAGUE = new Set(["project", "deal", "the", "and", "for", "with", "our", "new",
+  "client", "customer", "account", "work", "job", "phase", "stage", "poc", "pilot"]);
+
+/* A real deal row, as the app holds it: the identity fields, the two people
+   on it, and the names a human would use for it. Separate aliases describe
+   separate QUESTIONS — belongsToDeal needs none of this — but the object
+   answering them is one object, and typing it as less than it is means
+   every caller that asks two questions of the same deal has to cast. */
+export type Named = DealLike & Owned & { did?: string; product?: string };
+
+export function matchDeal(text: unknown, deals: Named[] | null | undefined,
+                          companyId: string | undefined): Named | null {
+  const live = liveDeals(companyId, deals || []) as Named[];
+  if (!live.length) return null;
+  if (live.length === 1) return live[0];
+
+  const words = normWords(text);
+  if (!words.length) return null;
+  const hay = " " + words.join(" ") + " ";
+
+  // 1. the code, said outright. Unambiguous by construction.
+  const byCode = live.find((d) => d.did && hay.includes(" " + normWords(d.did).join(" ") + " "));
+  if (byCode) return byCode;
+
+  // 2 & 3. score on product words. A whole-name hit outranks word hits
+  //        because it cannot be a coincidence of one shared term.
+  let best: Named | null = null, bestScore = 0, tied = false;
+  for (const d of live) {
+    const pWords = normWords(d.product).filter((w) => w.length > 1 && !VAGUE.has(w));
+    if (!pWords.length) continue;
+    const whole = normWords(d.product).join(" ");
+    let score = whole && hay.includes(" " + whole + " ") ? 100 + pWords.length : 0;
+    if (!score) score = pWords.filter((w) => hay.includes(" " + w + " ")).length;
+    if (!score) continue;
+    if (score > bestScore) { best = d; bestScore = score; tied = false; }
+    else if (score === bestScore) tied = true;
+  }
+  return tied ? null : best;
+}
+
 /* ─── WHOSE DEAL IS THIS? ──────────────────────────────────────────────────
    A deal carries two people: a PRIMARY, who brought it in and is answerable
    for it, and an optional SECONDARY, who is also working it.
