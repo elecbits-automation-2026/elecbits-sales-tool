@@ -9672,6 +9672,29 @@ function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies
   ];
 
   const toggle = (t) => saveTasks(tasks.map((x) => x.id === t.id ? { ...x, status: "open", doneAt: null } : x));
+
+  /* ── CLOSING A TASK WITHOUT THE INTERVIEW ───────────────────────────────
+     The normal way out is TaskCloseFlow: it fetches an AI brief, asks every
+     question on it, can demand a file in Drive, and then grades the answer.
+     That is right for the person who did the work — it is how the evidence
+     gets captured — and wrong for an admin going down a list of other
+     people's overdue items deciding which ones are simply finished.
+
+     So: admins get one click. No brief, no questions, no evidence, no
+     Start first.
+
+     It is honest about itself rather than pretending the gate was passed.
+     The row records WHO waved it through, and the list says "closed by
+     admin" where a properly closed task says "gate 8/10" — so the two are
+     never mistaken for each other in a report or a week's time.
+
+     No confirm step, deliberately: the user asked for fewer questions, and
+     unlike deleting this is reversible — the green tick reopens it. */
+  const fastDone = (t) => saveTasks(tasks.map((x) => (x.id !== t.id ? x : {
+    ...x, status: "done", doneAt: nowTS(),
+    ai: { ...(x.ai || {}), verdict: "admin", closedBy: me.id, closedAt: nowTS(),
+          note: "Closed by an admin without the completion checks." },
+  })));
   // Deleting is explicit — the sync layer never prunes, so the DB row must go here.
   const remove = (t) => { deleteTask(t.id); saveTasks(tasks.filter((x) => x.id !== t.id)); };
 
@@ -9752,6 +9775,14 @@ function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies
               {t.status === "done" && A.score != null && <span className="text-green-600 font-mono">gate {A.score}/10</span>}
               {t.status === "done" && A.offline && <span className="text-amber-600">checked offline</span>}
               {t.status === "done" && A.verdict === "branched" && <span className="text-purple-600">branched</span>}
+              {/* Waved through rather than gated. Said plainly here so a
+                  closed task is never read as evidence that it was done. */}
+              {t.status === "done" && A.verdict === "admin" && (
+                <span className="text-slate-500" title={"Closed without the completion checks by "
+                  + ((users.find((u) => u.id === A.closedBy) || {}).name || "an admin")}>
+                  closed by admin{A.closedBy && A.closedBy !== t.assignee ? " (" + ((users.find((u) => u.id === A.closedBy) || {}).name || "?").split(" ")[0] + ")" : ""}
+                </span>
+              )}
             </p>
           </div>
           {mayAct && t.status === "open" && <Btn size="sm" kind="primary" onClick={() => startTask(t)}><Play size={12} /> Start</Btn>}
@@ -9759,6 +9790,14 @@ function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies
             <Btn size="sm" onClick={() => setWorking(t)}><FileText size={12} /> Work window</Btn>
             <Btn size="sm" kind="primary" onClick={() => setClosing(t)}><CheckCircle2 size={12} /> Complete Now</Btn>
           </>}
+          {/* The admin's way out. A quiet text link rather than a third
+              button: it must not compete with "Complete Now", which is
+              still the right route for whoever actually did the work. */}
+          {me.role === "admin" && t.status !== "done" && (
+            <button onClick={() => fastDone(t)}
+              title="Mark done now — skips the questions and the evidence check, and is recorded as closed by you"
+              className="text-[11px] text-slate-400 hover:text-green-700 hover:underline flex-none">mark done</button>
+          )}
           {!mayAct && <span className="text-[10px] uppercase tracking-wide text-slate-400 flex-none">view only</span>}
           {mayAct && (armDel === t.id
             ? <Btn size="sm" kind="danger" onClick={() => { setArmDel(null); remove(t); }}><Trash2 size={12} /> Sure — delete</Btn>
