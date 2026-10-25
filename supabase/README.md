@@ -84,6 +84,14 @@ commit? It is read-only, it names every object steps 23–32 create, and it
 marks each ✓ or ✗. A bundle that errored anywhere rolls back entirely, so
 "I ran it" and "it is there" are separate facts — this checks the second.
 
+**`SET-SALES-ROLE.sql`** sets one person's sales role by email, and prints
+the whole roster afterwards. Not a migration and not in the run order — it
+is the two clicks in **Admin → Users** written out so they can be pasted.
+Edit the two values at the top. It writes `sales.people_detail` directly
+rather than calling `sales.upsert_person`, because that RPC checks
+`is_sales_admin()` via `auth.uid()`, and in the SQL editor there is no
+authenticated user for it to find.
+
 ### Step 5 is a real trap
 
 `17-task-states.sql` appears in **no** `RUN-THIS-*` file. `phase2` bundles
