@@ -5893,12 +5893,44 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
       const isTr = mode === "transcript";
       const sys = isTr ? scrumTranscriptSystem(date, users, companies,
         Object.keys(present).filter((k) => present[k]).map((id) => (users.find((u) => u.id === id) || {}).name).filter(Boolean).join(", ")) : system;
-      const reply = await askClaude(sys, [{ role: "user", content: text }], { maxTokens: isTr ? 4000 : 1500 });
-      const parsed = extractMarkedJSON(reply, "SCRUM_JSON") || {};
+      /* 4000 either way. The typed path had 1500, which is not enough: a
+         rambling two-minute dictation yields several tasks, each carrying
+         steps[] and conditions[], and the reply runs past the limit. It is
+         then cut mid-JSON, JSON.parse throws, extractMarkedJSON returns
+         null — and the preview below shows "AI organised" over an empty
+         list, which reads exactly like "the AI found nothing in your note".
+         The same truncation bug cost a client write-up earlier. */
+      const reply = await askClaude(sys, [{ role: "user", content: text }], { maxTokens: 4000 });
+      let parsed = extractMarkedJSON(reply, "SCRUM_JSON");
+
+      /* ONE LEANER RETRY. Telling somebody to "try again" is useless advice
+         when the failure is deterministic — the same note and the same
+         prompt truncate at the same place every time. So the retry asks for
+         a SMALLER answer: who, what, when, and nothing else. Dropping
+         steps[] and conditions[] is most of the output on a note with
+         several tasks, and a task without its sub-steps beats no task. */
+      if (!parsed) {
+        try {
+          const lean = await askClaude(
+            sys + "\n\nYOUR LAST REPLY COULD NOT BE PARSED — it was almost certainly too long."
+              + " Answer again, MUCH shorter. Omit \"steps\" and \"conditions\" entirely."
+              + " Keep every task, but one line each: owner, task, company, project, date.",
+            [{ role: "user", content: text }], { maxTokens: 2000 });
+          parsed = extractMarkedJSON(lean, "SCRUM_JSON");
+        } catch (e2) { /* the banner below handles it */ }
+      }
+
+      /* UNREADABLE IS NOT EMPTY. A reply we could not parse and a note with
+         genuinely no tasks in it are different events with different
+         answers — retry one, save the other — and showing both as a blank
+         preview makes the tool look broken in one case and silently lossy
+         in the other. Carried onto the note so the banner can say which. */
+      const unreadable = !parsed;
+      const p = parsed || {};
       const note = {
         id: uid(), userId: me.id, date,
-        raw: mode === "transcript" ? (parsed.summary || "Read from the call transcript.") : text,
-        tasks: (Array.isArray(parsed.tasks) ? parsed.tasks : []).map((t) => {
+        raw: mode === "transcript" ? (p.summary || "Read from the call transcript.") : text,
+        tasks: (Array.isArray(p.tasks) ? p.tasks : []).map((t) => {
           const owner = users.find((u) => t.owner && u.name.toLowerCase().startsWith(String(t.owner).trim().toLowerCase().split(" ")[0]));
           const comp = matchCompany(t.company, companies) || matchCompany(t.task, companies);
           /* WHICH PROJECT. What the model named, else what the task text
@@ -5943,10 +5975,11 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
               : !!(comp && comp.accountOwner && assigneeId !== comp.accountOwner),
           };
         }),
-        summary: parsed.summary || "", createdAt: nowTS(),
-        blockers: Array.isArray(parsed.blockers) ? parsed.blockers : [],
-        decisions: Array.isArray(parsed.decisions) ? parsed.decisions : [],
-        ignored: parsed.ignored || "",
+        summary: p.summary || "", createdAt: nowTS(),
+        blockers: Array.isArray(p.blockers) ? p.blockers : [],
+        decisions: Array.isArray(p.decisions) ? p.decisions : [],
+        ignored: p.ignored || "",
+        engine: unreadable ? "unreadable" : "ai",
         link, attendance: attendanceObj(),
         source: mode === "transcript" ? "transcript" : "typed",
         origin: fromMeetings.length ? "meeting" : "manual", meetingIds: fromMeetings,
@@ -6131,8 +6164,28 @@ function DailyScrumInner({ me, data, saveScrums, scrumToTasks }) {
             <p className="text-xs mb-2">
               {pending.engine === "offline"
                 ? <Chip color="amber"><AlertTriangle size={10} /> Offline parse — review carefully</Chip>
+                : pending.engine === "unreadable"
+                ? <Chip color="red" className=""><AlertTriangle size={10} /> Could not read the AI's reply</Chip>
                 : <Chip color="purple">AI organised</Chip>}
               <span className="text-slate-500 italic ml-1">{pending.summary}</span></p>
+            {/* THE TWO BLANK PREVIEWS LOOK IDENTICAL AND ARE NOT. One is a
+                reply we could not parse — retry it. The other is a note the
+                AI read and found no task in — save it and move on. Leaving
+                both as an empty list under a confident chip is what made
+                this read as "the scrum note is not saving". */}
+            {pending.engine === "unreadable" && (
+              <p className="text-[11px] text-red-700 mb-2 leading-relaxed">
+                The reply came back malformed — usually too long and cut off — and a shorter second attempt failed too.
+                Nothing is lost: your note is still in the box above. <b>Save note only</b> files it as written, and the
+                tasks can be added by hand; splitting a very long dictation into two notes also tends to work.
+              </p>
+            )}
+            {pending.engine !== "unreadable" && !(pending.tasks || []).length && (
+              <p className="text-[11px] text-amber-800 mb-2 leading-relaxed">
+                No tasks were found in this note — nothing in it reads as work for a named person by a date.
+                <b> Save note only</b> files it as written.
+              </p>
+            )}
             {pending.ignored && <p className="text-[11px] text-slate-400 mb-2">Left out: {pending.ignored}</p>}
             {(pending.blockers || []).length > 0 && (
               <p className="text-[11px] text-red-600 mb-2">Blockers raised: {pending.blockers.map((b) => b.what + (b.who ? " (" + b.who + ")" : "")).join(" · ")}</p>
