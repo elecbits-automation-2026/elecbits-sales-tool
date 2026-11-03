@@ -10,7 +10,7 @@
 // is that case.
 
 import { belongsToDeal, dealContact, nextStepState, soleDealId, liveDeals,
-         dealPeople, onDeal, onDealAny, matchDeal } from "../src/lib/scope.ts";
+         dealPeople, onDeal, onDealAny, matchDeal, dealSignal } from "../src/lib/scope.ts";
 
 let pass = 0, fail = 0;
 const results = [];
@@ -336,6 +336,51 @@ const both = [dpb, ups, dead, solo];
   check("empty text on a multi-project client → null, not a guess",
     matchDeal("", se, SE) === null, "none");
   check("no deals list → no crash", matchDeal("hmi", null, SE) === null, "none");
+}
+
+/* ─── THE CARD AND THE ROOM MUST AGREE ─────────────────────────────────────
+   Reported: the Bestec card on the board was amber with the clock showing
+   5d, and the room behind it said "committed" in green — same deal, same
+   moment, two answers. The card's rule was
+   `ns.key === "none" || stale >= STALE_AMBER`, so a PHASE that had not
+   moved in five days outvoted three tasks assigned and due next week.
+
+   dealSignal is now the only rule, and it reads the commitment alone.
+   Staleness keeps its own clock on the card and its own banner at 8 days;
+   what it no longer does is overrule a promise that is being kept.      */
+{
+  const TODAY = "2026-11-03", SOON = "2026-11-05", PAST = "2026-10-20";
+  const deal = { id: "d-bestec", companyId: "org-bestec" };
+  const sig = (tasks, d) => dealSignal(d || deal, nextStepState(d || deal, tasks, [deal], TODAY));
+
+  // The reported deal: three assigned, due in two days, phase untouched for
+  // five. The number the old rule tripped on is not an input here at all.
+  const committed = [
+    { id: "a", dealId: "d-bestec", status: "open", assignee: "u-shreya", due: SOON },
+    { id: "b", dealId: "d-bestec", status: "open", assignee: "u-garvit", due: SOON },
+    { id: "c", dealId: "d-bestec", status: "open", assignee: "u-garvit", due: SOON },
+  ];
+  check("the reported deal is GREEN on the board, as the room already said",
+    sig(committed) === "green", sig(committed));
+  check("…and the room agrees, because it is the same function",
+    dealSignal(deal, nextStepState(deal, committed, [deal], TODAY)) === "green", "same");
+
+  check("a missed date is red", sig([{ id: "a", dealId: "d-bestec", status: "open", assignee: "u-shreya", due: PAST }]) === "red",
+    sig([{ id: "a", dealId: "d-bestec", status: "open", assignee: "u-shreya", due: PAST }]));
+  check("nothing promised at all is amber", sig([]) === "amber", sig([]));
+  check("work with nobody's name on it is amber, not green",
+    sig([{ id: "a", dealId: "d-bestec", status: "open", assignee: "", due: SOON }]) === "amber",
+    sig([{ id: "a", dealId: "d-bestec", status: "open", assignee: "", due: SOON }]));
+  check("a lost deal is red whatever is on it",
+    sig(committed, { ...deal, lost: true }) === "red", sig(committed, { ...deal, lost: true }));
+
+  // Every task done and nothing owed: settled, not a failure.
+  check("all done and nothing owed is not red",
+    sig([{ id: "a", dealId: "d-bestec", status: "done", assignee: "u-shreya", due: PAST }]) !== "red",
+    sig([{ id: "a", dealId: "d-bestec", status: "done", assignee: "u-shreya", due: PAST }]));
+
+  check("no commit state at all → amber, never a crash",
+    dealSignal(deal, null) === "amber" && dealSignal(null, null) === "amber", "safe");
 }
 
 for (const [state, name, got] of results) {

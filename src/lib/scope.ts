@@ -221,6 +221,40 @@ export const contactLine = (c: Contact | null | undefined): string => !c ? "" :
 
 export type CommitTask = Scoped & { status?: string; assignee?: string; due?: string };
 export type CommitDeal = DealLike & { stage?: string };
+/* ─── THE LIGHT ON A DEAL ──────────────────────────────────────────────────
+   One rule, because there were two and they disagreed on screen.
+
+   The board's card coloured itself `ns.key === "none" || stale >= 4`, so a
+   deal with three tasks assigned and due next week went amber purely
+   because its PHASE had not changed in five days. The Deal Room, reading
+   only the commitment, called the very same deal "committed" in green. A
+   card that says one thing and the room behind it says another trains
+   people to believe neither.
+
+   So the light answers exactly one question — are we keeping our word on
+   this deal? — and it is the question the room answers too:
+
+     red    we broke a promise (a date went past), or the deal is lost
+     amber  nothing is promised: no task on it carries both a name and a date
+     green  something is promised and nothing is late
+
+   STALENESS IS NOT GONE, it is demoted. "This deal has not moved in nine
+   days" is a real and different complaint, and it keeps its own clock on
+   the card — amber at 4 days, red at 8 — plus the Fix-this-now banner at
+   8. What it no longer does is overrule a commitment that is being kept,
+   because a team working a long deal properly should not be told off for
+   it in the same colour used for missing a date.                         */
+export const dealSignal = (
+  deal: { lost?: boolean } | null | undefined,
+  ns: { key?: string } | null | undefined,
+): "red" | "amber" | "green" => {
+  if (deal && deal.lost) return "red";
+  const key = (ns && ns.key) || "none";
+  if (key === "overdue") return "red";
+  if (key === "none") return "amber";
+  return "green";          // committed, and closed deals read as settled
+};
+
 export type CommitState = {
   key: "closed" | "committed" | "overdue" | "none";
   tasks: number;      // assigned, still-live tasks carrying it
