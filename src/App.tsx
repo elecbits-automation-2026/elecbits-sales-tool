@@ -22,7 +22,7 @@ import {
   loadRfqLinks, loadRequests, loadContacts, saveContact, deleteContact, schemaGaps,
 } from "./lib/data";
 import { registerClient, registerDeal, registerPeek, registerStatus } from "./lib/register";
-import { belongsToDeal, soleDealId, matchDeal, dealContact, contactLine, nextStepState, onDeal, onDealAny, dealPeople } from "./lib/scope";
+import { belongsToDeal, soleDealId, matchDeal, dealContact, contactLine, nextStepState, dealSignal, onDeal, onDealAny, dealPeople } from "./lib/scope";
 import { searchBrain, brainContext, brainStatus, brainLearn, brainFolders, setBrainFolder } from "./lib/brain";
 import { signInOrUp, signOut, currentAuthEmail, bootstrapFirstAdmin } from "./lib/auth";
 import {
@@ -3955,8 +3955,14 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
              a verdict about this list — somebody's name on live work, with a
              date — so it is a chip on the list's header, and adding a task
              here IS committing. */}
-          <div className={cls("border rounded-xl p-4",
-            ns.key === "overdue" ? "border-red-300 bg-red-50/60" : ns.key === "none" ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}>
+          {/* Same signal as the card on the board — dealSignal, not a second
+              copy of the rule. Green reads as "nothing wrong here" and so
+              stays the plain border rather than a wash of colour. */}
+          <div className={cls("border rounded-xl p-4", (() => {
+            const sig = dealSignal(d, ns);
+            return sig === "red" ? "border-red-300 bg-red-50/60"
+              : sig === "amber" ? "border-amber-300 bg-amber-50/50" : "border-slate-200";
+          })())}>
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="flex items-center gap-2">
                 {/* The headline number is what is OWED. Done is counted
@@ -4338,9 +4344,11 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
                   const sec = d.secondaryOwnerId ? users.find((u) => u.id === d.secondaryOwnerId) : null;
                   const stale = dealStaleDays(d);
                   const ns = nextStepState(d, tasks, deals);
-                  // RED is the broken commitment first; the stale clock is the fallback signal.
-                  const sc = d.lost || ns.key === "overdue" ? "red"
-                    : ns.key === "none" || stale >= STALE_AMBER ? "amber" : "green";
+                  /* The same rule the Deal Room uses, from one place, so the
+                     card and the room can never again say different things
+                     about the same deal. Staleness keeps its own clock to
+                     the right; it no longer overrules a kept commitment. */
+                  const sc = dealSignal(d, ns);
                   const compPct = c ? completeness(c) : 0;
                   return (
                     <div key={d.id} draggable={!d.lost && d.stage !== "po"} onDragStart={() => (dragId.current = d.id)}
