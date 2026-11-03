@@ -778,6 +778,12 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState(null);
 
   const [focusCompanyId, setFocusCompanyId] = useState(null);
+  /* Which client My Tasks should open filtered to, when something sent you
+     there. The Deal Room's "update in My Tasks" lands you on that deal's
+     client rather than on the whole backlog — the point of the button is
+     to reach one task quickly, and an unfiltered list of fifty is not that. */
+  const [focusTaskCompanyId, setFocusTaskCompanyId] = useState("");
+  const openTasksFor = (companyId) => { setFocusTaskCompanyId(companyId || ""); setTab("tasks"); };
 
   /* DEEP LINK FROM A MAIL. The daily digest names a project and then
      leaves you to find it — six Schneider deals in, that is a real cost.
@@ -963,7 +969,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row">
-      <Sidebar me={me} tab={tab} setTab={setTab} onLogout={logout} />
+      {/* Clicking My Tasks in the nav means the whole list. Only arriving
+          from a deal room carries that deal's client with it, so a
+          deliberate nav click drops the filter rather than leaving someone
+          staring at one client's tasks wondering where the rest went. */}
+      <Sidebar me={me} tab={tab} onLogout={logout}
+        setTab={(k) => { setFocusTaskCompanyId(""); setTab(k); }} />
       <div className="flex-1 min-w-0 flex flex-col">
         <Topbar me={me} health={myHealth} onAlarmClick={() => setTab("performance")} theme={theme} onToggleTheme={toggleTheme} />
         {fixNow.length > 0 && (
@@ -988,8 +999,8 @@ export default function App() {
         )}
         <main key={tab} className="flex-1 min-w-0 p-4 md:p-6 overflow-x-hidden fade">
           {tab === "companies" && <CompaniesView me={me} data={data} saveCompanies={saveCompanies} saveDeals={saveDeals} saveTasks={saveTasks} focusCompanyId={focusCompanyId} setFocusCompanyId={setFocusCompanyId} setTab={setTab} />}
-          {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} saveTasks={saveTasks} openDealId={openDealId} clearOpenDeal={clearOpenDeal} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
-          {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} saveScrums={saveScrums} saveDeals={saveDeals} saveCompanies={saveCompanies} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "pipeline" && <PipelineView me={me} data={data} saveDeals={saveDeals} saveCompanies={saveCompanies} saveTasks={saveTasks} openDealId={openDealId} clearOpenDeal={clearOpenDeal} openTasks={openTasksFor} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
+          {tab === "tasks" && <MyTasksView me={me} data={data} saveTasks={saveTasks} saveScrums={saveScrums} saveDeals={saveDeals} saveCompanies={saveCompanies} focusCompanyId={focusTaskCompanyId} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "rfqs" && <RfqsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "chatlogs" && <WorkChatLogsView me={me} data={data} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
           {tab === "resources" && <ResourcesView me={me} data={data} saveUsers={saveUsers} openCompany={(id) => { setTab("companies"); setFocusCompanyId(id); }} />}
@@ -3471,13 +3482,21 @@ function DealChat({ me, d, comp, data, touches, commits, saveDeals, saveTasks, s
               <button onClick={() => setAtts(atts.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500"><X size={10} /></button></span>
           ))}</p>
         )}
-        <div className="flex items-center gap-1.5">
+        {/* A TEXTAREA, NOT A ONE-LINE INPUT. People type a paragraph at this
+            box — what the client said, what to do about it — and a single
+            line scrolls the start of it out of sight while they are still
+            writing. Three rows to begin with, growing to about ten as they
+            type, then it scrolls: tall enough to read back what you wrote,
+            bounded so it never eats the conversation above it.
+            Enter still sends; Shift+Enter still makes a new line. */}
+        <div className="flex items-end gap-1.5">
           <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files || []); e.target.value = ""; }} />
           <button title="Attach a file or image" onClick={() => fileRef.current && fileRef.current.click()}
-            className="text-slate-400 hover:text-blue-600 p-1 flex-none"><Paperclip size={15} /></button>
-          <Input value={input} onChange={(e) => setInput(e.target.value)} className="text-[13px]" onPaste={onPaste}
+            className="text-slate-400 hover:text-blue-600 p-1 flex-none mb-1"><Paperclip size={15} /></button>
+          <textarea value={input} onChange={(e) => setInput(e.target.value)} onPaste={onPaste} rows={3}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder="Ask, or agree the next move — it executes…" />
+            placeholder="Ask, or agree the next move — it executes…  (Enter sends, Shift+Enter for a new line)"
+            className="flex-1 min-w-0 text-[13px] leading-snug resize-y min-h-[4.5rem] max-h-60 rounded-lg border border-slate-300 px-2.5 py-1.5 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
           <Btn kind="primary" size="sm" disabled={busy || (!input.trim() && !atts.length)} onClick={send}><Send size={13} /></Btn>
         </div>
       </div>
@@ -3510,7 +3529,7 @@ const realignSystem = (d, comp, taskLines, ev, contacts) => [
   "Emit ops ONLY for changes — untouched tasks need no op. An already-clean list gets an empty ops array.",
 ].join("\n");
 
-function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveCompanies, openCompany }) {
+function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveCompanies, openCompany, openTasks }) {
   const { users, companies, deals, tasks } = data;
   const d = deals.find((x) => x.id === dealId);
   const comp = d && companies.find((x) => x.id === d.companyId);
@@ -3979,6 +3998,20 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
                   </Chip>
                 )}
               </span>
+              {/* STATUS IS CHANGED WHERE THE EVIDENCE IS CHECKED. This room
+                  can reassign a task and move its date, but starting and
+                  finishing one happens in My Tasks, because that is where
+                  the completion questions and the file check live. Rather
+                  than leave people hunting for it, this takes them there
+                  filtered to this client, with the deal room closed behind
+                  them so they do not come back to a stale copy. */}
+              {openTasks && (dealTasks.length > 0 || dealDone.length > 0) && (
+                <button onClick={() => { onClose(); openTasks(d.companyId); }}
+                  title="Open My Tasks, filtered to this client, to start or complete a task"
+                  className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                  <ListTodo size={11} /> Update status
+                </button>
+              )}
               {/* The ONLY way the AI adds tasks: asked for, by this button. It
                   audits what is already here and fills the gaps. */}
               <button onClick={realignTasks} disabled={realigning}
@@ -4117,7 +4150,7 @@ function DealRoom({ me, data, deal: dealId, onClose, saveDeals, saveTasks, saveC
   );
 }
 
-function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompany, openDealId, clearOpenDeal }) {
+function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompany, openDealId, clearOpenDeal, openTasks }) {
   // `tasks` is here because the board's commitment state reads them — an
   // assigned task is what makes a deal committed, on the card as in the room.
   const { users, companies, deals, gates, rfq, tasks } = data;
@@ -4412,7 +4445,7 @@ function PipelineView({ me, data, saveDeals, saveCompanies, saveTasks, openCompa
       {gate && gate.mode === "back" && (
         <BackMoveModal gate={gate} onClose={() => setGate(null)} onConfirm={(reason) => applyMove(gate.deal, gate.to, { summary: "Moved back: " + reason })} />
       )}
-      {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} openCompany={openCompany} />}
+      {room && <DealRoom me={me} data={data} deal={room} onClose={() => setRoom(null)} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} openCompany={openCompany} openTasks={openTasks} />}
       {tempMove && <PhaseMoveChat me={me} move={tempMove} data={data} deals={deals} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} onClose={() => setTempMove(null)} />}
       {winning && <PhaseMoveChat me={me} move={{ deal: winning, to: "won" }} data={data} deals={deals} saveDeals={saveDeals} saveTasks={saveTasks} saveCompanies={saveCompanies} onClose={() => setWinning(null)} />}
       {gate && (gate.mode === "advance" || gate.mode === "lost") && (
@@ -9704,7 +9737,7 @@ function WorkWindow({ task: t, data, saveTasks, saveCompanies, onClose, onComple
    the left (free-flowing — it files next steps, marks activities, raises
    tasks), and the live task list on the right, where anything can also be
    finished by plain clicking. Same data, two doors. */
-function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies, openCompany }) {
+function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies, openCompany, focusCompanyId }) {
   // `deals` is here so a task raised from this side can name its project —
   // without it every task written here was company-wide, which on a client
   // with several live projects means it reaches none of their deal rooms.
@@ -9719,7 +9752,12 @@ function MyTasksView({ me, data, saveTasks, saveScrums, saveDeals, saveCompanies
   const canTeam = me.role !== "agent";
   const [group, setGroup] = useState("due"); // due | company | person
   const [personF, setPersonF] = useState("all");
-  const [companyF, setCompanyF] = useState("all");
+  /* Arriving from a deal room's "update in My Tasks" lands filtered to that
+     client. A plain visit starts unfiltered. It is a useState initialiser
+     rather than an effect on purpose: an effect would snap the filter back
+     to that client every time this screen re-rendered, so the person could
+     never widen it again without leaving and coming back. */
+  const [companyF, setCompanyF] = useState(focusCompanyId || "all");
   const mine = tasks.filter((t) =>
     (scope === "mine" ? t.assignee === me.id : true) &&
     (personF === "all" || t.assignee === personF) &&

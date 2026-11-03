@@ -70,7 +70,24 @@ const both = [dpb, ups, dead, solo];
 {
   check("no item → false", !belongsToDeal(null, dpb, both), true);
   check("no deal → false", !belongsToDeal({ dealId: "x" }, null, both), true);
-  check("no deals list → lone-deal fallback, never a crash", belongsToDeal({ dealId: "" }, dpb, undefined), true);
+  /* This used to assert `true`, and that assertion WAS the bug: it pinned
+     down "an item naming neither a deal nor a company matches anyway".
+     The intent was only "do not crash when the deals list is missing", so
+     that is what it checks now — and the answer is no, because a record
+     filed against nothing belongs to nothing. */
+  check("no deals list → no crash, and an unscoped record still matches nothing",
+    belongsToDeal({ dealId: "" }, dpb, undefined) === false, true);
+  /* THE REPORTED CASE. Two old Sunrise tasks whose company had been lost
+     were appearing in the Done list of every single-project client's deal
+     room at once. `dpb` has a live sibling so it was never affected; the
+     leak only hit a client with exactly one live deal, which is most of
+     them. */
+  const lone = { id: "deal-lone", companyId: "org-lone", lost: false };
+  check("an unscoped record does NOT leak into a one-project client's room",
+    !belongsToDeal({ dealId: "", companyId: "" }, lone, [lone]), "orphan");
+  check("…nor with the fields simply absent", !belongsToDeal({}, lone, [lone]), "orphan");
+  check("…while a record filed against that company still reaches it",
+    belongsToDeal({ companyId: "org-lone" }, lone, [lone]), "company-level still works");
   check("a record with no company still matches its own deal", belongsToDeal({ dealId: "deal-dpb" }, dpb, both), true);
 }
 
