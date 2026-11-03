@@ -34,7 +34,25 @@ export function belongsToDeal(item: Scoped | null | undefined,
                               deals?: DealLike[] | null): boolean {
   if (!item || !deal) return false;
   if (item.dealId) return item.dealId === deal.id;
-  if (item.companyId && item.companyId !== deal.companyId) return false;
+  /* NAMING NO COMPANY IS NOT THE SAME AS NAMING THIS ONE.
+
+     This line used to read `if (item.companyId && item.companyId !== ...)`,
+     so a record carrying NEITHER a deal nor a company skipped both guards
+     and fell through to the lone-deal fallback below — which is true for
+     every single-project client in the database. Two ancient Sunrise tasks
+     with their company lost showed up in the Done list of every such deal
+     room, on every client, as if each of them had done the work.
+
+     Worse than the clutter: nextStepState runs on this, so one unscoped
+     open task with a name and a date made every one-project client look
+     committed, and one unscoped overdue task made them all red.
+
+     The fallback below is for a record filed against THIS company with no
+     project picked. A record filed against nothing is orphaned, and
+     orphaned work belongs in the "stranded" list where it can be claimed,
+     not silently adopted by whichever deals happen to be alone. */
+  if (!item.companyId) return false;
+  if (item.companyId !== deal.companyId) return false;
   return liveDeals(deal.companyId, deals).length <= 1;
 }
 
