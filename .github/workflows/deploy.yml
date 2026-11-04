@@ -1,0 +1,86 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# DEPLOY TO PRODUCTION, without depending on Vercel's GitHub integration.
+#
+# That integration stopped firing on 21 October 2026. Seven merges reached
+# main and none of them were built: on the last commit Vercel reacted to,
+# three GitHub Apps responded (vercel, supabase, claude); on every commit
+# since, only two. It was not failing builds, it was not being asked for
+# any.
+#
+# This removes the dependency. GitHub runs this workflow on a push to main
+# and it calls Vercel's API with a token, so the webhook no longer sits in
+# the path between a merge and a deployment. If the integration is repaired
+# later both will fire and Vercel will simply build the same commit twice —
+# harmless, and a reason to delete one of them rather than to delay fixing
+# the other.
+#
+# It is also runnable by hand: Actions → Deploy to production → Run
+# workflow. That is a deploy button for anybody with repo access, which is
+# worth having on the day the dashboard is the thing that is not working.
+#
+# ── SETUP: three repository secrets ───────────────────────────────────────
+# Settings → Secrets and variables → Actions → New repository secret
+#
+#   VERCEL_TOKEN       Vercel → Account Settings → Tokens → Create.
+#                      Scope it to the team that owns the project.
+#   VERCEL_ORG_ID      ┐ both are printed by `npx vercel link` into
+#   VERCEL_PROJECT_ID  ┘ .vercel/project.json, and are also on the
+#                        project's Settings → General page.
+#
+# Nothing else moves. Every one of the thirty environment variables stays
+# where it is — `vercel pull` fetches them at build time, so this does not
+# become a second place to keep them in step.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # the manual button
+
+# A merge train must not race itself onto production. Newer wins; the older
+# run is cancelled rather than left to land after it.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # The same gate used before every merge, run again here against the
+      # commit that is actually about to ship. A deploy is the wrong moment
+      # to discover the suite was red.
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:scope
+      - run: npm run test:brain
+      - run: npm run test:digest
+      - run: npm run test:rfq
+
+      - name: Install the Vercel CLI
+        run: npm install --global vercel@latest
+
+      # pull: fetch the project's production environment, so the build here
+      # sees exactly what a Vercel-side build would see — including the
+      # VITE_* pair that gets inlined into the browser bundle.
+      - name: Pull the project settings
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy
+        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
