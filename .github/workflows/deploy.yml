@@ -55,9 +55,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 22, not 20. test:scope runs node --experimental-strip-types so it can
+      # import lib/scope.ts directly, and that flag only exists from 22.6 —
+      # on 20 node exits 9 with "bad option" before a single assertion runs.
+      # The first run of this workflow died exactly there, which is a poor
+      # way to find out the repo never declared the Node it needs. It does
+      # now, in package.json engines, so the next person gets told by npm
+      # rather than by a red deploy.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       # The same gate used before every merge, run again here against the
