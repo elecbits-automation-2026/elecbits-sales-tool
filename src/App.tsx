@@ -1096,10 +1096,10 @@ function Login() {
         <div className="flex items-center justify-center mb-3">
           <Logo height={40} />
         </div>
-        {/* Back, shortened: "nothing missed" dropped, the rest as it was.
-            The mb-8 lives here again rather than on the logo block, so the
-            spacing above the card is unchanged either way. */}
-        <p className="text-center font-mono text-xs text-slate-500 mb-8">sales os · lead → po</p>
+        {/* The original line, whole again. The mb-8 lives here rather than
+            on the logo block, so the spacing above the card holds whatever
+            this says. */}
+        <p className="text-center font-mono text-xs text-slate-500 mb-8">sales os · lead → po, nothing missed</p>
         <form onSubmit={submit} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
           <div>
             <p className="text-lg font-semibold text-slate-900">Sign in</p>
