@@ -80,14 +80,23 @@ jobs:
       - name: Install the Vercel CLI
         run: npm install --global vercel@latest
 
-      # pull: fetch the project's production environment, so the build here
-      # sees exactly what a Vercel-side build would see — including the
-      # VITE_* pair that gets inlined into the browser bundle.
-      - name: Pull the project settings
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Build
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
-
+      # VERCEL BUILDS THIS, NOT US — and the first version of this workflow
+      # got that wrong in a way that took production down.
+      #
+      # It ran `vercel pull` then `vercel build --prod`, building here and
+      # uploading the output. But Vercel cannot hand back an environment
+      # variable marked SENSITIVE: `pull` writes the literal text
+      # [SENSITIVE] in place of the value. VITE_SUPABASE_URL is marked that
+      # way, Vite inlines VITE_* into the browser bundle at build time, and
+      # the deployed app came up with supabaseUrl === "https://[SENSITIVE]":
+      # every page dead on "Invalid supabaseUrl: Provided URL is malformed".
+      #
+      # Deploying the SOURCE instead puts the build back on Vercel, where
+      # the real values live and where it has always happened. There is no
+      # copy of the environment here to redact, go stale, or leak into a
+      # log. The build cannot be reached by this failure at all.
+      #
+      # `npm run build` above still runs, so a build that cannot compile is
+      # caught here before Vercel is asked to do it for real.
       - name: Deploy
-        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel deploy --prod --yes --token=${{ secrets.VERCEL_TOKEN }}
